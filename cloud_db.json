@@ -100,5 +100,9 @@
     }
   ],
   "subscriptions": [],
-  "auditLogs": []
+  "auditLogs": [],
+  "customers": [],
+  "orders": [],
+  "businessProfiles": [],
+  "tenantSubscriptions": []
 }
