@@ -89,8 +89,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AVAILABLE_BRANCHES: Branch[] = [];
 
-const MOCK_TENANTS: Tenant[] = [];
-
 /**
  * DB-first tenant resolver.
  * 1. Checks IndexedDB (covers all dynamically provisioned tenants)
@@ -144,9 +142,9 @@ async function resolveTenantById(tenantId: string): Promise<Tenant | null> {
       return null;
     }
   } catch (e) {
-    console.warn('[Auth] DB tenant lookup failed, falling back to mock:', e);
+    console.warn('[Auth] DB tenant lookup failed:', e);
   }
-  return MOCK_TENANTS.find(t => t.id === tenantId) || null;
+  return null;
 }
 
 export const getPermissionsForRoleSlug = async (roleSlugOrName: string): Promise<string[]> => {
@@ -216,12 +214,11 @@ const generateMockJWT = (user: User, permissions: string[]): { token: string; cl
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUserState] = useState<User | null>(null);
   const [role, setRoleState] = useState<UserRole>('Business Owner');
-  const isProdLocked = typeof window !== 'undefined' && localStorage.getItem('DUKAPOS_PRODUCTION_LOCKED') === 'true';
-  const initialTenant: Tenant = isProdLocked ? { id: '', name: '', plan: 'Basic', status: 'Active' } : MOCK_TENANTS[0];
-  const initialBranch: Branch = isProdLocked ? { id: '', tenant_id: '', name: '', location: '' } : AVAILABLE_BRANCHES[0];
+  const defaultTenant: Tenant = { id: '', name: '', plan: 'Basic', status: 'Active' };
+  const defaultBranch: Branch = { id: '', tenant_id: '', name: '', location: '' };
 
-  const [currentTenant, setTenantState] = useState<Tenant>(initialTenant);
-  const [currentBranch, setCurrentBranchState] = useState<Branch>(initialBranch);
+  const [currentTenant, setTenantState] = useState<Tenant>(defaultTenant);
+  const [currentBranch, setCurrentBranchState] = useState<Branch>(defaultBranch);
   const [currentIndustry, setCurrentIndustryState] = useState<{ id: string; name: string } | null>({ id: 'ind-retail', name: 'Retail' });
   const [jwtToken, setJwtToken] = useState<string | null>(null);
   const [jwtClaims, setJwtClaims] = useState<JWTClaims | null>(null);
