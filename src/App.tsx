@@ -1,0 +1,586 @@
+import React, { useEffect, useState, useMemo, lazy, Suspense } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ModuleProvider, useModule } from './context/ModuleContext';
+import { SyncProvider, useSyncState } from './context/SyncContext';
+import { seedDatabase, db } from './db/dexie';
+import { useLiveQuery } from 'dexie-react-hooks';
+
+// Layout & Views
+import { TopBar } from './components/Layout/TopBar';
+import { Sidebar } from './components/Layout/Sidebar';
+import { BottomNav } from './components/Layout/BottomNav';
+
+const Dashboard = lazy(() => import('./components/Views/Dashboard').then(m => ({ default: m.Dashboard })));
+const POS = lazy(() => import('./components/Views/POS').then(m => ({ default: m.POS })));
+const Inventory = lazy(() => import('./components/Views/Inventory').then(m => ({ default: m.Inventory })));
+const Customers = lazy(() => import('./components/Views/Customers').then(m => ({ default: m.Customers })));
+const Reports = lazy(() => import('./components/Views/Reports').then(m => ({ default: m.Reports })));
+const Settings = lazy(() => import('./components/Views/Settings').then(m => ({ default: m.Settings })));
+
+import { Purchasing } from './components/Views/Purchasing';
+const SuperAdmin = lazy(() => import('./components/Views/SuperAdmin').then(m => ({ default: m.SuperAdmin })));
+const AuthGateway = lazy(() => import('./components/Views/AuthGateway').then(m => ({ default: m.AuthGateway })));
+const UsersRoles = lazy(() => import('./components/Views/UsersRoles').then(m => ({ default: m.UsersRoles })));
+const Expenses = lazy(() => import('./components/Views/Expenses').then(m => ({ default: m.Expenses })));
+const BusinessConsulting = lazy(() => import('./components/Views/BusinessConsulting').then(m => ({ default: m.BusinessConsulting })));
+import { useSubscription } from './hooks/useSubscription';
+import { Search, AlertTriangle, Lock } from 'lucide-react';
+import { Dialog, Badge } from './components/UI/custom-ui';
+
+const DukaPosAppContent: React.FC = () => {
+  const { activeTab, setActiveTab, setActiveModule } = useModule();
+  const { toggleTheme, role, isSuperAdminView, user, currentTenant, isInitializing } = useAuth();
+  const { isOnline, syncFromServer } = useSyncState();
+  const sub = useSubscription();
+
+
+  const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
+  const [searchVal, setSearchVal] = useState('');
+
+  // Seed DB on mount
+  useEffect(() => {
+    seedDatabase();
+  }, []);
+
+  // Bootstrap pull: whenever a user logs in, immediately fetch their products
+  // from the server. This is the key fix for Device B seeing nothing on login.
+  useEffect(() => {
+    if (user && user.tenant_id && user.role !== 'Super Admin') {
+      syncFromServer(user.tenant_id).catch(err =>
+        console.warn('[SyncBootstrap] Initial server pull failed:', err)
+      );
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // Listen to keyboard shortcut Ctrl+K / Cmd+K
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsSearchModalOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+
+  // --- IndexedDB Queries for Global Search ---
+  const allProducts = useLiveQuery(() => db.products.toArray()) || [];
+  const allCustomers = useLiveQuery(() => db.customers.toArray()) || [];
+  const tenantModules = useLiveQuery(() => 
+    db.tenantModules.where('tenant_id').equals(currentTenant?.id || '').and(m => m.enabled).toArray()
+  , [currentTenant?.id]);
+
+  // Filter products, customers and actions based on search input
+  const searchResults = useMemo(() => {
+    if (!searchVal.trim()) return { products: [], customers: [], commands: [] };
+
+    const val = searchVal.toLowerCase();
+
+    // 1. Search products
+    const prods = allProducts.filter(p => 
+      p.name.toLowerCase().includes(val) || 
+      p.category.toLowerCase().includes(val) ||
+      p.module.toLowerCase().includes(val)
+    ).slice(0, 4);
+
+    // 2. Search customers
+    const custs = allCustomers.filter(c => 
+      c.name.toLowerCase().includes(val) || 
+      c.phone.includes(val)
+    ).slice(0, 4);
+
+    // 3. Search commands / navigation shortcuts
+    const subscribedKeys = (tenantModules || []).map(m => m.module_key);
+    const hasSubscribedModules = tenantModules && tenantModules.length > 0;
+
+    const commandsList = [
+      { key: 'Restaurant', name: 'Switch to Restaurant Module', action: () => { setActiveModule('Restaurant'); setIsSearchModalOpen(false); } },
+      { key: 'Pharmacy', name: 'Switch to Pharmacy Module', action: () => { setActiveModule('Pharmacy'); setIsSearchModalOpen(false); } },
+      { key: 'Retail', name: 'Switch to Retail Module', action: () => { setActiveModule('Retail'); setIsSearchModalOpen(false); } },
+      { key: 'SACCO', name: 'Switch to SACCO Module', action: () => { setActiveModule('SACCO'); setIsSearchModalOpen(false); } },
+      { key: 'Bar', name: 'Switch to Bar & Beverage Module', action: () => { setActiveModule('Bar'); setIsSearchModalOpen(false); } },
+      { key: 'BusinessConsultant', name: 'Switch to Business Consultant Module', action: () => { setActiveModule('BusinessConsultant'); setIsSearchModalOpen(false); } },
+      { key: 'AlwaysShow', name: 'Toggle Dark / Light Theme', action: () => { toggleTheme(); setIsSearchModalOpen(false); } },
+      { key: 'AlwaysShow', name: 'Launch POS Checkout Screen', action: () => { setActiveTab('POS'); setIsSearchModalOpen(false); } },
+      { key: 'AlwaysShow', name: 'Switch to Users & Roles Settings', action: () => { setActiveTab('Users & Roles'); setIsSearchModalOpen(false); } }
+    ].filter(cmd => cmd.key === 'AlwaysShow' || !hasSubscribedModules || subscribedKeys.includes(cmd.key));
+    const cmds = commandsList.filter(c => c.name.toLowerCase().includes(val));
+
+    return { products: prods, customers: custs, commands: cmds };
+  }, [searchVal, allProducts, allCustomers, tenantModules, setActiveModule, setActiveTab, toggleTheme]);
+
+  if (isInitializing) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-slate-950 text-slate-100 font-sans select-none">
+        <div className="relative flex items-center justify-center">
+          <div className="absolute h-24 w-24 animate-ping rounded-full border-2 border-indigo-500/20"></div>
+          <div className="absolute h-16 w-16 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent"></div>
+          <div className="h-10 w-10 flex items-center justify-center font-bold text-lg bg-indigo-600 rounded-xl shadow-lg shadow-indigo-500/30">DP</div>
+        </div>
+        <h2 className="mt-8 text-sm font-semibold tracking-wider uppercase text-slate-300">Synchronizing Workspace</h2>
+        <p className="mt-2 text-[11px] text-slate-500 max-w-[280px] text-center leading-relaxed">
+          Verifying tenant identity and downloading secure configurations from authoritative cloud database...
+        </p>
+      </div>
+    );
+  }
+
+  // Render view depending on active navigation tab
+  const renderActiveView = () => {
+    console.log('renderActiveView called with activeTab =', activeTab);
+    if (role === 'Super Admin' && isSuperAdminView && activeTab !== 'Users & Roles') {
+      return <SuperAdmin />;
+    }
+
+    // Billing middleware subscription enforcement
+    const isLocked = sub.isHardLocked;
+    const allowedTabs = [
+      'Plans & Pricing', 'Coupons', 'Grace Periods', 'Features', 'Usage Meter', 'Audit Log',
+      'Settings', 'General Settings', 'Users & Roles', 'Employees'
+    ];
+
+    if (isLocked && !isSuperAdminView && !allowedTabs.includes(activeTab)) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] px-4 font-sans">
+          <div className="w-full max-w-md bg-white dark:bg-darkbg-card rounded-2xl border border-dashed border-red-200 dark:border-red-900/50 p-8 text-center shadow-lg relative overflow-hidden">
+            {/* Ambient indicator */}
+            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-red-500 via-amber-500 to-red-500"></div>
+            
+            <div className="mx-auto h-14 w-14 rounded-2xl bg-red-50 dark:bg-red-950/20 text-red-500 flex items-center justify-center mb-5 shrink-0 animate-bounce">
+              <Lock className="h-6 w-6 stroke-[2.5]" />
+            </div>
+
+            <h3 className="text-base font-black text-slate-800 dark:text-white uppercase tracking-wider">
+              Workspace Access Suspended
+            </h3>
+            
+            <Badge variant="danger" className="mt-2 text-[9px] uppercase tracking-wider font-extrabold px-2.5 py-0.5">
+              Hard Locked · Trial/Plan Expired
+            </Badge>
+
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-4 leading-relaxed">
+              Your subscription plan <strong className="text-slate-700 dark:text-slate-200">&quot;{sub.planName}&quot;</strong> has expired. 
+              The 7-day offline grace period has expired, disabling transaction processing (POS sales, ledger updates, stock adjustments, and reports).
+            </p>
+
+            <div className="mt-6 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('Plans & Pricing')}
+                className="w-full h-10 rounded-xl bg-primary text-white text-xs font-black hover:bg-primary/95 transition flex items-center justify-center gap-1.5 shadow-md shadow-primary/20"
+              >
+                💳 Renew Subscription / Add Coupon
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('General Settings')}
+                className="w-full h-10 rounded-xl border border-slate-200 dark:border-darkbg-border hover:bg-slate-50 dark:hover:bg-darkbg/50 text-slate-600 dark:text-slate-400 text-xs font-bold transition flex items-center justify-center gap-1.5"
+              >
+                ⚙ View Settings & Export Data
+              </button>
+            </div>
+            
+            <p className="text-[10px] text-slate-400 mt-4 font-mono">
+              Workspace ID: {currentTenant.id}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    switch (activeTab) {
+      case 'Dashboard':
+        return <Dashboard />;
+      case 'POS':
+      case 'New Sale':
+      case 'Sales History':
+      case 'Returns':
+        return <POS />;
+      case 'Inventory':
+      case 'Products':
+      case 'Categories':
+      case 'Stock Adjustment':
+      case 'Stock Transfer':
+      case 'Stock Alerts':
+      case 'Medicines':
+        return <Inventory />;
+      case 'Customers':
+      case 'Members':
+      case 'Patients':
+        return <Customers />;
+      case 'Employees':
+      case 'Users & Roles':
+        return <UsersRoles />;
+      case 'Reports':
+      case 'Sales':
+      case 'Profit':
+      case 'Tax':
+        return <Reports />;
+      case 'Settings':
+      case 'General Settings':
+        return <Settings />;
+      case 'Business Profile & Identity':
+        return <Settings initialTab="localization" />;
+      case 'POS Configurations':
+        return <Settings initialTab="pos" />;
+      case 'Inventory Rules':
+        return <Settings initialTab="inventory" />;
+      case 'Tax & Billing':
+        return <Settings initialTab="tax" />;
+      case 'Security Policies':
+        return <Settings initialTab="security" />;
+      case 'Terminals & Sessions':
+        return <Settings initialTab="devices" />;
+      case 'Subscriptions & Billing':
+        return <Settings initialTab="subscriptions" />;
+      case 'Change Log':
+        return <Settings initialTab="audit" />;
+      case 'Plans & Pricing':
+      case 'Coupons':
+      case 'Grace Periods':
+      case 'Features':
+      case 'Usage Meter':
+      case 'Audit Log':
+        return <Settings initialTab="subscriptions" />;
+      // Purchasing module routes (Suppliers, POs, Warehouses)
+      case 'Suppliers':
+      case 'Purchasing':
+      case 'Purchasing & Supplies':
+      case 'Distributors & Suppliers':
+        return <Purchasing initialTab="suppliers" />;
+      case 'Purchase Orders':
+        return <Purchasing initialTab="purchase-orders" />;
+      case 'Goods Received':
+      case 'Crate/Case Received':
+        return <Purchasing initialTab="goods-receiving" />;
+      case 'Supplier Payments':
+      case 'Supplier Ledgers':
+      case 'Supplier Ledger':
+        return <Purchasing initialTab="payments-ledger" />;
+      case 'Warehouses':
+        return <Purchasing initialTab="warehouses" />;
+      // Bar & Beverage module routes
+      case 'Counter POS':
+      case 'Bar Counter POS':
+      case 'Active Tables':
+      case 'Open Tabs & Bills':
+      case 'Order History':
+      case 'Complimentary / Spoils':
+        return <POS />;
+      case 'Beverage Inventory':
+      case 'Stock Register':
+      case 'Liquid Volume Tracking':
+      case 'Empty Bottle Return':
+      case 'Stock Adjustments':
+      case 'Stock Alerts':
+      case 'Low Stock Alerts':
+        return <Inventory />;
+      case 'Cocktail Recipes':
+      case 'Cost-Per-Pour Mapping':
+      case 'Batch Mixing':
+      case 'Spillage Logs':
+      case 'Recipe & Pour Control':
+        return <Inventory />;
+      case 'Daily Sales Summary':
+      case 'Fast-Moving Drinks':
+      case 'Pour Variance Report':
+      case 'Profit Margin Analysis':
+      case 'Tax & Excise Duty':
+      case 'Reports & Analytics':
+        return <Reports />;
+      case 'Bartenders & Waiters':
+      case 'Waiter Sales Tracking':
+      case 'Attendance Register':
+      case 'Tips & Commissions':
+      case 'Staff & Commissions':
+        return <Customers />;
+      case 'Bar Setup & Tables':
+      case 'Measurement Units (Pours/Bottles)':
+      case 'Happy Hour Rules':
+      case 'Role Permissions':
+        return <Settings />;
+      case 'Cashier Shifts':
+      case 'Counter Handover':
+      case 'Float Management':
+      case 'Audit & Variance Logs':
+      case 'Shift & Counter Management':
+        return <Dashboard />;
+      // Business Consultant module routes
+      case 'Clients':
+      case 'Client Directory':
+      case 'Organizations':
+      case 'Individual Clients':
+      case 'Contact Persons':
+      case 'Client Notes':
+      case 'Client Documents':
+      case 'Client Portal Access':
+        return <Customers />;
+      case 'Engagements':
+      case 'Active Projects':
+      case 'Consulting Engagements':
+      case 'Business Assessments':
+      case 'Strategy Sessions':
+      case 'Advisory Plans':
+      case 'Deliverables':
+      case 'Project Timeline':
+      case 'Proposals':
+      case 'Create Proposal':
+      case 'Proposal Templates':
+      case 'Sent Proposals':
+      case 'Accepted':
+      case 'Rejected':
+      case 'Proposal Analytics':
+      case 'Contracts':
+      case 'Digital Signatures':
+      case 'Renewals':
+      case 'Contract Templates':
+      case 'Expiring Contracts':
+      case 'Services':
+      case 'Service Catalog':
+      case 'Pricing Packages':
+      case 'Retainer Plans':
+      case 'Hourly Services':
+      case 'Custom Services':
+      case 'Service Categories':
+      case 'Time Tracking':
+      case 'Timesheets':
+      case 'Billable Hours':
+      case 'Team Time Logs':
+      case 'Productivity Report':
+      case 'Approval Queue':
+      case 'Meetings':
+      case 'Client Meetings':
+      case 'Online Meetings':
+      case 'Follow-ups':
+      case 'Agenda':
+      case 'Meeting Minutes':
+      case 'Assessments':
+      case 'SWOT Analysis':
+      case 'Business Health Check':
+      case 'Risk Assessment':
+      case 'Compliance Review':
+      case 'Financial Analysis':
+      case 'Assessment Templates':
+      case 'Strategy':
+      case 'Strategic Plans':
+      case 'Roadmaps':
+      case 'Action Plans':
+      case 'Milestones':
+      case 'Progress Tracking':
+      case 'Invoicing':
+      case 'Quotes':
+      case 'Invoices':
+      case 'Payments':
+      case 'Outstanding':
+      case 'Recurring Billing':
+      case 'Team':
+      case 'Consultants':
+      case 'Skills Matrix':
+      case 'Certifications':
+      case 'Capacity Planning':
+      case 'Performance':
+      case 'Leave Calendar':
+      case 'Knowledge Base':
+      case 'Best Practices':
+      case 'SOPs':
+      case 'Research Library':
+      case 'Case Studies':
+      case 'Internal Documents':
+      case 'AI Consultant':
+      case 'SWOT Generator':
+      case 'Proposal Generator':
+      case 'Business Plan Generator':
+      case 'Financial Recommendations':
+      case 'Meeting Summary':
+      case 'AI Chat':
+      case 'Communications':
+      case 'Email Center':
+      case 'SMS':
+      case 'WhatsApp':
+      case 'Notifications':
+      case 'Activity Feed':
+      case 'Administration':
+      case 'Branches':
+      case 'Users & Roles':
+      case 'Permissions':
+      case 'Workflow Automation':
+      case 'Approval Rules':
+      case 'Custom Fields':
+      case 'Integrations':
+      case 'Audit Logs':
+        return <BusinessConsulting />;
+      // Expenses module routes
+      case 'Expenses':
+      case 'Feed Expenses':
+      case 'Medicine Expenses':
+      case 'Labor Costs':
+      case 'Operational Costs':
+      case 'Licensing & Permits':
+      case 'Damaged/Broken Stock':
+        return <Expenses />;
+      default:
+        return <Dashboard />;
+    }
+  };
+
+  if (!user) {
+    return <AuthGateway />;
+  }
+
+  return (
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-darkbg select-none">
+      {/* Offline Alert Sync Indicator Banner */}
+      {!isOnline && (
+        <div className="bg-gradient-to-r from-red-600 to-amber-600 text-white text-center py-1.5 px-4 text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 shadow-sm animate-pulse z-50">
+          <AlertTriangle className="h-4 w-4" />
+          <span>Offline-first mode active. Sales & products are saved to local IndexedDB and will sync when online.</span>
+        </div>
+      )}
+
+      {/* Main Top App Navigation */}
+      <TopBar 
+        onOpenSearch={() => setIsSearchModalOpen(true)}
+      />
+
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 pb-24 md:pb-6 scrollbar-thin">
+          <Suspense fallback={
+            <div className="flex flex-col items-center justify-center min-h-[50vh] text-slate-400 dark:text-slate-500 font-sans">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mb-3"></div>
+              <p className="text-[10px] font-bold uppercase tracking-wider animate-pulse">Loading View...</p>
+            </div>
+          }>
+            {renderActiveView()}
+          </Suspense>
+        </main>
+      </div>
+
+      {/* Mobile Bottom Navigation (screens < 768px) */}
+      <BottomNav />
+
+
+
+      {/* Global Cmd+K Search Modal Dialog */}
+      <Dialog
+        isOpen={isSearchModalOpen}
+        onClose={() => {
+          setIsSearchModalOpen(false);
+          setSearchVal('');
+        }}
+        title="DukaPos Global Search Platform"
+      >
+        <div className="space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search products, customers, settings, modules..."
+              value={searchVal}
+              onChange={(e) => setSearchVal(e.target.value)}
+              autoFocus
+              className="pl-9 h-10 w-full rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none dark:border-darkbg-border dark:bg-darkbg"
+            />
+          </div>
+
+          {/* Results list */}
+          <div className="max-h-72 overflow-y-auto space-y-3 font-sans pr-1">
+            {!searchVal.trim() ? (
+              <p className="text-xs text-slate-400 text-center py-6 italic">Type to search everything...</p>
+            ) : (
+              <>
+                {/* Commands */}
+                {searchResults.commands.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Actions & Navigation</div>
+                    <div className="space-y-1">
+                      {searchResults.commands.map((cmd, idx) => (
+                        <button
+                          key={idx}
+                          onClick={cmd.action}
+                          className="w-full text-left rounded-lg bg-slate-50 dark:bg-darkbg-card border border-slate-100 dark:border-darkbg-border p-2 text-xs font-bold text-primary dark:text-primary-dark hover:bg-primary/5 transition flex items-center justify-between"
+                        >
+                          <span>⚡ {cmd.name}</span>
+                          <span className="text-[9px] bg-primary/10 px-1.5 py-0.5 rounded font-semibold text-primary">Shortcut</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Products */}
+                {searchResults.products.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Products & Services</div>
+                    <div className="space-y-1">
+                      {searchResults.products.map((p) => (
+                        <div 
+                          key={p.id}
+                          onClick={() => {
+                            setActiveTab('Inventory');
+                            setActiveModule(p.module as any);
+                            setIsSearchModalOpen(false);
+                            setSearchVal('');
+                          }}
+                          className="rounded-lg bg-slate-50 dark:bg-darkbg-card border border-slate-100 dark:border-darkbg-border p-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="font-bold">{p.name} ({p.module})</span>
+                          <span className="font-semibold text-slate-400">Tsh. {p.price.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Customers */}
+                {searchResults.customers.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Customers & Members</div>
+                    <div className="space-y-1">
+                      {searchResults.customers.map((c) => (
+                        <div 
+                          key={c.id}
+                          onClick={() => {
+                            setActiveTab('Customers');
+                            setIsSearchModalOpen(false);
+                            setSearchVal('');
+                          }}
+                          className="rounded-lg bg-slate-50 dark:bg-darkbg-card border border-slate-100 dark:border-darkbg-border p-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="font-bold">{c.name} ({c.type})</span>
+                          <span className="text-slate-400">{c.phone}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {searchResults.products.length === 0 && searchResults.customers.length === 0 && searchResults.commands.length === 0 && (
+                  <p className="text-xs text-slate-400 text-center py-6 italic">No results found for "{searchVal}"</p>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </Dialog>
+    </div>
+  );
+};
+
+function App() {
+  return (
+    <AuthProvider>
+      <ModuleProvider>
+        <SyncProvider>
+          <DukaPosAppContent />
+        </SyncProvider>
+      </ModuleProvider>
+    </AuthProvider>
+  );
+}
+
+export default App;

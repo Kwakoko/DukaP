@@ -1,0 +1,5074 @@
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useModule } from '../../context/ModuleContext';
+import { useAuth } from '../../context/AuthContext';
+import { useSyncState } from '../../context/SyncContext';
+import {
+  db, type Product, type ProductVariant, type StockLedgerEntry,
+  type BatchLot, type StockTransfer,
+  type PhysicalCount,
+  recordStockMovement,
+  recalculateProductStock,
+} from '../../db/dexie';
+import { ProductService, createCategory, updateCategory, deleteCategory, createBrand, updateBrand, deleteBrand } from '../../services/productService';
+import { Html5Qrcode } from 'html5-qrcode';
+import {
+  getDashboardKPIs, get7DayMovements, generateValuationReport,
+  refreshExpiryAlerts, evaluateReorderRules, receiveBatchLot,
+  addSerialNumbers, createStockTransfer, submitTransfer, receiveTransfer,
+  createPhysicalCount, updateCountItem, submitCountForApproval, approvePhysicalCount,
+  saveReorderRule, getReorderReport, getSlowMovingReport, getNegativeStockReport,
+  logWastage,
+  type InventoryKPIs, type DailyMovement, type ReorderAlert,
+} from '../../services/inventoryService';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../../services/settingsService';
+import { Dialog, Badge, Input, Button } from '../UI/custom-ui';
+import {
+  Plus, Search, Edit, Trash2, Sliders,
+  AlertTriangle, Package, Layers, BarChart3, Tag, Clock,
+  X, CheckCircle2, ArrowLeftRight, ClipboardList, FileText,
+  RefreshCw, TrendingUp, TrendingDown, Archive, AlertCircle, Zap,
+  ChevronRight, Barcode, Hash, Calendar, Target,
+  Send, Check, Eye,
+  ShoppingCart, Activity, DollarSign, Shield, Camera, Upload,
+} from 'lucide-react';
+import './Inventory.css';
+
+// ─── Types ─────────────────────────────────────────────────────────────────
+type InventoryTab = 'dashboard' | 'products' | 'categories' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
+type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'batch' | 'serials' | 'reorder' | 'history';
+type ReportType = 'balance' | 'movements' | 'valuation' | 'batch' | 'expiry' | 'reorder' | 'slow' | 'negative';
+
+const PRODUCT_TABS: { id: ProductTab; label: string; icon: React.ReactNode }[] = [
+  { id: 'general',   label: 'General',   icon: <Package className="h-3.5 w-3.5" /> },
+  { id: 'pricing',   label: 'Pricing',   icon: <Tag className="h-3.5 w-3.5" /> },
+  { id: 'inventory', label: 'Inventory', icon: <BarChart3 className="h-3.5 w-3.5" /> },
+  { id: 'variants',  label: 'Variants',  icon: <Layers className="h-3.5 w-3.5" /> },
+  { id: 'batch',     label: 'Batch/Lot', icon: <Archive className="h-3.5 w-3.5" /> },
+  { id: 'serials',   label: 'Serials',   icon: <Hash className="h-3.5 w-3.5" /> },
+  { id: 'reorder',   label: 'Reorder',   icon: <Target className="h-3.5 w-3.5" /> },
+  { id: 'history',   label: 'History',   icon: <Clock className="h-3.5 w-3.5" /> },
+];
+
+const INBOUND_TYPES = new Set(['OPENING_STOCK','PURCHASE_RECEIVE','CUSTOMER_RETURN','TRANSFER_IN','PRODUCTION_OUTPUT','ADJUSTMENT_GAIN']);
+
+const blankVariant = (productId: string, tenantId: string, branchId: string): ProductVariant => ({
+  id: `var-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+  productId, sku: '', barcode: '', stock: 0, reservedStock: 0,
+  reorderLevel: 5, status: 'Active', attributes: {},
+  tenant_id: tenantId, branch_id: branchId,
+  inheritBuyingPrice: true, inheritSellingPrice: true,
+});
+
+function fmtNum(n: number): string {
+  return n.toLocaleString('en-TZ', { maximumFractionDigits: 0 });
+}
+function fmtCcy(n: number): string {
+  return `Tsh ${n.toLocaleString('en-TZ', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+function fmtDate(ms: number): string {
+  return new Date(ms).toLocaleDateString('en-TZ', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function fmtDateTime(ms: number): string {
+  const d = new Date(ms);
+  const dateStr = d.toLocaleDateString('en-TZ', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = d.toLocaleTimeString('en-TZ', { hour: '2-digit', minute: '2-digit' });
+  return `${dateStr}, ${timeStr}`;
+}
+
+// ─── Main Component ─────────────────────────────────────────────────────────
+export const Inventory: React.FC = () => {
+  const { activeModule, activeTab } = useModule();
+  const { currentBranch, currentTenant, hasPermission, user } = useAuth();
+  const { queueOperation, isOnline, syncFromServer } = useSyncState();
+
+  // ── Top-level tab ──────────────────────────────────────────────────────────
+  const [invTab, setInvTab] = useState<InventoryTab>('dashboard');
+
+  // ── Map sidebar activeTab → internal invTab on every navigation ─────────
+  useEffect(() => {
+    switch (activeTab) {
+      case 'Products':
+        setInvTab('products');
+        break;
+      case 'Categories':
+        setInvTab('categories');
+        break;
+      case 'Stock Adjustment':
+      case 'Stock Adjustments':
+        setInvTab('adjustments');
+        break;
+      case 'Stock Transfer':
+      case 'Stock Transfers':
+        setInvTab('transfers');
+        break;
+      case 'Stock Alerts':
+      case 'Low Stock Alerts':
+        setInvTab('alerts');
+        break;
+      case 'Inventory':
+      case 'Beverage Inventory':
+        setInvTab('dashboard');
+        break;
+      // sub-items that Inventory handles but belong to the products tab
+      case 'Medicines':
+      case 'Stock Register':
+        setInvTab('products');
+        break;
+      default:
+        // Don't change tab if the activeTab is unrelated (e.g. user navigated away and back)
+        break;
+    }
+  }, [activeTab]);
+
+  // ── Barcode Printer States ────────────────────────────────────────────────
+  const [isBarcodePrinterOpen, setIsBarcodePrinterOpen] = useState(false);
+  const [bcProductId, setBcProductId] = useState('');
+  const [bcVariantId, setBcVariantId] = useState('');
+  const [bcQty, setBcQty] = useState(12);
+  const [bcLayout, setBcLayout] = useState<'single' | 'sheet'>('single');
+
+  // ── Bulk CSV Importer States ─────────────────────────────────────────────
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
+  const [csvData, setCsvData] = useState('');
+  const [csvLoading, setCsvLoading] = useState(false);
+  const [csvParsedRows, setCsvParsedRows] = useState<any[]>([]);
+  const [csvHasParsed, setCsvHasParsed] = useState(false);
+  const [csvDragActive, setCsvDragActive] = useState(false);
+  const csvFileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Categories & Brands Management States ──────────────────────────────────
+  const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [categorySearch, setCategorySearch] = useState('');
+  const [catOrBrandTab, setCatOrBrandTab] = useState<'categories' | 'brands'>('categories');
+  const [brandSearch, setBrandSearch] = useState('');
+
+  // ── Camera Barcode Scanner States ──────────────────────────────────────────
+  const [isCameraScannerOpen, setIsCameraScannerOpen] = useState(false);
+  const [scannerTargetField, setScannerTargetField] = useState<'product' | 'variant'>('product');
+  const [activeVariantIndexForScan, setActiveVariantIndexForScan] = useState<number | null>(null);
+  const [scannerError, setScannerError] = useState('');
+
+  // Start & Stop Html5Qrcode Barcode Scanner Effect
+  useEffect(() => {
+    let html5Qrcode: Html5Qrcode | null = null;
+    if (isCameraScannerOpen) {
+      const timer = setTimeout(() => {
+        const qrElem = document.getElementById('barcode-camera-reader');
+        if (qrElem) {
+          html5Qrcode = new Html5Qrcode('barcode-camera-reader');
+          html5Qrcode.start(
+            { facingMode: 'environment' },
+            {
+              fps: 15,
+              qrbox: { width: 260, height: 180 }
+            },
+            async (scannedText) => {
+              try {
+                const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.15);
+              } catch (e) {}
+
+              if (html5Qrcode && html5Qrcode.isScanning) {
+                try { await html5Qrcode.stop(); } catch (e) {}
+              }
+
+              const trimmed = scannedText.trim();
+              if (scannerTargetField === 'product') {
+                setPBarcode(trimmed);
+              }
+
+              setIsCameraScannerOpen(false);
+            },
+            () => {}
+          ).catch(err => {
+            console.warn('Camera scanner fallback:', err);
+            if (html5Qrcode) {
+              html5Qrcode.start(
+                { facingMode: 'user' },
+                { fps: 15, qrbox: { width: 260, height: 180 } },
+                async (scannedText) => {
+                  const trimmed = scannedText.trim();
+                  if (scannerTargetField === 'product') {
+                    setPBarcode(trimmed);
+                  }
+                  if (html5Qrcode && html5Qrcode.isScanning) {
+                    try { await html5Qrcode.stop(); } catch (e) {}
+                  }
+                  setIsCameraScannerOpen(false);
+                },
+                () => {}
+              ).catch(() => {
+                setScannerError('Camera access denied or device has no camera.');
+              });
+            }
+          });
+        }
+      }, 300);
+
+      return () => {
+        clearTimeout(timer);
+        if (html5Qrcode && html5Qrcode.isScanning) {
+          html5Qrcode.stop().catch(e => console.error(e));
+        }
+      };
+    }
+  }, [isCameraScannerOpen, scannerTargetField, activeVariantIndexForScan]);
+
+  // ── Permissions ────────────────────────────────────────────────────────────
+  const canEdit        = hasPermission('inventory.product.create');
+  const canAdjust      = hasPermission('inventory.stock.adjust');
+  const canTransfer    = hasPermission('inventory.stock.transfer');
+
+  // Load ALL products for this tenant — branch filtering happens in the UI.
+  // Removing the branch_id constraint here is critical: if Device B has a
+  // different currentBranch than the one used on Device A, products synced
+  // from the server won't appear even though they exist in IndexedDB.
+  const products = useLiveQuery(() =>
+    db.products
+      .where('tenant_id').equals(currentTenant?.id || '')
+      .and(p => p.module === activeModule && !p.deletedAt)
+      .toArray()
+  , [currentTenant?.id, activeModule]) || [];
+
+  const productVariants = useLiveQuery(() =>
+    db.productVariants.where('tenant_id').equals(currentTenant?.id || '')
+      .toArray()
+  , [currentTenant?.id]) || [];
+
+  const allBranches = useLiveQuery(() => db.branches.where('tenant_id').equals(currentTenant?.id || '').toArray(), [currentTenant?.id]) || [];
+
+  const securitySetting = useLiveQuery(() =>
+    db.appSettings.where('[tenantId+namespace]').equals([currentTenant.id, 'SECURITY']).first()
+  , [currentTenant.id]);
+
+  // Live query for brands
+  const allBrands = useLiveQuery(async () => {
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const brandMap = new Map<string, number>();
+    prods.forEach(p => {
+      if (p.brand) {
+        brandMap.set(p.brand, (brandMap.get(p.brand) || 0) + 1);
+      }
+    });
+    try {
+      const dbBrands = await db.brands.where('tenant_id').equals(currentTenant.id).toArray();
+      dbBrands.forEach(b => {
+        if (!brandMap.has(b.name)) brandMap.set(b.name, 0);
+      });
+    } catch {}
+    return Array.from(brandMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [currentTenant.id]) || [];
+
+  // Live query for categories
+  const allCategories = useLiveQuery(async () => {
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const catSet = new Map<string, number>();
+    prods.forEach(p => {
+      if (p.category) {
+        catSet.set(p.category, (catSet.get(p.category) || 0) + 1);
+      }
+    });
+    try {
+      const dbCats = await db.categories.where('tenant_id').equals(currentTenant.id).toArray();
+      dbCats.forEach(c => {
+        if (!catSet.has(c.name)) catSet.set(c.name, 0);
+      });
+    } catch {}
+    return Array.from(catSet.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [currentTenant.id]) || [];
+
+  // Live query for real suppliers from the Purchasing module
+  const allSuppliers = useLiveQuery(
+    () => db.suppliers.where('tenant_id').equals(currentTenant.id).filter(s => s.status === 'Active').toArray(),
+    [currentTenant.id]
+  ) || [];
+
+  const handleRenameCategory = async (oldName: string) => {
+    const newName = prompt(`Rename Category "${oldName}" to:`, oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    
+    const trimmed = newName.trim();
+    try {
+      const catRec = await db.categories.where('tenant_id').equals(currentTenant.id).filter(c => c.name === oldName).first();
+      if (catRec) {
+        await updateCategory(catRec.id, { name: trimmed });
+      }
+    } catch {}
+
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const categoryProds = prods.filter(p => p.category === oldName);
+    
+    await db.transaction('rw', db.products, async () => {
+      for (const p of categoryProds) {
+        p.category = trimmed;
+        p.syncStatus = 'PENDING';
+        await db.products.put(p);
+      }
+    });
+    alert(`Successfully renamed category "${oldName}" to "${trimmed}" for ${categoryProds.length} products.`);
+  };
+
+  const handleDeleteCategory = async (name: string) => {
+    if (!confirm(`Are you sure you want to delete the category "${name}"? Products under this category will be moved to "General".`)) return;
+    
+    try {
+      const catRec = await db.categories.where('tenant_id').equals(currentTenant.id).filter(c => c.name === name).first();
+      if (catRec) {
+        await deleteCategory(catRec.id);
+      }
+    } catch {}
+
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const categoryProds = prods.filter(p => p.category === name);
+    
+    await db.transaction('rw', db.products, async () => {
+      for (const p of categoryProds) {
+        p.category = 'General';
+        p.syncStatus = 'PENDING';
+        await db.products.put(p);
+      }
+    });
+    alert(`Category "${name}" deleted. ${categoryProds.length} products moved to "General".`);
+  };
+
+  const handleRenameBrand = async (oldName: string) => {
+    const newName = prompt(`Rename Brand "${oldName}" to:`, oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    
+    const trimmed = newName.trim();
+    try {
+      const brandRec = await db.brands.where('tenant_id').equals(currentTenant.id).filter(b => b.name === oldName).first();
+      if (brandRec) {
+        await updateBrand(brandRec.id, { name: trimmed });
+      }
+    } catch {}
+
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const brandProds = prods.filter(p => p.brand === oldName);
+    
+    await db.transaction('rw', db.products, async () => {
+      for (const p of brandProds) {
+        p.brand = trimmed;
+        p.syncStatus = 'PENDING';
+        await db.products.put(p);
+      }
+    });
+    alert(`Successfully renamed brand "${oldName}" to "${trimmed}" for ${brandProds.length} products.`);
+  };
+
+  const handleDeleteBrand = async (name: string) => {
+    if (!confirm(`Are you sure you want to delete the brand "${name}"? Products under this brand will have no brand assigned.`)) return;
+    
+    try {
+      const brandRec = await db.brands.where('tenant_id').equals(currentTenant.id).filter(b => b.name === name).first();
+      if (brandRec) {
+        await deleteBrand(brandRec.id);
+      }
+    } catch {}
+
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const brandProds = prods.filter(p => p.brand === name);
+    
+    await db.transaction('rw', db.products, async () => {
+      for (const p of brandProds) {
+        delete p.brand;
+        p.syncStatus = 'PENDING';
+        await db.products.put(p);
+      }
+    });
+    alert(`Brand "${name}" deleted from ${brandProds.length} products.`);
+  };
+
+  // Recipe sub-tab states
+  const [selectedRecipeProduct, setSelectedRecipeProduct] = useState('');
+  const [recipeName, setRecipeName] = useState('');
+  const [recipeYield, setRecipeYield] = useState(1);
+  const [recipeLines, setRecipeLines] = useState<Array<{ ingredientId: string; qty: number; unit: string }>>([
+    { ingredientId: '', qty: 1, unit: 'ml' }
+  ]);
+  const [isRecipeModalOpen, setIsRecipeModalOpen] = useState(false);
+
+  // Wastage sub-tab states
+  const [wastageProductId, setWastageProductId] = useState('');
+  const [wastageQty, setWastageQty] = useState(1);
+  const [wastageUnit, setWastageUnit] = useState('ml');
+  const [wastageReason, setWastageReason] = useState<'SPILL' | 'BAD POUR' | 'EXPIRED' | 'FREE TASTING' | 'DAMAGED' | 'STAFF DRINK' | 'OTHER'>('SPILL');
+  const [wastageNotes, setWastageNotes] = useState('');
+
+  // Live Queries for Recipes and Wastages
+  const liveRecipes = useLiveQuery(async () => {
+    if (!db.recipes) return [];
+    const recs = await db.recipes.where('tenant_id').equals(currentTenant.id).toArray();
+    const withDetails = [];
+    for (const r of recs) {
+      const prod = await db.products.get(r.product_id);
+      const items = await db.recipeItems.where('recipe_id').equals(r.id).toArray();
+      const itemsWithProd = [];
+      for (const item of items) {
+        const ingProd = await db.products.get(item.ingredient_product_id);
+        itemsWithProd.push({ ...item, ingredientName: ingProd?.name || 'Unknown Ingredient' });
+      }
+      withDetails.push({ ...r, productName: prod?.name || 'Unknown Product', items: itemsWithProd });
+    }
+    return withDetails;
+  }, [currentTenant.id]);
+
+  const liveWastages = useLiveQuery(async () => {
+    if (!db.wastageLogs) return [];
+    const logs = await db.wastageLogs.where('tenant_id').equals(currentTenant.id).toArray();
+    const sorted = logs.sort((a, b) => b.timestamp - a.timestamp);
+    const withDetails = [];
+    for (const l of sorted) {
+      const prod = await db.products.get(l.product_id);
+      const buyingPrice = prod?.buyingPrice || prod?.price || 0;
+      withDetails.push({ ...l, productName: prod?.name || 'Unknown Product', buyingPrice });
+    }
+    return withDetails;
+  }, [currentTenant.id]);
+
+  const handleSaveRecipe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedRecipeProduct) {
+      alert('Please select a product for the recipe.');
+      return;
+    }
+
+    const recipeId = `rec-${Date.now()}`;
+    await db.recipes.add({
+      id: recipeId,
+      tenant_id: currentTenant.id,
+      product_id: selectedRecipeProduct,
+      name: recipeName || 'Standard Recipe',
+      yield_quantity: recipeYield
+    });
+
+    for (const line of recipeLines) {
+      if (line.ingredientId) {
+        await db.recipeItems.add({
+          id: `ri-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          tenant_id: currentTenant.id,
+          recipe_id: recipeId,
+          ingredient_product_id: line.ingredientId,
+          quantity: line.qty,
+          unit: line.unit
+        });
+      }
+    }
+
+    // Set product's tracking mode to composite
+    await db.products.update(selectedRecipeProduct, {
+      inventory_tracking_mode: 'COMPOSITE_RECIPE'
+    } as any);
+
+    setIsRecipeModalOpen(false);
+    setSelectedRecipeProduct('');
+    setRecipeName('');
+    setRecipeLines([{ ingredientId: '', qty: 1, unit: 'ml' }]);
+    alert('Recipe saved successfully.');
+  };
+
+  const handleSaveWastage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!wastageProductId) {
+      alert('Please select a product.');
+      return;
+    }
+
+    await logWastage({
+      tenant_id: currentTenant.id,
+      product_id: wastageProductId,
+      quantity: wastageQty,
+      unit: wastageUnit,
+      reason: wastageReason,
+      employee_id: user?.name || 'System POS',
+      approved_by: 'Supervisor'
+    });
+
+    setWastageProductId('');
+    setWastageQty(1);
+    setWastageNotes('');
+    alert('Wastage logged and stock ledger updated.');
+  };
+
+  // ── Barcode & CSV Importer Helpers ──────────────────────────────────────────
+  const selectableItems = useMemo(() => {
+    const list: Array<{ id: string; name: string; sku: string; price: number; variantId?: string }> = [];
+    products.forEach(p => {
+      if (p.hasVariants) {
+        const vars = productVariants.filter(v => v.productId === p.id);
+        vars.forEach(v => {
+          const varLabel = Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ');
+          list.push({
+            id: p.id,
+            name: `${p.name} (${varLabel})`,
+            sku: v.sku || `SKU-VAR-${v.id.slice(-4).toUpperCase()}`,
+            price: v.sellingPrice || p.sellingPrice || p.price || 0,
+            variantId: v.id
+          });
+        });
+      } else {
+        list.push({
+          id: p.id,
+          name: p.name,
+          sku: p.sku || p.id.slice(-8).toUpperCase(),
+          price: p.sellingPrice || p.price || 0
+        });
+      }
+    });
+    return list;
+  }, [products, productVariants]);
+
+  const selectedBcItem = useMemo(() => {
+    return selectableItems.find(i => i.id === bcProductId && (bcVariantId ? i.variantId === bcVariantId : !i.variantId));
+  }, [selectableItems, bcProductId, bcVariantId]);
+
+  const handlePrintLabels = () => {
+    if (!selectedBcItem) return;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Please allow popups to print barcode labels.');
+      return;
+    }
+    
+    const labelHtml = `
+      <div style="border: 1.5px solid #000; padding: 10px; border-radius: 4px; width: 180px; text-align: center; font-family: 'Courier New', monospace; background: #fff; margin: 10px; display: inline-block; box-sizing: border-box;">
+        <div style="font-size: 8px; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 2px;">* DukaPos Retail *</div>
+        <div style="font-size: 11px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px;">${selectedBcItem.name}</div>
+        <div style="font-size: 12px; font-weight: bold; margin-bottom: 6px;">Tsh ${selectedBcItem.price.toLocaleString()}</div>
+        <div style="display: flex; justify-content: center; align-items: stretch; height: 35px; margin-bottom: 3px; gap: 1.5px; background: #fff; padding: 2px 0;">
+          ${(selectedBcItem.sku || '').split('').map((char) => {
+            const code = char.charCodeAt(0);
+            const w1 = (code & 1) ? '3px' : '1px';
+            const w2 = (code & 2) ? '2px' : '1px';
+            return `<div style="background:#000; width:${w1};"></div><div style="background:#fff; width:1px;"></div><div style="background:#000; width:${w2};"></div><div style="background:#fff; width:1px;"></div>`;
+          }).join('')}
+        </div>
+        <div style="font-size: 9px; letter-spacing: 0.2em; font-weight: bold; text-transform: uppercase;">* ${selectedBcItem.sku} *</div>
+      </div>
+    `;
+
+    let sheetContent = '';
+    const totalLabels = bcLayout === 'single' ? 1 : bcQty;
+    for (let i = 0; i < totalLabels; i++) {
+      sheetContent += labelHtml;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Print Barcode Labels - ${selectedBcItem.sku}</title>
+          <style>
+            body { margin: 0; padding: 20px; background: white; }
+            @media print {
+              body { padding: 0; }
+              .no-print { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="no-print" style="background:#f1f5f9; padding: 12px; border-bottom: 1px solid #cbd5e1; margin-bottom: 20px; font-family: sans-serif; display: flex; justify-content: space-between; align-items: center; border-radius:6px;">
+            <span style="font-size:12px; color:#334155;">Ready to print <strong>${totalLabels} label(s)</strong> for ${selectedBcItem.name}.</span>
+            <button onclick="window.print();" style="background:#4f46e5; color:white; border:none; padding:6px 12px; border-radius:4px; font-size:12px; font-weight:bold; cursor:pointer;">Print Now</button>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; justify-content: flex-start;">
+            ${sheetContent}
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  // ── CSV File Drag & Drop Handlers ──────────────────────────────────────────
+  const loadCsvFromFile = (file: File) => {
+    if (!file.name.endsWith('.csv') && file.type !== 'text/csv') {
+      alert('Please upload a valid .csv file.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      setCsvData(text || '');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleCsvFileDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setCsvDragActive(false);
+    const file = e.dataTransfer.files[0];
+    if (file) loadCsvFromFile(file);
+  };
+
+  const handleCsvFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) loadCsvFromFile(file);
+    e.target.value = ''; // reset so same file can be re-selected
+  };
+
+  const handleParseAndValidateCsv = () => {
+    if (!csvData.trim()) {
+      alert('Please paste or upload some CSV data first.');
+      return;
+    }
+    const lines = csvData.split('\n').map(r => r.trim()).filter(Boolean);
+    if (lines.length < 2) {
+      alert('CSV must contain a header row and at least one data row.');
+      return;
+    }
+
+    // Parse header and match aliases
+    const headerCols = lines[0].split(',').map(h => h.trim().toLowerCase());
+    
+    // Helper to find column index by aliases
+    const findColIdx = (aliases: string[]) => {
+      for (const alias of aliases) {
+        const idx = headerCols.indexOf(alias);
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    const nameIdx = findColIdx(['name', 'product name', 'product', 'title', 'item']);
+    const categoryIdx = findColIdx(['category', 'category name', 'type', 'group']);
+    const buyingPriceIdx = findColIdx(['buyingprice', 'buying price', 'cost', 'purchase price', 'cost price', 'buying_price']);
+    const sellingPriceIdx = findColIdx(['sellingprice', 'selling price', 'price', 'retail price', 'retail_price', 'price_value']);
+    const skuIdx = findColIdx(['sku', 'code', 'item code', 'item_code', 'sku_code']);
+    const barcodeIdx = findColIdx(['barcode', 'bar code', 'upc', 'ean', 'bar_code']);
+    const brandIdx = findColIdx(['brand', 'make', 'manufacturer', 'brand_name']);
+    const stockIdx = findColIdx(['stock', 'qty', 'quantity', 'opening stock', 'opening_stock', 'initial stock']);
+
+    if (nameIdx === -1) {
+      alert('CSV must contain a "Name" column (aliases: Product Name, Title, Item).');
+      return;
+    }
+    if (categoryIdx === -1) {
+      alert('CSV must contain a "Category" column (aliases: Type, Group).');
+      return;
+    }
+
+    const parsedRows: any[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const rowStr = lines[i];
+      const cols: string[] = [];
+      let inQuotes = false;
+      let current = '';
+      for (let c = 0; c < rowStr.length; c++) {
+        const char = rowStr[c];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          cols.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      cols.push(current.trim());
+
+      const rowErrors: string[] = [];
+      const rawName = cols[nameIdx] || '';
+      const rawCategory = cols[categoryIdx] || '';
+      const rawBuyingPrice = buyingPriceIdx !== -1 ? cols[buyingPriceIdx] : '';
+      const rawSellingPrice = sellingPriceIdx !== -1 ? cols[sellingPriceIdx] : '';
+      const rawStock = stockIdx !== -1 ? cols[stockIdx] : '';
+      const sku = skuIdx !== -1 ? cols[skuIdx] : '';
+      const barcode = barcodeIdx !== -1 ? cols[barcodeIdx] : '';
+      const brand = brandIdx !== -1 ? cols[brandIdx] : '';
+
+      if (!rawName.trim()) {
+        rowErrors.push('Name is required.');
+      }
+      if (!rawCategory.trim()) {
+        rowErrors.push('Category is required.');
+      }
+
+      let buyingPrice = 0;
+      if (rawBuyingPrice !== undefined && rawBuyingPrice !== '') {
+        buyingPrice = Number(rawBuyingPrice);
+        if (isNaN(buyingPrice) || buyingPrice < 0) {
+          rowErrors.push('Buying price must be a non-negative number.');
+        }
+      }
+
+      let sellingPrice = 0;
+      if (rawSellingPrice !== undefined && rawSellingPrice !== '') {
+        sellingPrice = Number(rawSellingPrice);
+        if (isNaN(sellingPrice) || sellingPrice < 0) {
+          rowErrors.push('Selling price must be a non-negative number.');
+        }
+      }
+
+      let stock = 0;
+      if (rawStock !== undefined && rawStock !== '') {
+        stock = Number(rawStock);
+        if (isNaN(stock) || stock < 0) {
+          rowErrors.push('Stock quantity must be a non-negative number.');
+        }
+      }
+
+      parsedRows.push({
+        lineNum: i + 1,
+        name: rawName,
+        category: rawCategory,
+        buyingPrice,
+        sellingPrice,
+        sku,
+        barcode,
+        brand,
+        stock,
+        isValid: rowErrors.length === 0,
+        errors: rowErrors
+      });
+    }
+
+    setCsvParsedRows(parsedRows);
+    setCsvHasParsed(true);
+  };
+
+  const handleCsvImport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const validRows = csvParsedRows.filter(r => r.isValid);
+    if (validRows.length === 0) {
+      alert('There are no valid rows to import.');
+      return;
+    }
+
+    setCsvLoading(true);
+    try {
+      let importCount = 0;
+      for (const row of validRows) {
+        const prodId = typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `prod-import-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+        const productObj: Product = {
+          id: prodId,
+          name: row.name,
+          category: row.category,
+          buyingPrice: row.buyingPrice,
+          sellingPrice: row.sellingPrice,
+          price: row.sellingPrice,
+          stock: 0,
+          tenant_id: currentTenant.id,
+          branch_id: currentBranch.id,
+          module: activeModule,
+          hasVariants: false,
+          brand: row.brand || undefined,
+          sku: row.sku || `SKU-${row.name.replace(/\s+/g, '').toUpperCase().slice(0, 4)}-${Math.floor(1000 + Math.random() * 9000)}`,
+          barcode: row.barcode || undefined,
+          syncStatus: 'PENDING'
+        };
+
+        const ctx = {
+          id: user?.id || 'usr-anon',
+          tenant_id: currentTenant.id,
+          branch_id: currentBranch.id,
+          role: user?.role || 'Business Owner',
+          name: user?.name || 'User'
+        };
+
+        await ProductService.createProduct(productObj, ctx, isOnline);
+
+        if (row.stock > 0) {
+          await recordStockMovement({
+            tenant_id: currentTenant.id,
+            branch_id: currentBranch.id,
+            warehouse_id: 'warehouse-main',
+            product_id: prodId,
+            movement_type: 'OPENING_STOCK',
+            reference_type: 'OPENING',
+            quantity_change: row.stock,
+            unit_cost: row.buyingPrice,
+            total_cost: row.buyingPrice * row.stock,
+            user_id: user?.name || 'System Importer',
+            notes: 'Imported initial stock via CSV'
+          });
+        }
+        importCount++;
+      }
+
+      alert(`Successfully imported ${importCount} products.`);
+      setIsCsvImportOpen(false);
+      setCsvData('');
+      setCsvParsedRows([]);
+      setCsvHasParsed(false);
+    } catch (err: any) {
+      alert('Error importing products: ' + err.message);
+    } finally {
+      setCsvLoading(false);
+    }
+  };
+
+  const allWarehouses = useLiveQuery(() => db.warehouses.where('tenant_id').equals(currentTenant?.id || '').toArray(), [currentTenant?.id]) || [];
+
+  // ── Alerts state ───────────────────────────────────────────────────────────
+  const [kpis, setKpis] = useState<InventoryKPIs | null>(null);
+  const [movements7d, setMovements7d] = useState<DailyMovement[]>([]);
+  const [reorderAlerts, setReorderAlerts] = useState<ReorderAlert[]>([]);
+
+  useEffect(() => {
+    const load = async () => {
+      const [k, m, r] = await Promise.all([
+        getDashboardKPIs(currentTenant.id, currentBranch.id),
+        get7DayMovements(currentTenant.id),
+        evaluateReorderRules(currentTenant.id, currentBranch.id),
+      ]);
+      setKpis(k);
+      setMovements7d(m);
+      setReorderAlerts(r);
+    };
+    load();
+  }, [currentTenant.id, currentBranch.id, products.length]);
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 1 — DASHBOARD
+  // ──────────────────────────────────────────────────────────────────────────
+  const renderDashboardTab = () => {
+    const total = kpis?.totalProducts ?? 0;
+    const outOfStock = kpis?.outOfStockCount ?? 0;
+    const lowStock = kpis?.lowStockCount ?? 0;
+    const inStock = Math.max(0, total - outOfStock - lowStock);
+
+    // Inventory Health Score (0–100)
+    const healthPenalty = (outOfStock * 3) + (lowStock * 1.5) + ((kpis?.expiredCount ?? 0) * 2) + ((kpis?.reorderAlertCount ?? 0) * 0.5);
+    const healthScore = total > 0 ? Math.max(0, Math.min(100, Math.round(100 - (healthPenalty / total) * 10))) : 100;
+    const healthColor = healthScore >= 80 ? '#10b981' : healthScore >= 60 ? '#f59e0b' : '#ef4444';
+    const healthLabel = healthScore >= 80 ? 'Excellent' : healthScore >= 60 ? 'Fair' : 'Critical';
+
+    const kpiCards = [
+      { label: 'Total Products',  value: fmtNum(total),                      icon: <Package />,     color: '#6366f1', sub: `${fmtNum(kpis?.totalVariants ?? 0)} variants` },
+      { label: 'Stock Value',     value: fmtCcy(kpis?.totalStockValue ?? 0), icon: <DollarSign />,  color: '#10b981', sub: 'Ledger WAC valuation' },
+      { label: 'Low Stock',       value: fmtNum(lowStock),                   icon: <AlertTriangle />,color: '#f59e0b', sub: 'Below reorder level' },
+      { label: 'Out of Stock',    value: fmtNum(outOfStock),                 icon: <AlertCircle />, color: '#ef4444', sub: 'Zero qty products' },
+      { label: 'Expiring (30d)',  value: fmtNum(kpis?.expiringThisMonth ?? 0),icon: <Calendar />,   color: '#f97316', sub: `${fmtNum(kpis?.expiredCount ?? 0)} already expired` },
+      { label: "Today's Moves",  value: fmtNum(kpis?.todayMovements ?? 0),  icon: <Activity />,    color: '#8b5cf6', sub: 'Ledger entries today' },
+      { label: 'Transfers',       value: fmtNum(kpis?.pendingTransfers ?? 0),icon: <ArrowLeftRight />,color: '#06b6d4',sub: 'Pending / In Transit' },
+      { label: 'Reorder Alerts',  value: fmtNum(kpis?.reorderAlertCount ?? 0),icon: <Zap />,        color: '#ec4899', sub: 'Need restocking' },
+    ];
+
+    const maxBar = Math.max(...movements7d.map(m => Math.max(m.inbound, m.outbound)), 1);
+
+    // Stock composition for bar
+    const compTotal = inStock + lowStock + outOfStock || 1;
+    const compInPct   = Math.round((inStock / compTotal) * 100);
+    const compLowPct  = Math.round((lowStock / compTotal) * 100);
+    const compOutPct  = 100 - compInPct - compLowPct;
+
+    return (
+      <div className="inventory-dashboard">
+        {/* Alert Banner */}
+        {(kpis?.expiringThisMonth ?? 0) + (kpis?.lowStockCount ?? 0) + (kpis?.reorderAlertCount ?? 0) > 0 && (
+          <div className="inv-alert-bar">
+            {(kpis?.expiredCount ?? 0) > 0 && (
+              <span className="inv-alert-chip expired"><AlertCircle size={13}/> {kpis!.expiredCount} items expired</span>
+            )}
+            {(kpis?.expiringThisMonth ?? 0) > 0 && (
+              <span className="inv-alert-chip warning"><Calendar size={13}/> {kpis!.expiringThisMonth} expiring in 30 days</span>
+            )}
+            {(kpis?.lowStockCount ?? 0) > 0 && (
+              <span className="inv-alert-chip info"><TrendingDown size={13}/> {kpis!.lowStockCount} below reorder level</span>
+            )}
+            {(kpis?.reorderAlertCount ?? 0) > 0 && (
+              <span className="inv-alert-chip purple"><Zap size={13}/> {kpis!.reorderAlertCount} reorder alerts</span>
+            )}
+          </div>
+        )}
+
+        {/* KPI Cards */}
+        <div className="inv-kpi-grid">
+          {kpiCards.map((c) => (
+            <div key={c.label} className="inv-kpi-card" style={{ '--accent': c.color } as React.CSSProperties}>
+              <div className="inv-kpi-icon" style={{ background: c.color + '22', color: c.color }}>
+                {React.cloneElement(c.icon as React.ReactElement<{ size?: number }>, { size: 20 })}
+              </div>
+              <div className="inv-kpi-body">
+                <div className="inv-kpi-value">{c.value}</div>
+                <div className="inv-kpi-label">{c.label}</div>
+                <div className="inv-kpi-sub">{c.sub}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Charts Row */}
+        <div className="inv-charts-row">
+          {/* 7-Day Bar Chart */}
+          <div className="inv-chart-card">
+            <div className="inv-chart-header">
+              <h3>Stock Movements — Last 7 Days</h3>
+              <div className="inv-chart-legend">
+                <span className="legend-dot" style={{background:'#10b981'}}/> Inbound
+                <span className="legend-dot" style={{background:'#ef4444'}}/> Outbound
+              </div>
+            </div>
+            <div className="inv-bar-chart">
+              {movements7d.map((d) => (
+                <div key={d.date} className="inv-bar-col">
+                  <div className="inv-bar-pair">
+                    <div className="inv-bar inbound"
+                      style={{ height: `${(d.inbound / maxBar) * 100}%` }}
+                      title={`Inbound: ${d.inbound}`}
+                    />
+                    <div className="inv-bar outbound"
+                      style={{ height: `${(d.outbound / maxBar) * 100}%` }}
+                      title={`Outbound: ${d.outbound}`}
+                    />
+                  </div>
+                  <div className="inv-bar-label">{d.date}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Inventory Health Score + Composition */}
+          <div className="inv-chart-card">
+            <div className="inv-chart-header"><h3>Inventory Health Score</h3></div>
+            {/* Score Gauge */}
+            <div style={{display:'flex', alignItems:'center', gap:'20px', padding:'8px 0 12px'}}>
+              <div style={{
+                width: '80px', height: '80px', borderRadius: '50%',
+                background: `conic-gradient(${healthColor} ${healthScore * 3.6}deg, #e2e8f0 0deg)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, position: 'relative',
+              }}>
+                <div style={{
+                  width: '60px', height: '60px', borderRadius: '50%',
+                  background: 'var(--bg-card, #fff)', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center', flexDirection: 'column',
+                }}>
+                  <span style={{fontSize:'1.1rem', fontWeight:800, color: healthColor, lineHeight:1}}>{healthScore}</span>
+                  <span style={{fontSize:'0.55rem', color:'#94a3b8', fontWeight:600}}>/ 100</span>
+                </div>
+              </div>
+              <div>
+                <div style={{fontSize:'1rem', fontWeight:700, color: healthColor}}>{healthLabel}</div>
+                <div style={{fontSize:'0.72rem', color:'#64748b', marginTop:'2px'}}>Inventory health rating based on stock level, expiry, and reorder compliance.</div>
+              </div>
+            </div>
+            {/* Stock Composition Bar */}
+            <div style={{marginBottom:'6px'}}>
+              <div style={{fontSize:'0.7rem', fontWeight:600, color:'#64748b', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.06em'}}>Stock Composition</div>
+              <div style={{display:'flex', height:'10px', borderRadius:'6px', overflow:'hidden', gap:'2px'}}>
+                <div style={{flex: compInPct, background:'#10b981', minWidth: compInPct > 0 ? '4px' : '0'}} title={`In Stock: ${inStock}`}/>
+                <div style={{flex: compLowPct, background:'#f59e0b', minWidth: compLowPct > 0 ? '4px' : '0'}} title={`Low: ${lowStock}`}/>
+                <div style={{flex: compOutPct, background:'#ef4444', minWidth: compOutPct > 0 ? '4px' : '0'}} title={`Out: ${outOfStock}`}/>
+              </div>
+              <div style={{display:'flex', gap:'12px', marginTop:'6px', fontSize:'0.7rem', color:'#64748b'}}>
+                <span><span style={{background:'#10b981', borderRadius:'2px', display:'inline-block', width:'8px', height:'8px', marginRight:'4px'}}/>{compInPct}% In Stock</span>
+                <span><span style={{background:'#f59e0b', borderRadius:'2px', display:'inline-block', width:'8px', height:'8px', marginRight:'4px'}}/>{compLowPct}% Low</span>
+                <span><span style={{background:'#ef4444', borderRadius:'2px', display:'inline-block', width:'8px', height:'8px', marginRight:'4px'}}/>{compOutPct}% Out</span>
+              </div>
+            </div>
+            <div className="inv-health-list" style={{marginTop:'8px'}}>
+              <div className="inv-health-row">
+                <TrendingUp size={16} color="#10b981"/>
+                <span>Fast Moving Items</span>
+                <strong style={{color:'#10b981'}}>{kpis?.fastMovingCount ?? 0}</strong>
+              </div>
+              <div className="inv-health-row">
+                <TrendingDown size={16} color="#f59e0b"/>
+                <span>Slow Moving Items</span>
+                <strong style={{color:'#f59e0b'}}>{kpis?.slowMovingCount ?? 0}</strong>
+              </div>
+              <div className="inv-health-row">
+                <ClipboardList size={16} color="#06b6d4"/>
+                <span>Pending Stock Counts</span>
+                <strong style={{color:'#06b6d4'}}>{kpis?.pendingCounts ?? 0}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Quick Actions Row */}
+        <div style={{display:'flex', gap:'10px', flexWrap:'wrap'}}>
+          {[
+            { label: 'New Adjustment', icon: <Sliders size={14}/>, color: '#6366f1', action: () => { const first = products[0]; if (first) openAdjustment(first); } },
+            { label: 'New Transfer',   icon: <ArrowLeftRight size={14}/>, color: '#06b6d4', action: () => setInvTab('transfers') },
+            { label: 'Stock Count',    icon: <ClipboardList size={14}/>, color: '#10b981', action: () => setInvTab('count') },
+            { label: 'View Reports',   icon: <BarChart3 size={14}/>, color: '#8b5cf6', action: () => setInvTab('reports') },
+            { label: 'Alerts',         icon: <AlertTriangle size={14}/>, color: '#f59e0b', action: () => setInvTab('alerts') },
+          ].map(qa => (
+            <button key={qa.label}
+              onClick={qa.action}
+              style={{
+                display:'flex', alignItems:'center', gap:'6px',
+                padding:'8px 14px', borderRadius:'8px', border:`1px solid ${qa.color}33`,
+                background: qa.color + '11', color: qa.color, fontWeight:600, fontSize:'0.8rem',
+                cursor:'pointer', transition:'all 0.15s',
+              }}
+            >
+              {qa.icon} {qa.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Reorder Alerts Table */}
+        {reorderAlerts.length > 0 && (
+          <div className="inv-table-card">
+            <div className="inv-table-header">
+              <h3><Zap size={15}/> Reorder Alerts</h3>
+              <button className="inv-view-all-btn" onClick={() => setInvTab('reports')}>View Full Report →</button>
+            </div>
+            <table className="inv-table">
+              <thead><tr><th>Product</th><th>Current Qty</th><th>Min Level</th><th>Deficit</th><th>To Reorder</th><th>Supplier</th><th>Lead Time</th></tr></thead>
+              <tbody>
+                {reorderAlerts.slice(0, 8).map(a => (
+                  <tr key={a.rule.id} className="inv-row-alert">
+                    <td style={{fontWeight:600}}>{a.productName}</td>
+                    <td><span style={{color:'#ef4444',fontWeight:700}}>{a.currentStock}</span></td>
+                    <td>{a.rule.min_quantity}</td>
+                    <td><span style={{color:'#f59e0b',fontWeight:600}}>-{a.deficit}</span></td>
+                    <td><span style={{color:'#10b981',fontWeight:600}}>{a.rule.reorder_quantity}</span></td>
+                    <td>{a.rule.preferred_supplier_name ?? '—'}</td>
+                    <td>{a.rule.lead_time_days}d</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Recent Ledger Activity */}
+        {recentAdjustments.length > 0 && (
+          <div className="inv-table-card">
+            <div className="inv-table-header">
+              <h3><Activity size={15}/> Recent Stock Movements</h3>
+              <button className="inv-view-all-btn" onClick={() => setInvTab('adjustments')}>View Full Ledger →</button>
+            </div>
+            <table className="inv-table">
+              <thead><tr><th>Date & Time</th><th>Product</th><th>Type</th><th>Change</th><th>After</th><th>By</th></tr></thead>
+              <tbody>
+                {recentAdjustments.slice(0, 6).map(e => {
+                  const prod = products.find(p => p.id === e.product_id);
+                  return (
+                    <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
+                      <td style={{whiteSpace:'nowrap',fontSize:'0.75rem'}}>{fmtDateTime(e.created_at)}</td>
+                      <td style={{fontWeight:600}}>{prod?.name ?? e.product_id.slice(-8)}</td>
+                      <td><span className={`inv-move-chip ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>{e.movement_type.replace(/_/g,' ')}</span></td>
+                      <td><strong style={{color: e.quantity_change > 0 ? '#10b981' : '#ef4444'}}>{e.quantity_change > 0 ? '+' : ''}{e.quantity_change}</strong></td>
+                      <td>{e.quantity_after}</td>
+                      <td style={{fontSize:'0.75rem', opacity:0.7}}>{e.user_id}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* AI Forecasting CTA */}
+        <div className="inv-ai-cta" onClick={() => window.dispatchEvent(new CustomEvent('dukapos:open-ai'))}>
+          <div className="inv-ai-cta-icon">✨</div>
+          <div className="inv-ai-cta-text">
+            <strong>AI Inventory Co-Pilot</strong>
+            <span>Ask the AI to forecast demand, detect slow movers, or recommend reorder quantities for this branch.</span>
+          </div>
+          <div className="inv-ai-cta-arrow">→</div>
+        </div>
+      </div>
+    );
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // DEDICATED TAB 1B — CATEGORIES
+  // ──────────────────────────────────────────────────────────────────────────
+  const renderCategoriesTab = () => {
+    const isCat = catOrBrandTab === 'categories';
+    const activeLabel = isCat ? (filterCategory || 'All Categories') : (filterBrand || 'All Brands');
+
+    return (
+      <div className="inv-categories-view">
+        <div className="inv-toolbar">
+          <h2 style={{margin:0}}>Categories &amp; Brands</h2>
+          {isCat ? (
+            <button className="inv-add-btn" onClick={async () => {
+              const name = prompt('Enter new category name:');
+              if (name && name.trim()) {
+                await createCategory({ name: name.trim(), tenant_id: currentTenant.id });
+                alert(`✅ Category "${name.trim()}" successfully created!`);
+              }
+            }}>
+              <Plus size={14}/> Add New Category
+            </button>
+          ) : (
+            <button className="inv-add-btn" onClick={async () => {
+              const name = prompt('Enter new brand name:');
+              if (name && name.trim()) {
+                await createBrand({ name: name.trim(), tenant_id: currentTenant.id });
+                alert(`✅ Brand "${name.trim()}" successfully created!`);
+              }
+            }}>
+              <Plus size={14}/> Add New Brand
+            </button>
+          )}
+        </div>
+        
+        <div style={{marginTop: '16px', display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px'}}>
+          {/* Sub-tab selection pane */}
+          <div className="inv-table-card" style={{padding: '16px'}}>
+            {/* Sub-navigator capsule buttons */}
+            <div className="inv-filter-btns" style={{marginBottom: '14px', width: '100%'}}>
+              <button
+                style={{flex: 1, textAlign: 'center', fontSize: '0.8rem'}}
+                className={`inv-filter-btn ${isCat ? 'active' : ''}`}
+                onClick={() => setCatOrBrandTab('categories')}
+              >
+                📁 Categories ({allCategories.length})
+              </button>
+              <button
+                style={{flex: 1, textAlign: 'center', fontSize: '0.8rem'}}
+                className={`inv-filter-btn ${!isCat ? 'active' : ''}`}
+                onClick={() => setCatOrBrandTab('brands')}
+              >
+                🏷️ Brands ({allBrands.length})
+              </button>
+            </div>
+
+            {isCat ? (
+              <>
+                <h3 style={{margin: '0 0 10px 0', fontSize: '0.85rem'}}>Categories List</h3>
+                <div className="inv-search-wrap" style={{minWidth: 'unset', marginBottom: '12px'}}>
+                  <Search size={14} className="inv-search-icon"/>
+                  <input className="inv-search" placeholder="Search categories…" value={categorySearch} onChange={e => setCategorySearch(e.target.value)}/>
+                </div>
+                
+                <div className="cat-list" style={{maxHeight: '450px'}}>
+                  <div
+                    className={`cat-list-row ${!filterCategory ? 'active' : ''}`}
+                    onClick={() => setFilterCategory('')}
+                    style={{cursor: 'pointer', border: !filterCategory ? '1px solid #4f46e5' : undefined}}
+                  >
+                    <div className="cat-list-dot" style={{background: '#cbd5e1'}}/>
+                    <div className="cat-list-info">
+                      <span className="cat-list-name">All Categories</span>
+                      <span className="cat-list-count">{products.length} products total</span>
+                    </div>
+                  </div>
+
+                  {allCategories
+                    .filter(c => c.name.toLowerCase().includes(categorySearch.toLowerCase()))
+                    .map(c => {
+                      const isActive = filterCategory === c.name;
+                      return (
+                        <div key={c.name} 
+                          className={`cat-list-row ${isActive ? 'active' : ''}`}
+                          onClick={() => setFilterCategory(c.name)}
+                          style={{cursor: 'pointer', border: isActive ? '1px solid #4f46e5' : undefined}}
+                        >
+                          <div className="cat-list-dot" style={{background: `hsl(${(c.name.charCodeAt(0) * 37) % 360}, 60%, 55%)`}}/>
+                          <div className="cat-list-info">
+                            <span className="cat-list-name">{c.name}</span>
+                            <span className="cat-list-count">{c.count} product{c.count !== 1 ? 's' : ''}</span>
+                          </div>
+                          <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
+                            <button
+                              title="Rename Category"
+                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
+                              onClick={() => handleRenameCategory(c.name)}
+                            >
+                              <Edit size={12} />
+                            </button>
+                            <button
+                              title="Delete Category"
+                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
+                              onClick={() => handleDeleteCategory(c.name)}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                            <button
+                              className="inv-add-btn outline"
+                              style={{padding:'4px 8px',fontSize:'0.7rem', marginLeft: '4px'}}
+                              onClick={() => {
+                                openEditor(null, { category: c.name });
+                              }}
+                            >
+                              + Add
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {allCategories.length === 0 && (
+                    <div style={{textAlign:'center',padding:'24px',opacity:0.5}}>
+                      <Tag size={28} style={{marginBottom:'8px', display:'block', margin:'0 auto'}}/>
+                      <p>No categories found.</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 style={{margin: '0 0 10px 0', fontSize: '0.85rem'}}>Brands List</h3>
+                <div className="inv-search-wrap" style={{minWidth: 'unset', marginBottom: '12px'}}>
+                  <Search size={14} className="inv-search-icon"/>
+                  <input className="inv-search" placeholder="Search brands…" value={brandSearch} onChange={e => setBrandSearch(e.target.value)}/>
+                </div>
+                
+                <div className="cat-list" style={{maxHeight: '450px'}}>
+                  <div
+                    className={`cat-list-row ${!filterBrand ? 'active' : ''}`}
+                    onClick={() => setFilterBrand('')}
+                    style={{cursor: 'pointer', border: !filterBrand ? '1px solid #4f46e5' : undefined}}
+                  >
+                    <div className="cat-list-dot" style={{background: '#cbd5e1'}}/>
+                    <div className="cat-list-info">
+                      <span className="cat-list-name">All Brands</span>
+                      <span className="cat-list-count">{products.length} products total</span>
+                    </div>
+                  </div>
+
+                  {allBrands
+                    .filter(b => b.name.toLowerCase().includes(brandSearch.toLowerCase()))
+                    .map(b => {
+                      const isActive = filterBrand === b.name;
+                      return (
+                        <div key={b.name} 
+                          className={`cat-list-row ${isActive ? 'active' : ''}`}
+                          onClick={() => setFilterBrand(b.name)}
+                          style={{cursor: 'pointer', border: isActive ? '1px solid #4f46e5' : undefined}}
+                        >
+                          <div className="cat-list-dot" style={{background: `hsl(${(b.name.charCodeAt(0) * 83) % 360}, 55%, 50%)`}}/>
+                          <div className="cat-list-info">
+                            <span className="cat-list-name">{b.name}</span>
+                            <span className="cat-list-count">{b.count} product{b.count !== 1 ? 's' : ''}</span>
+                          </div>
+                          <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
+                            <button
+                              title="Rename Brand"
+                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
+                              onClick={() => handleRenameBrand(b.name)}
+                            >
+                              <Edit size={12} />
+                            </button>
+                            <button
+                              title="Delete Brand"
+                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
+                              onClick={() => handleDeleteBrand(b.name)}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                            <button
+                              className="inv-add-btn outline"
+                              style={{padding:'4px 8px',fontSize:'0.7rem', marginLeft: '4px'}}
+                              onClick={() => {
+                                openEditor(null, { brand: b.name });
+                              }}
+                            >
+                              + Add
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {allBrands.length === 0 && (
+                    <div style={{textAlign:'center',padding:'24px',opacity:0.5}}>
+                      <Tag size={28} style={{marginBottom:'8px', display:'block', margin:'0 auto'}}/>
+                      <p>No brands found.</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Products Pane */}
+          <div className="inv-table-card">
+            <div className="inv-table-header">
+              <h3>Products under: &quot;{activeLabel}&quot;</h3>
+            </div>
+            <div style={{padding: '12px', overflowX: 'auto'}}>
+              <table className="inv-table">
+                <thead>
+                  <tr>
+                    <th>Product Name</th>
+                    <th>Category</th>
+                    <th>Brand</th>
+                    <th>SKU</th>
+                    <th style={{textAlign: 'right'}}>Stock</th>
+                    <th style={{textAlign: 'right'}}>Selling Price</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {products
+                    .filter(p => {
+                      if (isCat) {
+                        return !filterCategory || p.category === filterCategory;
+                      } else {
+                        return !filterBrand || p.brand === filterBrand;
+                      }
+                    })
+                    .map(p => (
+                      <tr key={p.id}>
+                        <td style={{fontWeight: 600}}>{p.name}</td>
+                        <td><span className="inv-badge">{p.category}</span></td>
+                        <td>{p.brand || <span style={{opacity:0.4}}>—</span>}</td>
+                        <td><code>{p.sku || '—'}</code></td>
+                        <td style={{textAlign: 'right', fontWeight: 'bold', color: p.stock < 10 ? '#ef4444' : undefined}}>
+                          {p.stock}
+                        </td>
+                        <td style={{textAlign: 'right'}}>{fmtCcy(p.sellingPrice || p.price)}</td>
+                        <td>
+                          <button className="inv-view-all-btn" onClick={() => openEditor(p)}>Edit</button>
+                        </td>
+                      </tr>
+                    ))}
+                  {products.filter(p => {
+                    if (isCat) {
+                      return !filterCategory || p.category === filterCategory;
+                    } else {
+                      return !filterBrand || p.brand === filterBrand;
+                    }
+                  }).length === 0 && (
+                    <tr>
+                      <td colSpan={7} style={{textAlign: 'center', padding: '32px', opacity: 0.5}}>
+                        No products found under this {isCat ? 'category' : 'brand'}.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // DEDICATED TAB 1C — ALERTS
+  // ──────────────────────────────────────────────────────────────────────────
+  const renderAlertsTab = () => {
+    // Simple products low stock + variant low stock
+    const simpleLowStock = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      sku: p.sku || '—',
+      brand: p.brand || '—',
+      stock: p.stock,
+      buyingPrice: p.buyingPrice,
+      sellingPrice: p.sellingPrice || p.price,
+      isVariant: false,
+      productRef: p
+    }));
+
+    const variantLowStock = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).map(v => {
+      const parent = products.find(p => p.id === v.productId);
+      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
+      return {
+        id: v.id,
+        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
+        category: parent?.category || 'General',
+        sku: v.sku || '—',
+        brand: parent?.brand || '—',
+        stock: v.stock,
+        buyingPrice: v.buyingPrice ?? parent?.buyingPrice ?? 0,
+        sellingPrice: v.sellingPrice ?? parent?.sellingPrice ?? parent?.price ?? 0,
+        isVariant: true,
+        productRef: parent
+      };
+    });
+
+    const lowStockAlerts = [...simpleLowStock, ...variantLowStock];
+
+    // Simple products out of stock + variant out of stock
+    const simpleOutOfStock = products.filter(p => !p.hasVariants && p.stock <= 0).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      sku: p.sku || '—',
+      brand: p.brand || '—',
+      stock: p.stock,
+      buyingPrice: p.buyingPrice,
+      sellingPrice: p.sellingPrice || p.price,
+      isVariant: false,
+      productRef: p
+    }));
+
+    const variantOutOfStock = productVariants.filter(v => v.stock <= 0).map(v => {
+      const parent = products.find(p => p.id === v.productId);
+      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
+      return {
+        id: v.id,
+        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
+        category: parent?.category || 'General',
+        sku: v.sku || '—',
+        brand: parent?.brand || '—',
+        stock: v.stock,
+        buyingPrice: v.buyingPrice ?? parent?.buyingPrice ?? 0,
+        sellingPrice: v.sellingPrice ?? parent?.sellingPrice ?? parent?.price ?? 0,
+        isVariant: true,
+        productRef: parent
+      };
+    });
+
+    const outOfStockAlerts = [...simpleOutOfStock, ...variantOutOfStock];
+
+    return (
+      <div className="inv-alerts-view">
+        <div className="inv-toolbar">
+          <h2 style={{margin:0}}>Stock Alerts &amp; Critical Levels</h2>
+        </div>
+
+        <div className="inv-kpi-grid" style={{marginTop: '16px'}}>
+          <div className="inv-kpi-card" style={{ '--accent': '#ef4444' } as React.CSSProperties}>
+            <div className="inv-kpi-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}><AlertCircle size={20}/></div>
+            <div className="inv-kpi-body">
+              <div className="inv-kpi-value">{outOfStockAlerts.length}</div>
+              <div className="inv-kpi-label">Out of Stock</div>
+              <div className="inv-kpi-sub">Critical attention needed</div>
+            </div>
+          </div>
+          <div className="inv-kpi-card" style={{ '--accent': '#f59e0b' } as React.CSSProperties}>
+            <div className="inv-kpi-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}><AlertTriangle size={20}/></div>
+            <div className="inv-kpi-body">
+              <div className="inv-kpi-value">{lowStockAlerts.length}</div>
+              <div className="inv-kpi-label">Low Stock Items</div>
+              <div className="inv-kpi-sub">Below safety thresholds</div>
+            </div>
+          </div>
+          <div className="inv-kpi-card" style={{ '--accent': '#6366f1' } as React.CSSProperties}>
+            <div className="inv-kpi-icon" style={{ background: 'rgba(99, 102, 241, 0.1)', color: '#6366f1' }}><Zap size={20}/></div>
+            <div className="inv-kpi-body">
+              <div className="inv-kpi-value">{reorderAlerts.length}</div>
+              <div className="inv-kpi-label">Reorder Alerts</div>
+              <div className="inv-kpi-sub">Rules triggered</div>
+            </div>
+          </div>
+          <div className="inv-kpi-card" style={{ '--accent': '#10b981' } as React.CSSProperties}>
+            <div className="inv-kpi-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}><DollarSign size={20}/></div>
+            <div className="inv-kpi-body">
+              <div className="inv-kpi-value">{fmtCcy(reorderAlerts.reduce((s,a) => s + (a.deficit * (products.find(p => p.id === a.rule.product_id)?.buyingPrice ?? 0)), 0))}</div>
+              <div className="inv-kpi-label">Est. Restock Cost</div>
+              <div className="inv-kpi-sub">Deficit × buying price</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Reorder Alerts Table */}
+        {reorderAlerts.length > 0 && (
+          <div className="inv-table-card" style={{marginTop: '20px'}}>
+            <div className="inv-table-header" style={{background: 'rgba(99,102,241,0.05)'}}>
+              <h3 style={{color:'#6366f1'}}><Zap size={15}/> Reorder Rule Alerts ({reorderAlerts.length})</h3>
+              <span style={{fontSize:'0.75rem',color:'#64748b'}}>Products that have triggered automatic reorder rules</span>
+            </div>
+            <div style={{overflowX:'auto'}}>
+              <table className="inv-table">
+                <thead>
+                  <tr>
+                    <th>Product</th><th>Current Stock</th><th>Min Level</th><th>Deficit</th><th>Reorder Qty</th><th>Supplier</th><th>Lead Time</th><th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reorderAlerts.map(a => (
+                    <tr key={a.rule.id} className="inv-row-alert">
+                      <td style={{fontWeight:600}}>{a.productName}</td>
+                      <td><span style={{color:'#ef4444',fontWeight:700}}>{a.currentStock}</span></td>
+                      <td>{a.rule.min_quantity}</td>
+                      <td><span style={{color:'#f59e0b',fontWeight:600}}>-{a.deficit}</span></td>
+                      <td><span style={{color:'#10b981',fontWeight:600}}>{a.rule.reorder_quantity}</span></td>
+                      <td>{a.rule.preferred_supplier_name ?? '—'}</td>
+                      <td>{a.rule.lead_time_days}d</td>
+                      <td>
+                        <button className="inv-view-all-btn" onClick={() => {
+                          const prod = products.find(p => p.id === a.rule.product_id);
+                          if (prod) openAdjustment(prod);
+                        }}>Quick Adjust</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Out of Stock Table */}
+        <div className="inv-table-card" style={{marginTop: '20px'}}>
+          <div className="inv-table-header" style={{background: 'rgba(239, 68, 68, 0.05)'}}>
+            <h3 style={{color: '#ef4444'}}><AlertCircle size={15}/> Out of Stock Items ({outOfStockAlerts.length})</h3>
+          </div>
+          <div style={{overflowX: 'auto'}}>
+            <table className="inv-table">
+              <thead>
+                <tr>
+                  <th>Product Name / Variant</th>
+                  <th>Category</th>
+                  <th>SKU</th>
+                  <th>Brand</th>
+                  <th style={{textAlign: 'right'}}>Buying Price</th>
+                  <th style={{textAlign: 'right'}}>Selling Price</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outOfStockAlerts.map(item => (
+                  <tr key={item.id} className="inv-row-danger">
+                    <td style={{fontWeight: 600}}>
+                      {item.name}
+                      {item.isVariant && <span style={{fontSize:'10px', background:'rgba(239,68,68,0.15)', color:'#ef4444', padding:'2px 6px', borderRadius:'4px', marginLeft:'6px'}}>Variant</span>}
+                    </td>
+                    <td>{item.category}</td>
+                    <td><code>{item.sku}</code></td>
+                    <td>{item.brand}</td>
+                    <td style={{textAlign: 'right'}}>{fmtCcy(item.buyingPrice)}</td>
+                    <td style={{textAlign: 'right'}}>{fmtCcy(item.sellingPrice)}</td>
+                    <td>
+                      <div style={{display:'flex',gap:'4px'}}>
+                        {item.productRef && <button className="inv-view-all-btn" onClick={() => openAdjustment(item.productRef!)}>Adjust Stock</button>}
+                        {item.productRef && <button className="inv-view-all-btn" onClick={() => openEditor(item.productRef!)} style={{background:'transparent'}}>Edit</button>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {outOfStockAlerts.length === 0 && (
+                  <tr>
+                    <td colSpan={7} style={{textAlign: 'center', padding: '24px', opacity: 0.5, color: '#10b981', fontWeight: 600}}>
+                      🎉 Outstanding! No items are out of stock.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Low Stock Table */}
+        <div className="inv-table-card" style={{marginTop: '20px'}}>
+          <div className="inv-table-header" style={{background: 'rgba(245, 158, 11, 0.05)'}}>
+            <h3 style={{color: '#b45309'}}><AlertTriangle size={15}/> Low Stock Items ({lowStockAlerts.length})</h3>
+          </div>
+          <div style={{overflowX: 'auto'}}>
+            <table className="inv-table">
+              <thead>
+                <tr>
+                  <th>Product Name / Variant</th>
+                  <th>Category</th>
+                  <th>SKU</th>
+                  <th style={{textAlign: 'right'}}>Current Stock</th>
+                  <th style={{textAlign: 'right'}}>Buying Price</th>
+                  <th style={{textAlign: 'right'}}>Selling Price</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lowStockAlerts.map(item => (
+                  <tr key={item.id} className="inv-row-warning">
+                    <td style={{fontWeight: 600}}>
+                      {item.name}
+                      {item.isVariant && <span style={{fontSize:'10px', background:'rgba(245,158,11,0.15)', color:'#b45309', padding:'2px 6px', borderRadius:'4px', marginLeft:'6px'}}>Variant</span>}
+                    </td>
+                    <td>{item.category}</td>
+                    <td><code>{item.sku}</code></td>
+                    <td style={{textAlign: 'right', fontWeight: 'bold', color: '#b45309'}}>{item.stock}</td>
+                    <td style={{textAlign: 'right'}}>{fmtCcy(item.buyingPrice)}</td>
+                    <td style={{textAlign: 'right'}}>{fmtCcy(item.sellingPrice)}</td>
+                    <td>
+                      {item.productRef && <button className="inv-view-all-btn" onClick={() => openEditor(item.productRef!)}>Edit / Restock</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              {lowStockAlerts.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{textAlign: 'center', padding: '24px', opacity: 0.5, color: '#10b981', fontWeight: 600}}>
+                    🎉 Fantastic! No items are below low-stock limits.
+                  </td>
+                </tr>
+              )}
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 2 — PRODUCTS (Full editor preserved + enhanced with Batch/Serial/Reorder tabs)
+  // ──────────────────────────────────────────────────────────────────────────
+  const [pId, setPId] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'simple' | 'variant'>('all');
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [editorTab, setEditorTab] = useState<ProductTab>('general');
+
+  // Editor Form fields
+  const [pName, setPName] = useState('');
+  const [productCreatedAtDate, setProductCreatedAtDate] = useState('');
+
+  // --- Supervisor PIN Approval ---
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [pinReason, setPinReason] = useState('');
+  const [enteredPin, setEnteredPin] = useState('');
+  const [pinSuccessCallback, setPinSuccessCallback] = useState<(() => void) | null>(null);
+
+  const requestPinApproval = (reason: string, callback: () => void) => {
+    setPinReason(reason);
+    setEnteredPin('');
+    setPinSuccessCallback(() => callback);
+    setIsPinModalOpen(true);
+  };
+
+  const handleVerifyPin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (enteredPin === '1234' || enteredPin === 'admin123') {
+      setIsPinModalOpen(false);
+      if (pinSuccessCallback) pinSuccessCallback();
+    } else {
+      alert('Invalid supervisor PIN. Access denied.');
+    }
+  };
+  const [pCategory, setPCategory] = useState('');
+  const [pBrand, setPBrand] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+  const [filterBrand, setFilterBrand] = useState('');
+  const [pDescription, setPDescription] = useState('');
+  const [pSupplier, setPSupplier] = useState('');   // supplier display name (free-text fallback)
+  const [pSupplierId, setPSupplierId] = useState(''); // linked supplier ID from db.suppliers
+  const [pTaxRate, setPTaxRate] = useState(0);
+  const [pHasVariants, setPHasVariants] = useState(false);
+  const [pImageUrl, setPImageUrl] = useState('');
+  const [pImagePreview, setPImagePreview] = useState('');
+  const [pExpiry, setPExpiry] = useState('');
+  const [pModule, setPModule] = useState(activeModule);
+  const [pBuyingPrice, setPBuyingPrice] = useState(0);
+  const [pSellingPrice, setPSellingPrice] = useState(0);
+  const [pStock, setPStock] = useState(0);
+  const [pReorderLevel, setPReorderLevel] = useState(5);
+  const [pSku, setPSku] = useState('');
+  const [pBarcode, setPBarcode] = useState('');
+
+  // Product photo camera state
+  const [isPhotoCameraOpen, setIsPhotoCameraOpen] = useState(false);
+  const [photoCameraStream, setPhotoCameraStream] = useState<MediaStream | null>(null);
+  const photoVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const startImageCamera = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      setPhotoCameraStream(stream);
+      setIsPhotoCameraOpen(true);
+    } catch (err) {
+      console.warn('Camera stream error, launching camera file input fallback:', err);
+      (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
+    }
+  };
+
+  const stopPhotoCamera = useCallback(() => {
+    if (photoCameraStream) {
+      photoCameraStream.getTracks().forEach(track => track.stop());
+      setPhotoCameraStream(null);
+    }
+    setIsPhotoCameraOpen(false);
+  }, [photoCameraStream]);
+
+  const capturePhoto = () => {
+    if (photoVideoRef.current) {
+      const video = photoVideoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPImageUrl(dataUrl);
+        setPImagePreview(dataUrl);
+        stopPhotoCamera();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isPhotoCameraOpen && photoCameraStream && photoVideoRef.current) {
+      photoVideoRef.current.srcObject = photoCameraStream;
+    }
+  }, [isPhotoCameraOpen, photoCameraStream]);
+
+  // Variants state
+  const [localVariants, setLocalVariants] = useState<ProductVariant[]>([]);
+  const [originalVariants, setOriginalVariants] = useState<ProductVariant[]>([]);
+  const [selectedVariantIds, setSelectedVariantIds] = useState<Set<string>>(new Set());
+  const [customAttributes, setCustomAttributes] = useState<Record<string, string[]>>({});
+  const [newAttrName, setNewAttrName] = useState('');
+  const [newAttrValues, setNewAttrValues] = useState('');
+  const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
+
+  // Batch/Lot form
+  const [batchNum, setBatchNum] = useState('');
+  const [batchQty, setBatchQty] = useState(0);
+  const [batchCost, setBatchCost] = useState(0);
+  const [batchExpiry, setBatchExpiry] = useState('');
+  const [batchSupplier, setBatchSupplier] = useState('');   // supplier display name
+  const [batchSupplierId, setBatchSupplierId] = useState(''); // linked supplier ID
+  const [batchSaving, setBatchSaving] = useState(false);
+
+  // Serial form
+  const [serialInput, setSerialInput] = useState('');
+
+  // Reorder rule form
+  const [rrMinQty, setRrMinQty] = useState(10);
+  const [rrMaxQty, setRrMaxQty] = useState(200);
+  const [rrReorderQty, setRrReorderQty] = useState(50);
+  const [rrLeadTime, setRrLeadTime] = useState(7);
+  const [rrSupplier, setRrSupplier] = useState('');
+  const [rrSaving, setRrSaving] = useState(false);
+
+  // Product batches and serials for the selected product
+  const productBatches = useLiveQuery(async () => {
+    if (!pId) return [];
+    return db.batchLots.where('product_id').equals(pId).toArray();
+  }, [pId]) || [];
+
+  const productSerials = useLiveQuery(async () => {
+    if (!pId) return [];
+    return db.serialNumbers.where('product_id').equals(pId).toArray();
+  }, [pId]) || [];
+
+  const productHistory = useLiveQuery(async () => {
+    if (!pId) return [];
+    const entries = await db.stockLedger.where('product_id').equals(pId).toArray();
+    return entries.sort((a, b) => b.created_at - a.created_at);
+  }, [pId]) || [];
+
+  const productReorderRule = useLiveQuery(async () => {
+    if (!pId) return null;
+    return db.reorderRules.where('product_id').equals(pId).and(r => !r.variant_id).first();
+  }, [pId]);
+
+  useEffect(() => {
+    if (productReorderRule) {
+      setRrMinQty(productReorderRule.min_quantity);
+      setRrMaxQty(productReorderRule.max_quantity);
+      setRrReorderQty(productReorderRule.reorder_quantity);
+      setRrLeadTime(productReorderRule.lead_time_days);
+      setRrSupplier(productReorderRule.preferred_supplier_name ?? '');
+    }
+  }, [productReorderRule?.id]);
+
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      const q = searchQuery.toLowerCase();
+      const matchSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q);
+      const matchType = filterType === 'all' || (filterType === 'simple' && !p.hasVariants) || (filterType === 'variant' && p.hasVariants);
+      return matchSearch && matchType;
+    });
+  }, [products, searchQuery, filterType]);
+
+  const stats = useMemo(() => {
+    const total = products.length;
+    const variantProducts = products.filter(p => p.hasVariants).length;
+    
+    // Low stock: simple products with stock < 10 + variants with stock < (reorderLevel || 5)
+    const simpleLow = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).length;
+    const variantLow = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).length;
+    const lowStock = simpleLow + variantLow;
+
+    // Out of stock: simple products with stock <= 0 + variants with stock <= 0
+    const simpleOut = products.filter(p => !p.hasVariants && p.stock <= 0).length;
+    const variantOut = productVariants.filter(v => v.stock <= 0).length;
+    const outOfStock = simpleOut + variantOut;
+
+    return { total, variantProducts, lowStock, outOfStock };
+  }, [products, productVariants]);
+
+  const openEditor = useCallback(async (product: Product | null, initialValues?: Partial<Product>) => {
+    setSelectedProduct(product);
+    setEditorTab('general');
+    setEditingVariantIdx(null);
+    setCustomAttributes({});
+    setNewAttrName(''); setNewAttrValues('');
+    setBatchNum(''); setBatchQty(0); setBatchCost(0); setBatchExpiry('');
+    setBatchSupplier(''); setBatchSupplierId('');
+    setSerialInput('');
+    setProductCreatedAtDate('');
+
+    if (product) {
+      setPId(product.id);
+      setPName(product.name);
+      setPCategory(product.category);
+      setPBrand(product.brand || '');
+      setPDescription(product.description || '');
+      setPSupplier(product.supplier || '');
+      setPSupplierId((product as any).supplier_id || '');
+      setPBuyingPrice(product.buyingPrice || 0);
+      setPSellingPrice(product.sellingPrice || product.price || 0);
+      setPStock(product.stock || 0);
+      setPHasVariants(product.hasVariants || false);
+      setPExpiry(product.expiryDate || '');
+      setPTaxRate((product as any).taxRate !== undefined ? (product as any).taxRate : 0);
+      setPReorderLevel(5);
+      setPSku(product.sku || '');
+      setPBarcode(product.barcode || '');
+      setPImageUrl((product as any).image_url || '');
+      setPImagePreview((product as any).image_url || '');
+
+      if (product.hasVariants) {
+        const vars = await db.productVariants.where('productId').equals(product.id).toArray();
+        setOriginalVariants(vars);
+        setLocalVariants(vars.map(v => ({
+          ...v,
+          // Use the saved flag directly if present; only fall back to
+          // undefined-price heuristic for records created before the flag existed
+          inheritBuyingPrice:  v.inheritBuyingPrice  !== undefined ? v.inheritBuyingPrice  : v.buyingPrice  === undefined,
+          inheritSellingPrice: v.inheritSellingPrice !== undefined ? v.inheritSellingPrice : v.sellingPrice === undefined,
+        })));
+        const attrs: Record<string, Set<string>> = {};
+        vars.forEach(v => Object.entries(v.attributes).forEach(([key, val]) => {
+          if (!attrs[key]) attrs[key] = new Set();
+          attrs[key].add(val);
+        }));
+        setCustomAttributes(Object.fromEntries(Object.entries(attrs).map(([k, v]) => [k, Array.from(v)])));
+      } else {
+        setOriginalVariants([]);
+        setLocalVariants([]);
+      }
+    } else {
+      const newId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `prod-${Date.now().toString().slice(-7)}`;
+      setPId(newId);
+      setOriginalVariants([]);
+      setPName(initialValues?.name || '');
+      setPCategory(initialValues?.category || '');
+      setPBrand(initialValues?.brand || '');
+      setPDescription(initialValues?.description || '');
+      setPSupplier(initialValues?.supplier || '');
+      setPSupplierId('');
+      setPBuyingPrice(initialValues?.buyingPrice || 0);
+      setPSellingPrice(initialValues?.sellingPrice || initialValues?.price || 0);
+      setPStock(initialValues?.stock || 0);
+      setPHasVariants(initialValues?.hasVariants || false);
+      setPExpiry(initialValues?.expiryDate || '');
+      setPTaxRate(0);
+      setPReorderLevel(5);
+      setPSku(initialValues?.sku || '');
+      setPBarcode(initialValues?.barcode || '');
+      setPImageUrl('');
+      setPImagePreview('');
+      setPModule(activeModule);
+      setLocalVariants([]);
+    }
+    setIsEditorOpen(true);
+  }, [activeModule]);
+
+  const attrsKey = (attrs: Record<string, string>) =>
+    JSON.stringify(Object.fromEntries(Object.entries(attrs).sort(([a], [b]) => a.localeCompare(b))));
+
+  const generateCombinations = (attributes: Record<string, string[]>): Record<string, string>[] => {
+    const keys = Object.keys(attributes);
+    if (keys.length === 0) return [];
+    let results: Record<string, string>[] = [{}];
+    for (const key of keys) {
+      const next: Record<string, string>[] = [];
+      for (const res of results) for (const val of attributes[key]) next.push({ ...res, [key]: val });
+      results = next;
+    }
+    return results;
+  };
+
+  const handleGenerateVariants = () => {
+    const combos = generateCombinations(customAttributes);
+    if (combos.length === 0) { alert('Add at least one attribute with values first.'); return; }
+    const parentShort = pName ? pName.replace(/\s+/g, '').slice(0, 4).toUpperCase() : 'PROD';
+    const generated: ProductVariant[] = combos.map((combo, idx) => {
+      const skuSuffix = Object.values(combo).map(v => v.replace(/\s+/g, '').toUpperCase().slice(0, 4)).join('-');
+      const existingMatch = localVariants.find(v => attrsKey(v.attributes) === attrsKey(combo));
+      if (existingMatch) return existingMatch;
+      return {
+        id: `var-${pId}-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        productId: pId, sku: `${parentShort}-${skuSuffix}`, barcode: '',
+        stock: 0, reservedStock: 0, reorderLevel: 5, status: 'Active' as const,
+        attributes: combo, buyingPrice: undefined, sellingPrice: undefined,
+        inheritBuyingPrice: true, inheritSellingPrice: true,
+        tenant_id: currentTenant.id, branch_id: currentBranch.id,
+      };
+    });
+    setLocalVariants(prev => {
+      const merged = [...prev];
+      generated.forEach(g => {
+        const index = merged.findIndex(m => attrsKey(m.attributes) === attrsKey(g.attributes));
+        if (index >= 0) merged[index] = g; else merged.push(g);
+      });
+      return merged;
+    });
+  };
+
+  const handleDeleteVariant = async (variantId: string) => {
+    const ledgerCount = await db.stockLedger.where('variant_id').equals(variantId).count();
+    if (ledgerCount > 0) { alert(`⚠️ Cannot delete variant. It has ${ledgerCount} stock transaction records.\n\nSet status to Inactive instead.`); return; }
+    setLocalVariants(prev => prev.filter(v => v.id !== variantId));
+    setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
+    if (editingVariantIdx !== null) setEditingVariantIdx(null);
+  };
+
+  const handleUpdateVariant = (idx: number, updates: Partial<ProductVariant>) => {
+    setLocalVariants(prev => prev.map((v, i) => {
+      if (i !== idx) return v;
+      const merged = { ...v, ...updates };
+      // When toggling BACK to inherit, clear the manual override price so
+      // it doesn't linger as a stale value and block the inherit logic.
+      if (updates.inheritBuyingPrice === true)  merged.buyingPrice  = undefined;
+      if (updates.inheritSellingPrice === true)  merged.sellingPrice = undefined;
+      return merged;
+    }));
+  };
+
+  const handleSaveProduct = async () => {
+    if (isSaving) return;
+    if (!pName.trim() || !pCategory.trim()) { alert('Product Name and Category are required.'); setEditorTab('general'); return; }
+    if (pHasVariants && localVariants.length === 0) { alert('Add at least one variant or disable Has Variants.'); setEditorTab('variants'); return; }
+    if (pHasVariants && localVariants.find(v => !v.sku.trim())) { alert('All variants must have a SKU.'); setEditorTab('variants'); return; }
+
+    // Validate that any variant NOT inheriting a price has an explicit non-zero value
+    if (pHasVariants) {
+      for (const v of localVariants) {
+        const label = Object.values(v.attributes).join('/') || v.sku;
+        if (!v.inheritBuyingPrice && (!v.buyingPrice || v.buyingPrice <= 0)) {
+          alert(`Variant "${label}" has "Override Buying Price" selected but no price entered. Enter a buying price or check Inherit.`);
+          setEditorTab('variants');
+          return;
+        }
+        if (!v.inheritSellingPrice && (!v.sellingPrice || v.sellingPrice <= 0)) {
+          alert(`Variant "${label}" has "Override Selling Price" selected but no price entered. Enter a selling price or check Inherit.`);
+          setEditorTab('variants');
+          return;
+        }
+      }
+    }
+
+    const targetTime = (!selectedProduct && productCreatedAtDate) ? new Date(productCreatedAtDate).getTime() : Date.now();
+    const isBackdated = Date.now() - targetTime > 60 * 60 * 1000;
+
+    if (!selectedProduct && productCreatedAtDate) {
+      if (targetTime > Date.now() + 5 * 60 * 1000) {
+        alert('Creation date cannot be in the future.');
+        return;
+      }
+      const twoYearsAgo = Date.now() - 2 * 365 * 24 * 60 * 60 * 1000;
+      if (targetTime < twoYearsAgo) {
+        alert('Creation date cannot be older than two years.');
+        return;
+      }
+    }
+
+    const securityConfig = (securitySetting?.config || DEFAULT_SECURITY_CONFIG) as SecurityConfig;
+    const allowBackdated = securityConfig.allowBackdatedProducts;
+    if (isBackdated && !allowBackdated) {
+      alert('Backdated product creation is currently disabled in settings.');
+      return;
+    }
+
+    const proceedToSave = async () => {
+      setIsSaving(true);
+      try {
+        const savedProd: Product = {
+          id: pId, name: pName.trim(), category: pCategory.trim(),
+          buyingPrice: pBuyingPrice, sellingPrice: pSellingPrice, price: pSellingPrice,
+          stock: 0, expiryDate: pExpiry || undefined,
+          tenant_id: currentTenant.id, branch_id: currentBranch.id,
+          module: pModule || activeModule, hasVariants: pHasVariants,
+          brand: pBrand.trim() || undefined, description: pDescription.trim() || undefined,
+          supplier: pSupplier.trim() || undefined,
+          supplier_id: pSupplierId || undefined,
+          attributes: pHasVariants ? Object.keys(customAttributes) : undefined,
+          sku: pSku.trim() || undefined, barcode: pBarcode.trim() || undefined,
+          createdAt: targetTime,
+          ...(pImageUrl.trim() && { image_url: pImageUrl.trim() }),
+          ...(pTaxRate > 0 && { taxRate: pTaxRate }),
+        } as any;
+
+        const ctx = { id: user?.id || 'usr-anon', tenant_id: currentTenant.id, branch_id: currentBranch.id, role: user?.role || 'Business Owner', name: user?.name || 'User' };
+
+        let finalProduct: Product;
+        if (selectedProduct) {
+          savedProd.stock = selectedProduct.stock;
+          finalProduct = await ProductService.updateProduct(pId, savedProd, ctx, isOnline);
+        } else {
+          finalProduct = await ProductService.createProduct(savedProd, ctx, isOnline);
+        }
+        const finalProductId = finalProduct.id;
+
+        const preSnapshotVars = pHasVariants ? await db.productVariants.where('productId').equals(finalProductId).toArray() : [];
+
+        if (pHasVariants) {
+          for (const ev of preSnapshotVars) {
+            if (!localVariants.find(lv => lv.id === ev.id)) await queueOperation('DELETE', 'productVariants' as any, ev);
+          }
+          for (const lv of localVariants) {
+            const isNew = !preSnapshotVars.find(ev => ev.id === lv.id);
+            const freshVar = { 
+              ...lv, 
+              productId: finalProductId,
+              tenant_id: currentTenant.id,
+              branch_id: currentBranch.id,
+              // Resolve effective prices before writing to IndexedDB:
+              // - If inheriting, store undefined so the POS can fall back to the parent price at render time
+              // - If overriding, store the explicit value (guaranteed non-zero by validation above)
+              buyingPrice:  lv.inheritBuyingPrice  ? undefined : (lv.buyingPrice  ?? pBuyingPrice),
+              sellingPrice: lv.inheritSellingPrice ? undefined : (lv.sellingPrice ?? pSellingPrice),
+            };
+            const stockVal = isNew ? (lv.stock || 0) : (preSnapshotVars.find(ev => ev.id === lv.id)?.stock ?? 0);
+            freshVar.stock = stockVal;
+            await queueOperation(isNew ? 'INSERT' : 'UPDATE', 'productVariants' as any, freshVar);
+
+            // Record opening stock for new variants (for both new and existing products)
+            if (isNew && stockVal > 0) {
+              await recordStockMovement({
+                tenant_id: currentTenant.id, branch_id: currentBranch.id, warehouse_id: allWarehouses[0]?.id || 'warehouse-main',
+                product_id: finalProductId, variant_id: lv.id, movement_type: 'OPENING_STOCK', reference_type: 'OPENING',
+                quantity_change: stockVal, unit_cost: freshVar.buyingPrice || pBuyingPrice,
+                total_cost: (freshVar.buyingPrice || pBuyingPrice) * stockVal,
+                user_id: user?.name || 'System', notes: `Opening stock: ${Object.values(lv.attributes).join(' / ')}`,
+                created_at: targetTime,
+              });
+            }
+          }
+          await recalculateProductStock(finalProductId);
+        }
+
+        // Opening stock ledger entries for new simple products
+        if (!selectedProduct && !pHasVariants && pStock > 0) {
+          await recordStockMovement({
+            tenant_id: currentTenant.id, branch_id: currentBranch.id, warehouse_id: allWarehouses[0]?.id || 'warehouse-main',
+            product_id: finalProductId, movement_type: 'OPENING_STOCK', reference_type: 'OPENING',
+            quantity_change: pStock, unit_cost: pBuyingPrice, total_cost: pBuyingPrice * pStock,
+            user_id: user?.name || 'System', notes: 'Initial opening stock',
+            created_at: targetTime,
+          });
+        }
+
+        setIsEditorOpen(false);
+        setSelectedProduct(null);
+      } catch (err: any) {
+        alert('Error saving product: ' + err.message);
+      } finally {
+        setIsSaving(false);
+      }
+    };
+
+    const isOwnerOrManager = ['Super Admin', 'Business Owner', 'Tenant Owner', 'Branch Manager'].includes(user?.role || '');
+    if (isBackdated && !isOwnerOrManager) {
+      requestPinApproval(
+        `Authorize backdated product creation on ${new Date(targetTime).toLocaleString()}`,
+        async () => {
+          await proceedToSave();
+        }
+      );
+    } else {
+      await proceedToSave();
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    if (!productToDelete) return;
+    await db.products.delete(productToDelete.id);
+    await db.productVariants.where('productId').equals(productToDelete.id).delete();
+    setIsDeleteConfirmOpen(false);
+    setProductToDelete(null);
+  };
+
+  const handleSaveBatch = async () => {
+    if (!batchNum.trim() || batchQty <= 0) { alert('Batch number and quantity are required.'); return; }
+    setBatchSaving(true);
+    try {
+      await receiveBatchLot({
+        tenantId: currentTenant.id, branchId: currentBranch.id,
+        productId: pId, batchNumber: batchNum,
+        supplierName: batchSupplier || undefined,
+        expiryDate: batchExpiry ? new Date(batchExpiry).getTime() : undefined,
+        quantityReceived: batchQty, unitCost: batchCost || pBuyingPrice,
+        createdBy: user?.name || 'System',
+      });
+      setBatchNum(''); setBatchQty(0); setBatchCost(0); setBatchExpiry(''); setBatchSupplier('');
+    } catch (e: any) { alert('Failed to save batch: ' + e.message); }
+    setBatchSaving(false);
+  };
+
+  const handleSaveReorderRule = async () => {
+    setRrSaving(true);
+    try {
+      await saveReorderRule({
+        id: productReorderRule?.id,
+        tenant_id: currentTenant.id, branch_id: currentBranch.id,
+        product_id: pId, min_quantity: rrMinQty, max_quantity: rrMaxQty,
+        reorder_quantity: rrReorderQty, preferred_supplier_name: rrSupplier || undefined,
+        lead_time_days: rrLeadTime, auto_reorder: false, is_active: true,
+      });
+      alert('✅ Reorder rule saved.');
+    } catch (e: any) { alert('Error: ' + e.message); }
+    setRrSaving(false);
+  };
+
+  const handleAddSerials = async () => {
+    const lines = serialInput.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    await addSerialNumbers({
+      tenantId: currentTenant.id, branchId: currentBranch.id,
+      productId: pId,
+      serials: lines.map(s => ({ serial_number: s })),
+    });
+    setSerialInput('');
+  };
+
+  const renderProductsTab = () => (
+    <div className="inv-products-view">
+      {/* Toolbar */}
+      <div className="inv-toolbar">
+        <div className="inv-search-wrap">
+          <Search size={14} className="inv-search-icon"/>
+          <input className="inv-search" placeholder="Search by name, category, brand…"
+            value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
+        </div>
+        <div className="inv-filter-btns">
+          {(['all','simple','variant'] as const).map(f => (
+            <button key={f} className={`inv-filter-btn ${filterType === f ? 'active' : ''}`}
+              onClick={() => setFilterType(f)}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="inv-stats-mini">
+          <span className="stat-chip total"><Package size={12}/> {stats.total}</span>
+          <span className="stat-chip warning"><AlertTriangle size={12}/> {stats.lowStock} low</span>
+          <span className="stat-chip danger"><AlertCircle size={12}/> {stats.outOfStock} out</span>
+        </div>
+        {canEdit && (
+          <div className="flex gap-2">
+            <button
+              className="inv-add-btn outline"
+              title="Pull latest products from server"
+              onClick={async () => {
+                const n = await syncFromServer(currentTenant.id);
+                if (n > 0) alert(`✅ Synced ${n} product(s) from server.`);
+                else alert('✅ Already up to date.');
+              }}
+            >
+              <RefreshCw size={14}/> Sync
+            </button>
+            <button className="inv-add-btn outline" onClick={() => setIsCsvImportOpen(true)}>
+              <FileText size={14}/> Import CSV
+            </button>
+            <button className="inv-add-btn outline" onClick={() => setIsBarcodePrinterOpen(true)}>
+              <Barcode size={14}/> Print Barcodes
+            </button>
+            <button className="inv-add-btn" onClick={() => openEditor(null)}>
+              <Plus size={15}/> Add Product
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Product Grid */}
+      <div className="inv-product-grid">
+        {filteredProducts.length === 0 ? (
+          <div className="inv-empty-state">
+            <Package size={48} opacity={0.3}/>
+            <p>No products found</p>
+            {canEdit && <button className="inv-add-btn" onClick={() => openEditor(null)}><Plus size={14}/> Add First Product</button>}
+          </div>
+        ) : filteredProducts.map(p => (
+          <div key={p.id} className={`inv-product-card ${p.stock <= 0 ? 'out-of-stock' : p.stock < 10 ? 'low-stock' : ''}`}>
+            <div className="inv-product-header">
+              <div className="inv-product-icon" style={{ padding: 0, overflow: 'hidden', borderRadius: '8px' }}>
+                {(p as any).image_url ? (
+                  <img
+                    src={(p as any).image_url}
+                    alt={p.name}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '8px' }}
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                ) : (
+                  p.hasVariants ? <Layers size={18}/> : <Package size={18}/>
+                )}
+              </div>
+              <div className="inv-product-info">
+                <div className="inv-product-name">{p.name}</div>
+                <div className="inv-product-cat">{p.category} {p.brand && `· ${p.brand}`}</div>
+              </div>
+              {p.stock <= 0 ? <Badge variant="danger">Out</Badge> : p.stock < 10 ? <Badge variant="warning">Low</Badge> : <Badge variant="success">In Stock</Badge>}
+            </div>
+            <div className="inv-product-meta">
+              <span>Stock: <strong>{fmtNum(p.stock)}</strong></span>
+              <span>Buy: <strong>{fmtCcy(p.buyingPrice)}</strong></span>
+              <span>Sell: <strong>{fmtCcy(p.sellingPrice || p.price)}</strong></span>
+            </div>
+            <div className="inv-product-actions">
+              <button onClick={() => openEditor(p)} title="Edit" className="inv-icon-btn edit"><Edit size={14}/></button>
+              <button onClick={() => openAdjustment(p)} title="Adjust Stock" className="inv-icon-btn adjust"><Sliders size={14}/></button>
+              {canEdit && (
+                <button onClick={() => { setProductToDelete(p); setIsDeleteConfirmOpen(true); }} title="Delete" className="inv-icon-btn delete"><Trash2 size={14}/></button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Product Editor Dialog */}
+      <Dialog isOpen={isEditorOpen} onClose={() => setIsEditorOpen(false)} title={selectedProduct ? `Edit: ${pName}` : 'New Product'} size="xl">
+        <div className="inv-editor">
+          {/* Tab Nav */}
+          <div className="inv-editor-tabs">
+            {PRODUCT_TABS.map(t => (
+              <button key={t.id} className={`inv-editor-tab ${editorTab === t.id ? 'active' : ''}`}
+                onClick={() => setEditorTab(t.id)}>
+                {t.icon} {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="inv-editor-body">
+            {/* General Tab */}
+            {editorTab === 'general' && (
+              <div className="inv-form-grid">
+                <div className="inv-field full pb-2 border-b border-slate-100 dark:border-darkbg-border/40 mb-1">
+                  <div className="flex flex-col md:flex-row gap-3 items-start">
+                    {/* Product Name (Left side) */}
+                    <div className="flex-1 w-full space-y-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-200">Product Name *</label>
+                      <input
+                        className="inv-input w-full font-semibold text-sm h-10"
+                        value={pName}
+                        onChange={e => setPName(e.target.value)}
+                        placeholder="e.g. Coca Cola 500ml"
+                      />
+                    </div>
+
+                    {/* Product Image Box (Right side of Product Name) */}
+                    <div className="shrink-0 flex flex-col gap-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-200">Product Image</label>
+                      <div className="flex items-center gap-2 p-1.5 bg-slate-50 dark:bg-darkbg/90 border border-slate-200 dark:border-darkbg-border rounded-xl shadow-xs">
+                        {/* Image Thumbnail Preview */}
+                        <div
+                          className="relative h-16 w-16 rounded-lg border-2 border-dashed border-indigo-300 dark:border-indigo-700/50 bg-white dark:bg-darkbg overflow-hidden flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 transition-all group shrink-0"
+                          onClick={() => (document.getElementById('product-image-file-input') as HTMLInputElement)?.click()}
+                          title="Click thumbnail to upload or change image"
+                        >
+                          {pImagePreview ? (
+                            <>
+                              <img src={pImagePreview} alt="Product" className="h-full w-full object-contain" />
+                              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                <span className="text-white text-[9px] font-bold">Change</span>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex flex-col items-center text-slate-400">
+                              <Upload className="h-5 w-5 text-indigo-500 mb-0.5" />
+                              <span className="text-[8px] font-bold text-slate-500">No Image</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Visible Upload & Camera Buttons */}
+                        <div className="flex flex-col gap-1.5">
+                          <input
+                            id="product-image-file-input"
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5 MB.'); return; }
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const dataUrl = ev.target?.result as string;
+                                setPImageUrl(dataUrl);
+                                setPImagePreview(dataUrl);
+                              };
+                              reader.readAsDataURL(file);
+                            }}
+                          />
+                          <input
+                            id="product-camera-file-input"
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const dataUrl = ev.target?.result as string;
+                                setPImageUrl(dataUrl);
+                                setPImagePreview(dataUrl);
+                              };
+                              reader.readAsDataURL(file);
+                            }}
+                          />
+
+                          <div className="flex items-center gap-1.5">
+                            {/* Upload File Button */}
+                            <button
+                              type="button"
+                              className="text-xs px-2.5 py-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-darkbg-border text-slate-700 dark:text-slate-100 rounded-lg font-bold hover:bg-slate-100 hover:border-indigo-400 flex items-center gap-1.5 transition-all shadow-2xs"
+                              onClick={() => (document.getElementById('product-image-file-input') as HTMLInputElement)?.click()}
+                              title="Upload image from your device"
+                            >
+                              <Upload className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                              <span>Upload</span>
+                            </button>
+
+                            {/* Camera Snap Button */}
+                            <button
+                              type="button"
+                              className="text-xs px-2.5 py-1 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 flex items-center gap-1.5 shadow-xs transition-all"
+                              onClick={startImageCamera}
+                              title="Take photo using webcam / device camera"
+                            >
+                              <Camera className="h-3.5 w-3.5" />
+                              <span>Camera 📸</span>
+                            </button>
+                          </div>
+
+                          {pImagePreview ? (
+                            <button
+                              type="button"
+                              className="text-[10px] text-red-500 hover:text-red-700 font-bold text-left flex items-center gap-1"
+                              onClick={() => { setPImageUrl(''); setPImagePreview(''); }}
+                            >
+                              <Trash2 className="h-3 w-3" /> Remove Image
+                            </button>
+                          ) : (
+                            <input
+                              className="inv-input text-[10px] h-5 px-1.5 w-40 rounded"
+                              placeholder="Or paste image URL..."
+                              value={pImageUrl.startsWith('data:') ? '' : pImageUrl}
+                              onChange={(e) => {
+                                const url = e.target.value.trim();
+                                setPImageUrl(url);
+                                setPImagePreview(url);
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="inv-field">
+                  <label className="flex items-center justify-between text-xs font-bold mb-1">
+                    <span>Category *</span>
+                    <button
+                      type="button"
+                      className="text-[11px] font-bold text-indigo-600 hover:underline flex items-center gap-1"
+                      onClick={async () => {
+                        const name = prompt('Enter new Category name:');
+                        if (name && name.trim()) {
+                          const catName = name.trim();
+                          await createCategory({ name: catName, tenant_id: currentTenant.id });
+                          setPCategory(catName);
+                        }
+                      }}
+                    >
+                      <Plus className="h-3 w-3" /> + New Category
+                    </button>
+                  </label>
+
+                  <select
+                    className="inv-input h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                    value={pCategory}
+                    onChange={e => {
+                      if (e.target.value === '__ADD_NEW__') {
+                        const name = prompt('Enter new Category name:');
+                        if (name && name.trim()) {
+                          const catName = name.trim();
+                          createCategory({ name: catName, tenant_id: currentTenant.id });
+                          setPCategory(catName);
+                        }
+                      } else {
+                        setPCategory(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="">Select Category...</option>
+                    {allCategories.map(c => (
+                      <option key={c.name} value={c.name}>
+                        {c.name} {c.count > 0 ? `(${c.count} products)` : ''}
+                      </option>
+                    ))}
+                    <option value="__ADD_NEW__">➕ Add New Category...</option>
+                  </select>
+                </div>
+
+                <div className="inv-field">
+                  <label className="flex items-center justify-between text-xs font-bold mb-1">
+                    <span>Brand</span>
+                    <button
+                      type="button"
+                      className="text-[11px] font-bold text-indigo-600 hover:underline flex items-center gap-1"
+                      onClick={async () => {
+                        const name = prompt('Enter new Brand name:');
+                        if (name && name.trim()) {
+                          const bName = name.trim();
+                          await createBrand({ name: bName, tenant_id: currentTenant.id });
+                          setPBrand(bName);
+                        }
+                      }}
+                    >
+                      <Plus className="h-3 w-3" /> + New Brand
+                    </button>
+                  </label>
+
+                  <select
+                    className="inv-input h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                    value={pBrand}
+                    onChange={e => {
+                      if (e.target.value === '__ADD_NEW__') {
+                        const name = prompt('Enter new Brand name:');
+                        if (name && name.trim()) {
+                          const bName = name.trim();
+                          createBrand({ name: bName, tenant_id: currentTenant.id });
+                          setPBrand(bName);
+                        }
+                      } else {
+                        setPBrand(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="">Select Brand (Optional)...</option>
+                    {allBrands.map(b => (
+                      <option key={b.name} value={b.name}>
+                        {b.name} {b.count > 0 ? `(${b.count} products)` : ''}
+                      </option>
+                    ))}
+                    <option value="__ADD_NEW__">➕ Add New Brand...</option>
+                  </select>
+                </div>
+
+                <div className="inv-field">
+                  <label className="text-xs font-bold mb-1 block">SKU</label>
+                  <input className="inv-input" value={pSku} onChange={e => setPSku(e.target.value)} placeholder="Auto-generated if empty"/>
+                </div>
+
+                <div className="inv-field">
+                  <label className="text-xs font-bold mb-1 block">Barcode</label>
+                  <div className="flex gap-1.5 items-center">
+                    <input
+                      className="inv-input flex-1 h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 font-mono dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                      value={pBarcode}
+                      onChange={e => setPBarcode(e.target.value)}
+                      placeholder="Scan or type barcode"
+                    />
+                    <Button
+                      type="button"
+                      variant="primary"
+                      className="h-10 px-3 shrink-0 flex items-center gap-1.5 text-xs font-bold"
+                      onClick={() => {
+                        setScannerTargetField('product');
+                        setActiveVariantIndexForScan(null);
+                        setScannerError('');
+                        setIsCameraScannerOpen(true);
+                      }}
+                      title="Launch Real Camera Barcode Scanner"
+                    >
+                      <Barcode className="h-4 w-4" />
+                      <span>Scan 📷</span>
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="inv-field">
+                  <label className="flex items-center justify-between text-xs font-bold mb-1">
+                    <span>Supplier</span>
+                    {allSuppliers.length === 0 && (
+                      <span className="text-[10px] text-amber-500 font-normal">No suppliers found — add via Purchasing</span>
+                    )}
+                  </label>
+                  {allSuppliers.length > 0 ? (
+                    <select
+                      className="inv-input h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                      value={pSupplierId}
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (val === '__MANUAL__') {
+                          setPSupplierId('');
+                          setPSupplier('');
+                        } else {
+                          const sup = allSuppliers.find(s => s.id === val);
+                          setPSupplierId(val);
+                          setPSupplier(sup?.name || '');
+                        }
+                      }}
+                    >
+                      <option value="">— Select Supplier (Optional) —</option>
+                      {allSuppliers.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}{s.trading_name ? ` (${s.trading_name})` : ''} · {s.supplier_code}
+                        </option>
+                      ))}
+                      <option value="__MANUAL__">✏️ Enter manually...</option>
+                    </select>
+                  ) : (
+                    <input
+                      className="inv-input"
+                      value={pSupplier}
+                      onChange={e => setPSupplier(e.target.value)}
+                      placeholder="Supplier name (add suppliers in Purchasing)"
+                    />
+                  )}
+                  {/* Show manual text input when '__MANUAL__' chosen or no supplier selected but text was typed */}
+                  {allSuppliers.length > 0 && pSupplierId === '' && (
+                    <input
+                      className="inv-input mt-1"
+                      value={pSupplier}
+                      onChange={e => setPSupplier(e.target.value)}
+                      placeholder="Or type supplier name manually..."
+                    />
+                  )}
+                </div>
+
+                {activeModule === 'Pharmacy' && (
+                  <div className="inv-field">
+                    <label>Expiry Date</label>
+                    <input className="inv-input" type="date" value={pExpiry} onChange={e => setPExpiry(e.target.value)}/>
+                  </div>
+                )}
+                <div className="inv-field full">
+                  <label>Description</label>
+                  <textarea className="inv-input" rows={3} value={pDescription} onChange={e => setPDescription(e.target.value)} placeholder="Optional product description"/>
+                </div>
+                <div className="inv-field">
+                  <label className="inv-checkbox-label">
+                    <input type="checkbox" checked={pHasVariants} onChange={e => setPHasVariants(e.target.checked)}/>
+                    Has Variants (Size, Color, etc.)
+                  </label>
+                </div>
+                {!selectedProduct && (
+                  <div className="inv-field full border-t border-slate-100 dark:border-darkbg-border/30 pt-3 mt-1">
+                    {!((securitySetting?.config || DEFAULT_SECURITY_CONFIG) as SecurityConfig).allowBackdatedProducts ? (
+                      <div className="p-2.5 bg-slate-50 dark:bg-darkbg/40 border dark:border-darkbg-border/60 rounded-lg text-xs text-slate-400 flex items-center gap-1.5" style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px', background: 'var(--bg-slate-50)', border: '1px solid var(--border-color)', borderRadius: '6px', color: '#64748b' }}>
+                        <Shield size={12} className="text-slate-400" />
+                        <span>Backdated product creation is disabled by policy.</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label style={{ fontWeight: 'bold', margin: 0 }}>Created Date (Backdated)</label>
+                          {!['Super Admin', 'Business Owner', 'Tenant Owner', 'Branch Manager'].includes(user?.role || '') && (
+                            <span style={{ fontSize: '9px', background: '#fef3c7', color: '#d97706', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>Requires Approval</span>
+                          )}
+                        </div>
+                        <input
+                          className="inv-input"
+                          type="datetime-local"
+                          value={productCreatedAtDate}
+                          onChange={(e) => setProductCreatedAtDate(e.target.value)}
+                        />
+                        <span style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '2px', display: 'block' }}>
+                          Leave blank for current system time.
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Pricing Tab */}
+            {editorTab === 'pricing' && (
+              <div className="inv-form-grid">
+                <div className="inv-field">
+                  <label>Buying Price (Tsh)</label>
+                  <input className="inv-input" type="number" min="0" value={pBuyingPrice} onChange={e => setPBuyingPrice(Number(e.target.value))}/>
+                </div>
+                <div className="inv-field">
+                  <label>Selling Price (Tsh)</label>
+                  <input className="inv-input" type="number" min="0" value={pSellingPrice} onChange={e => setPSellingPrice(Number(e.target.value))}/>
+                </div>
+                <div className="inv-field">
+                  <label>Tax Rate (%)</label>
+                  <input className="inv-input" type="number" min="0" max="100" value={pTaxRate} onChange={e => setPTaxRate(Number(e.target.value))}/>
+                </div>
+                {pBuyingPrice > 0 && pSellingPrice > 0 && (
+                  <div className="inv-field full">
+                    <div className="inv-pricing-summary">
+                      <div><span>Margin:</span><strong style={{color:'#10b981'}}>{(((pSellingPrice - pBuyingPrice) / pSellingPrice) * 100).toFixed(1)}%</strong></div>
+                      <div><span>Markup:</span><strong style={{color:'#6366f1'}}>{(((pSellingPrice - pBuyingPrice) / pBuyingPrice) * 100).toFixed(1)}%</strong></div>
+                      <div><span>Profit:</span><strong style={{color:'#f59e0b'}}>{fmtCcy(pSellingPrice - pBuyingPrice)}</strong></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Inventory Tab */}
+            {editorTab === 'inventory' && (
+              <div className="inv-form-grid">
+                {!pHasVariants && (
+                  <div className="inv-field">
+                    <label>{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
+                    <input className="inv-input" type="number" min="0"
+                      value={pStock} onChange={e => setPStock(Number(e.target.value))}
+                      disabled={!!selectedProduct}
+                      title={selectedProduct ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}/>
+                    {selectedProduct && <small style={{opacity:0.6}}>Use the Adjustments tab to change stock levels.</small>}
+                  </div>
+                )}
+                <div className="inv-field">
+                  <label>Reorder Level</label>
+                  <input className="inv-input" type="number" min="0" value={pReorderLevel} onChange={e => setPReorderLevel(Number(e.target.value))}/>
+                </div>
+                {selectedProduct && productHistory.length > 0 && (
+                  <div className="inv-field full">
+                    <label>Recent Stock Movements</label>
+                    <div className="inv-mini-ledger">
+                      {productHistory.slice(0, 5).map(e => (
+                        <div key={e.id} className="inv-ledger-row">
+                          <span className={`inv-ledger-type ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>
+                            {INBOUND_TYPES.has(e.movement_type) ? '+' : ''}{e.quantity_change}
+                          </span>
+                          <span>{e.movement_type.replace(/_/g,' ')}</span>
+                          <span style={{marginLeft:'auto',opacity:0.6}}>{fmtDateTime(e.created_at)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Variants Tab */}
+            {editorTab === 'variants' && (
+              <div className="inv-variants-tab">
+                {!pHasVariants ? (
+                  <div className="inv-variants-disabled">
+                    <Layers size={32} opacity={0.3}/>
+                    <p>Enable "Has Variants" in the General tab to manage variants.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="inv-attr-builder">
+                      <h4>Attribute Builder</h4>
+                      <div className="inv-attr-row">
+                        <input className="inv-input" placeholder="Attribute name (e.g. Size)" value={newAttrName} onChange={e => setNewAttrName(e.target.value)}/>
+                        <input className="inv-input" placeholder="Values, comma separated (e.g. S, M, L, XL)" value={newAttrValues} onChange={e => setNewAttrValues(e.target.value)}/>
+                        <button className="inv-add-btn" onClick={() => {
+                          if (!newAttrName.trim() || !newAttrValues.trim()) return;
+                          const values = newAttrValues.split(',').map(v => v.trim()).filter(Boolean);
+                          setCustomAttributes(prev => ({ ...prev, [newAttrName.trim()]: values }));
+                          setNewAttrName(''); setNewAttrValues('');
+                        }}>Add</button>
+                      </div>
+                      {Object.keys(customAttributes).length > 0 && (
+                        <div className="inv-attr-chips">
+                          {Object.entries(customAttributes).map(([name, values]) => (
+                            <span key={name} className="inv-attr-chip">
+                              <strong>{name}</strong>: {values.join(', ')}
+                              <button onClick={() => {
+                                const next = { ...customAttributes }; delete next[name]; setCustomAttributes(next);
+                              }}><X size={12}/></button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="inv-attr-actions">
+                        <button className="inv-generate-btn" onClick={handleGenerateVariants}>
+                          <Zap size={14}/> Generate Variants ({generateCombinations(customAttributes).length})
+                        </button>
+                        <button className="inv-add-btn outline" onClick={() => {
+                          const v = blankVariant(pId, currentTenant.id, currentBranch.id);
+                          setLocalVariants(prev => { setEditingVariantIdx(prev.length); return [...prev, v]; });
+                        }}><Plus size={14}/> Manual Variant</button>
+                      </div>
+                    </div>
+                    <div className="inv-variants-table-wrap">
+                      <table className="inv-variants-table">
+                        <thead>
+                          <tr>
+                            <th><input type="checkbox" onChange={(e) => {
+                              if (e.target.checked) setSelectedVariantIds(new Set(localVariants.map(v => v.id)));
+                              else setSelectedVariantIds(new Set());
+                            }} checked={selectedVariantIds.size === localVariants.length && localVariants.length > 0}/></th>
+                            <th>Attributes</th><th>SKU</th><th>Barcode</th>
+                            <th>Buy (Tsh)</th><th>Sell (Tsh)</th><th>Stock</th><th>Status</th><th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {localVariants.map((v, idx) => (
+                            <React.Fragment key={v.id}>
+                              <tr className={`inv-var-row ${editingVariantIdx === idx ? 'editing' : ''}`} onClick={() => setEditingVariantIdx(editingVariantIdx === idx ? null : idx)}>
+                                <td onClick={e => e.stopPropagation()}>
+                                  <input type="checkbox" checked={selectedVariantIds.has(v.id)} onChange={() => {
+                                    setSelectedVariantIds(prev => { const n = new Set(prev); if (n.has(v.id)) n.delete(v.id); else n.add(v.id); return n; });
+                                  }}/>
+                                </td>
+                                <td>{Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') || '—'}</td>
+                                <td>{v.sku}</td>
+                                <td>{v.barcode || '—'}</td>
+                                <td>{v.inheritBuyingPrice ? `↑${fmtCcy(pBuyingPrice)}` : fmtCcy(v.buyingPrice ?? 0)}</td>
+                                <td>{v.inheritSellingPrice ? `↑${fmtCcy(pSellingPrice)}` : fmtCcy(v.sellingPrice ?? 0)}</td>
+                                <td><span style={{color: v.stock <= 0 ? '#ef4444' : v.stock < 5 ? '#f59e0b' : '#10b981'}}>{v.stock}</span></td>
+                                <td><span className={`inv-status-pill ${v.status.toLowerCase()}`}>{v.status}</span></td>
+                                <td onClick={e => e.stopPropagation()}>
+                                  <button onClick={() => handleDeleteVariant(v.id)} className="inv-icon-btn delete"><Trash2 size={13}/></button>
+                                </td>
+                              </tr>
+                              {editingVariantIdx === idx && (
+                                <tr className="inv-var-expand">
+                                  <td colSpan={9}>
+                                    <div className="inv-var-form">
+                                      <div className="inv-field"><label>SKU *</label><input className="inv-input" value={v.sku} onChange={e => handleUpdateVariant(idx, {sku: e.target.value})}/></div>
+                                      <div className="inv-field"><label>Barcode</label><input className="inv-input" value={v.barcode||''} onChange={e => handleUpdateVariant(idx, {barcode: e.target.value})}/></div>
+                                      <div className="inv-field">
+                                        <label className="inv-checkbox-label"><input type="checkbox" checked={!!v.inheritBuyingPrice} onChange={e => handleUpdateVariant(idx, {inheritBuyingPrice: e.target.checked})}/> Inherit Buying Price</label>
+                                        {!v.inheritBuyingPrice && <input className="inv-input" type="number" value={v.buyingPrice??0} onChange={e => handleUpdateVariant(idx, {buyingPrice: Number(e.target.value)})} placeholder="Override buy price"/>}
+                                      </div>
+                                      <div className="inv-field">
+                                        <label className="inv-checkbox-label"><input type="checkbox" checked={!!v.inheritSellingPrice} onChange={e => handleUpdateVariant(idx, {inheritSellingPrice: e.target.checked})}/> Inherit Selling Price</label>
+                                        {!v.inheritSellingPrice && <input className="inv-input" type="number" value={v.sellingPrice??0} onChange={e => handleUpdateVariant(idx, {sellingPrice: Number(e.target.value)})} placeholder="Override sell price"/>}
+                                      </div>
+                                      <div className="inv-field">
+                                        <label>Status</label>
+                                        <select className="inv-input" value={v.status} onChange={e => handleUpdateVariant(idx, {status: e.target.value as any})}>
+                                          <option>Active</option><option>Inactive</option>
+                                        </select>
+                                      </div>
+                                      <div className="inv-field font-sans">
+                                        <label>{selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
+                                        <input
+                                          className="inv-input"
+                                          type="number"
+                                          min="0"
+                                          value={v.stock || 0}
+                                          onChange={e => handleUpdateVariant(idx, { stock: Number(e.target.value) })}
+                                          disabled={!!selectedProduct && originalVariants.some(ov => ov.id === v.id)}
+                                          title={selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}
+                                        />
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                      {localVariants.length === 0 && (
+                        <div className="inv-empty-state small">
+                          <Layers size={24} opacity={0.3}/>
+                          <p>No variants yet. Use the Attribute Builder above.</p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Batch/Lot Tab */}
+            {editorTab === 'batch' && (
+              <div className="inv-batch-tab">
+                {!selectedProduct ? (
+                  <div className="inv-empty-state small"><Archive size={24} opacity={0.3}/><p>Save the product first to manage batches.</p></div>
+                ) : (
+                  <>
+                    <div className="inv-batch-form">
+                      <h4>Receive New Batch / Lot</h4>
+                      <div className="inv-form-grid">
+                        <div className="inv-field"><label>Batch Number *</label><input className="inv-input" value={batchNum} onChange={e => setBatchNum(e.target.value)} placeholder="e.g. BATCH-2024-001"/></div>
+                        <div className="inv-field"><label>Quantity *</label><input className="inv-input" type="number" min="1" value={batchQty} onChange={e => setBatchQty(Number(e.target.value))}/></div>
+                        <div className="inv-field"><label>Unit Cost (Tsh)</label><input className="inv-input" type="number" min="0" value={batchCost} onChange={e => setBatchCost(Number(e.target.value))}/></div>
+                        <div className="inv-field"><label>Expiry Date</label><input className="inv-input" type="date" value={batchExpiry} onChange={e => setBatchExpiry(e.target.value)}/></div>
+                        <div className="inv-field">
+                          <label className="text-xs font-bold mb-1 block">Supplier</label>
+                          {allSuppliers.length > 0 ? (
+                            <select
+                              className="inv-input h-9 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                              value={batchSupplierId}
+                              onChange={e => {
+                                const val = e.target.value;
+                                const sup = allSuppliers.find(s => s.id === val);
+                                setBatchSupplierId(val);
+                                setBatchSupplier(sup?.name || '');
+                              }}
+                            >
+                              <option value="">— Select Supplier —</option>
+                              {allSuppliers.map(s => (
+                                <option key={s.id} value={s.id}>
+                                  {s.name} · {s.supplier_code}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="inv-input"
+                              value={batchSupplier}
+                              onChange={e => setBatchSupplier(e.target.value)}
+                              placeholder="Supplier name"
+                            />
+                          )}
+                        </div>
+                        <div className="inv-field" style={{display:'flex',alignItems:'flex-end'}}>
+                          <button className="inv-add-btn" onClick={handleSaveBatch} disabled={batchSaving}>{batchSaving ? <RefreshCw size={14} className="spin"/> : <Plus size={14}/>} Receive Batch</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="inv-batches-list">
+                      <h4>Batch History ({productBatches.length})</h4>
+                      {productBatches.length === 0 ? (
+                        <div className="inv-empty-state small"><Archive size={20} opacity={0.3}/><p>No batches recorded yet.</p></div>
+                      ) : (
+                        <table className="inv-table">
+                          <thead><tr><th>Batch #</th><th>Received</th><th>Expiry</th><th>Received Qty</th><th>Remaining</th><th>Unit Cost</th><th>Status</th></tr></thead>
+                          <tbody>
+                            {productBatches.map(b => {
+                              const isExpired = b.expiry_date && b.expiry_date < Date.now();
+                              const isExpiringSoon = b.expiry_date && !isExpired && b.expiry_date < Date.now() + 30 * 86_400_000;
+                              return (
+                                <tr key={b.id} className={isExpired ? 'inv-row-danger' : isExpiringSoon ? 'inv-row-warning' : ''}>
+                                  <td><strong>{b.batch_number}</strong></td>
+                                  <td>{fmtDate(b.received_date)}</td>
+                                  <td>{b.expiry_date ? fmtDate(b.expiry_date) : '—'}</td>
+                                  <td>{b.quantity_received}</td>
+                                  <td><strong style={{color: b.quantity_remaining === 0 ? '#ef4444' : '#10b981'}}>{b.quantity_remaining}</strong></td>
+                                  <td>{fmtCcy(b.unit_cost)}</td>
+                                  <td><span className={`inv-status-pill ${b.status.toLowerCase()}`}>{isExpired ? 'Expired' : b.status}</span></td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Serials Tab */}
+            {editorTab === 'serials' && (
+              <div className="inv-serials-tab">
+                {!selectedProduct ? (
+                  <div className="inv-empty-state small"><Hash size={24} opacity={0.3}/><p>Save the product first to manage serial numbers.</p></div>
+                ) : (
+                  <>
+                    <div className="inv-serial-form">
+                      <h4>Add Serial Numbers</h4>
+                      <p style={{fontSize:'0.8rem',opacity:0.7}}>Enter one serial number per line. Scan barcodes or type IMEI numbers.</p>
+                      <textarea className="inv-input" rows={5} value={serialInput} onChange={e => setSerialInput(e.target.value)}
+                        placeholder="SN12345678&#10;SN12345679&#10;SN12345680"/>
+                      <button className="inv-add-btn" onClick={handleAddSerials}><Plus size={14}/> Add Serials ({serialInput.split('\n').filter(l => l.trim()).length})</button>
+                    </div>
+                    <div className="inv-serials-list">
+                      <h4>Serial Register ({productSerials.length})</h4>
+                      <table className="inv-table">
+                        <thead><tr><th>Serial Number</th><th>IMEI</th><th>Status</th><th>Warranty Expires</th></tr></thead>
+                        <tbody>
+                          {productSerials.map(s => (
+                            <tr key={s.id}>
+                              <td><code>{s.serial_number}</code></td>
+                              <td>{s.imei ?? '—'}</td>
+                              <td><span className={`inv-status-pill ${s.status.toLowerCase()}`}>{s.status}</span></td>
+                              <td>{s.warranty_expires ? fmtDate(s.warranty_expires) : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {productSerials.length === 0 && <div className="inv-empty-state small"><Hash size={20} opacity={0.3}/><p>No serial numbers recorded.</p></div>}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Reorder Tab */}
+            {editorTab === 'reorder' && (
+              <div className="inv-reorder-tab">
+                {!selectedProduct ? (
+                  <div className="inv-empty-state small"><Target size={24} opacity={0.3}/><p>Save the product first to configure reorder rules.</p></div>
+                ) : (
+                  <div className="inv-form-grid">
+                    <div className="inv-field"><label>Minimum Quantity (Reorder Trigger)</label><input className="inv-input" type="number" min="0" value={rrMinQty} onChange={e => setRrMinQty(Number(e.target.value))}/></div>
+                    <div className="inv-field"><label>Maximum Quantity (Target Level)</label><input className="inv-input" type="number" min="0" value={rrMaxQty} onChange={e => setRrMaxQty(Number(e.target.value))}/></div>
+                    <div className="inv-field"><label>Reorder Quantity (How much to order)</label><input className="inv-input" type="number" min="1" value={rrReorderQty} onChange={e => setRrReorderQty(Number(e.target.value))}/></div>
+                    <div className="inv-field"><label>Supplier Lead Time (days)</label><input className="inv-input" type="number" min="1" value={rrLeadTime} onChange={e => setRrLeadTime(Number(e.target.value))}/></div>
+                    <div className="inv-field full">
+                      <label className="text-xs font-bold mb-1 block">Preferred Supplier</label>
+                      {allSuppliers.length > 0 ? (
+                        <select
+                          className="inv-input h-10 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                          value={allSuppliers.find(s => s.name === rrSupplier)?.id || ''}
+                          onChange={e => {
+                            const sup = allSuppliers.find(s => s.id === e.target.value);
+                            setRrSupplier(sup?.name || '');
+                          }}
+                        >
+                          <option value="">— No preferred supplier —</option>
+                          {allSuppliers.map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} · {s.supplier_code}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="inv-input"
+                          value={rrSupplier}
+                          onChange={e => setRrSupplier(e.target.value)}
+                          placeholder="Supplier name or code"
+                        />
+                      )}
+                    </div>
+                    <div className="inv-field full">
+                      <div className="inv-reorder-preview">
+                        <div><Target size={14}/> <span>Current Stock:</span><strong style={{color: (products.find(p=>p.id===pId)?.stock??0) < rrMinQty ? '#ef4444' : '#10b981'}}>{products.find(p=>p.id===pId)?.stock ?? 0}</strong></div>
+                        <div><AlertTriangle size={14}/> <span>Reorder when below:</span><strong>{rrMinQty}</strong></div>
+                        <div><ShoppingCart size={14}/> <span>Order quantity:</span><strong>{rrReorderQty}</strong></div>
+                        <div><Clock size={14}/> <span>Lead time:</span><strong>{rrLeadTime} days</strong></div>
+                      </div>
+                      <button className="inv-add-btn" style={{marginTop:'12px'}} onClick={handleSaveReorderRule} disabled={rrSaving}>
+                        {rrSaving ? <RefreshCw size={14} className="spin"/> : <Check size={14}/>} Save Reorder Rule
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* History Tab */}
+            {editorTab === 'history' && (
+              <div className="inv-history-tab">
+                {productHistory.length === 0 ? (
+                  <div className="inv-empty-state small"><Clock size={24} opacity={0.3}/><p>No stock movements yet for this product.</p></div>
+                ) : (
+                  <table className="inv-table">
+                    <thead><tr><th>Date</th><th>Type</th><th>Change</th><th>Before</th><th>After</th><th>Reference</th><th>By</th><th>Notes</th></tr></thead>
+                    <tbody>
+                      {productHistory.map(e => (
+                        <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
+                          <td>{fmtDate(e.created_at)}</td>
+                          <td><span className="inv-move-type">{e.movement_type.replace(/_/g,' ')}</span></td>
+                          <td><strong style={{color: e.quantity_change > 0 ? '#10b981' : '#ef4444'}}>{e.quantity_change > 0 ? '+' : ''}{e.quantity_change}</strong></td>
+                          <td>{e.quantity_before}</td>
+                          <td>{e.quantity_after}</td>
+                          <td><code style={{fontSize:'0.75rem'}}>{e.reference_id ?? '—'}</code></td>
+                          <td>{e.user_id}</td>
+                          <td>{e.notes ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="inv-editor-footer">
+            <button className="inv-cancel-btn" onClick={() => setIsEditorOpen(false)}>Cancel</button>
+            {editorTab !== 'history' && editorTab !== 'batch' && editorTab !== 'serials' && editorTab !== 'reorder' && (
+              <button className="inv-save-btn" onClick={handleSaveProduct} disabled={isSaving}>
+                {isSaving ? <RefreshCw size={14} className="spin"/> : <Check size={14}/>}
+                {selectedProduct ? 'Update Product' : 'Create Product'}
+              </button>
+            )}
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Delete Confirm */}
+      <Dialog isOpen={isDeleteConfirmOpen} onClose={() => setIsDeleteConfirmOpen(false)} title="Delete Product" size="sm">
+        <div className="inv-confirm-dialog">
+          <AlertTriangle size={40} color="#ef4444"/>
+          <p>Permanently delete <strong>{productToDelete?.name}</strong>? This cannot be undone.</p>
+          <div className="inv-confirm-actions">
+            <button className="inv-cancel-btn" onClick={() => setIsDeleteConfirmOpen(false)}>Cancel</button>
+            <button className="inv-delete-btn" onClick={handleDeleteProduct}><Trash2 size={14}/> Delete</button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 3 — ADJUSTMENTS
+  // ──────────────────────────────────────────────────────────────────────────
+  // ── Multi-line bulk adjustment state ────────────────────────────────────────
+  interface AdjustLine {
+    id: string;
+    productId: string;
+    variantId: string;
+    movementType: StockLedgerEntry['movement_type'];
+    qty: number;
+    notes: string;
+  }
+  const makeBlankLine = (productId = ''): AdjustLine => ({
+    id: `line-${Date.now()}-${Math.random()}`,
+    productId, variantId: '', movementType: 'ADJUSTMENT_GAIN', qty: 1, notes: '',
+  });
+
+  const getLocalIsoString = () => {
+    const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+    return (new Date(Date.now() - tzoffset)).toISOString().slice(0, 16);
+  };
+
+  const [isAdjustmentOpen, setIsAdjustmentOpen] = useState(false);
+  const [adjustmentDate, setAdjustmentDate] = useState('');
+  const [adjustLines, setAdjustLines] = useState<AdjustLine[]>([makeBlankLine()]);
+  const [variantCache, setVariantCache] = useState<Record<string, ProductVariant[]>>({});
+  const [adjSearch, setAdjSearch] = useState('');
+  const [adjFilterType, setAdjFilterType] = useState<StockLedgerEntry['movement_type'] | 'ALL'>('ALL');
+  const [adjSubmitting, setAdjSubmitting] = useState(false);
+
+  const loadVariantsForProduct = async (productId: string) => {
+    if (!productId || variantCache[productId]) return;
+    const vars = await db.productVariants.where('productId').equals(productId).toArray();
+    setVariantCache(prev => ({ ...prev, [productId]: vars }));
+  };
+
+  const openAdjustment = (product: Product) => {
+    const line = makeBlankLine(product.id);
+    setAdjustLines([line]);
+    loadVariantsForProduct(product.id);
+    setAdjustmentDate(getLocalIsoString());
+    setIsAdjustmentOpen(true);
+  };
+
+  const updateLine = (id: string, patch: Partial<AdjustLine>) => {
+    setAdjustLines(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
+    if (patch.productId) loadVariantsForProduct(patch.productId);
+  };
+
+  const addLine = () => setAdjustLines(prev => [...prev, makeBlankLine()]);
+  const removeLine = (id: string) => setAdjustLines(prev => prev.filter(l => l.id !== id));
+
+  const recentAdjustments = useLiveQuery(async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return [];
+    return db.stockLedger
+      .where('tenant_id').equals(currentTenant.id)
+      .and(e => e.branch_id === currentBranch.id)
+      .reverse().sortBy('created_at');
+  }, [currentTenant?.id, currentBranch?.id]) || [];
+
+  const filteredAdjustments = useMemo(() => {
+    return recentAdjustments
+      .filter(e => adjFilterType === 'ALL' || e.movement_type === adjFilterType)
+      .filter(e => {
+        if (!adjSearch) return true;
+        const q = adjSearch.toLowerCase();
+        const prodName = (products.find(p => p.id === e.product_id)?.name ?? '').toLowerCase();
+        return e.product_id.toLowerCase().includes(q)
+          || prodName.includes(q)
+          || (e.notes ?? '').toLowerCase().includes(q);
+      })
+      .slice(0, 100);
+  }, [recentAdjustments, adjFilterType, adjSearch, products]);
+
+  const applyAdjustment = async (
+    product: Product, variantId: string, finalQty: number,
+    movementType: StockLedgerEntry['movement_type'], note: string,
+    customTimestamp?: number
+  ) => {
+    const DEFAULT_NOTES: Record<string, string> = {
+      OPENING_STOCK: 'Opening stock entry', PURCHASE_RECEIVE: 'Purchase receipt',
+      CUSTOMER_RETURN: 'Customer return', TRANSFER_IN: 'Transfer in',
+      PRODUCTION_OUTPUT: 'Production output', ADJUSTMENT_GAIN: 'Manual gain adjustment',
+      SALE: 'Manual sale deduction', SUPPLIER_RETURN: 'Supplier return',
+      TRANSFER_OUT: 'Transfer out', DAMAGE: 'Goods damaged', EXPIRY: 'Goods expired',
+      ADJUSTMENT_LOSS: 'Manual loss adjustment', PRODUCTION_USAGE: 'Production consumption',
+    };
+    const refTime = customTimestamp || Date.now();
+    await recordStockMovement({
+      tenant_id: currentTenant.id, branch_id: currentBranch.id,
+      warehouse_id: allWarehouses[0]?.id || 'warehouse-main',
+      product_id: product.id, variant_id: variantId || undefined,
+      movement_type: movementType, reference_type: movementType,
+      reference_id: `adj-${refTime.toString().slice(-6)}`,
+      quantity_change: finalQty,
+      unit_cost: product.buyingPrice || 0,
+      total_cost: (product.buyingPrice || 0) * Math.abs(finalQty),
+      user_id: user?.name || 'System Operator',
+      notes: note.trim() || DEFAULT_NOTES[movementType],
+      created_at: refTime,
+    });
+  };
+
+  const handleBulkAdjustment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    for (const line of adjustLines) {
+      if (!line.productId) { alert('Every row needs a product selected.'); return; }
+      const prod = products.find(p => p.id === line.productId);
+      if (prod?.hasVariants && !line.variantId) { alert(`Select a variant for "${prod.name}".`); return; }
+      if (!line.qty || line.qty <= 0) { alert('All quantities must be greater than 0.'); return; }
+    }
+
+    const targetTime = adjustmentDate ? new Date(adjustmentDate).getTime() : Date.now();
+    const isBackdated = Date.now() - targetTime > 60 * 60 * 1000;
+
+    if (adjustmentDate) {
+      if (targetTime > Date.now() + 5 * 60 * 1000) {
+        alert('Adjustment date cannot be in the future.');
+        return;
+      }
+      const twoYearsAgo = Date.now() - 2 * 365 * 24 * 60 * 60 * 1000;
+      if (targetTime < twoYearsAgo) {
+        alert('Adjustment date cannot be older than two years.');
+        return;
+      }
+    }
+
+    const securityConfig = (securitySetting?.config || DEFAULT_SECURITY_CONFIG) as SecurityConfig;
+    const allowBackdated = securityConfig.allowBackdatedInventory;
+    if (isBackdated && !allowBackdated) {
+      alert('Backdated stock adjustments are currently disabled in settings.');
+      return;
+    }
+
+    const proceedToAdjust = async () => {
+      setAdjSubmitting(true);
+      let successCount = 0;
+      const errors: string[] = [];
+      for (const line of adjustLines) {
+        const prod = products.find(p => p.id === line.productId);
+        if (!prod) continue;
+        const isOutbound = !INBOUND_TYPES.has(line.movementType);
+        const finalQty = isOutbound ? -Math.abs(line.qty) : Math.abs(line.qty);
+        try {
+          await applyAdjustment(prod, line.variantId, finalQty, line.movementType, line.notes, targetTime);
+          successCount++;
+        } catch (err: any) {
+          errors.push(`${prod.name}: ${err.message}`);
+        }
+      }
+      setAdjSubmitting(false);
+      if (errors.length) {
+        alert(`${successCount} recorded, ${errors.length} failed:\n${errors.join('\n')}`);
+      } else {
+        alert(`✅ ${successCount} movement${successCount !== 1 ? 's' : ''} recorded successfully.`);
+        setIsAdjustmentOpen(false);
+        setAdjustLines([makeBlankLine()]);
+      }
+    };
+
+    const isOwnerOrManager = ['Super Admin', 'Business Owner', 'Tenant Owner', 'Branch Manager'].includes(user?.role || '');
+    if (isBackdated && !isOwnerOrManager) {
+      requestPinApproval(
+        `Authorize backdated stock adjustments on ${new Date(targetTime).toLocaleString()}`,
+        async () => {
+          await proceedToAdjust();
+        }
+      );
+    } else {
+      await proceedToAdjust();
+    }
+  };
+
+  const renderAdjustmentsTab = () => {
+    const totalMovements = filteredAdjustments.length;
+    const inboundCount = filteredAdjustments.filter(e => INBOUND_TYPES.has(e.movement_type)).length;
+    const outboundCount = filteredAdjustments.filter(e => !INBOUND_TYPES.has(e.movement_type)).length;
+    const totalCostIn  = filteredAdjustments.filter(e => INBOUND_TYPES.has(e.movement_type)).reduce((s,e) => s + (e.total_cost || 0), 0);
+    const totalCostOut = filteredAdjustments.filter(e => !INBOUND_TYPES.has(e.movement_type)).reduce((s,e) => s + (e.total_cost || 0), 0);
+
+    return (
+    <div className="inv-adjustments-view">
+      {/* KPI summary */}
+      <div className="adj-kpi-row">
+        <div className="adj-kpi-card">
+          <div className="adj-kpi-icon" style={{background:'rgba(99,102,241,0.1)',color:'#6366f1'}}><Activity size={18}/></div>
+          <div><div className="adj-kpi-num">{totalMovements}</div><div className="adj-kpi-lbl">Total Ledger Entries</div></div>
+        </div>
+        <div className="adj-kpi-card">
+          <div className="adj-kpi-icon" style={{background:'rgba(16,185,129,0.1)',color:'#10b981'}}><TrendingUp size={18}/></div>
+          <div>
+            <div className="adj-kpi-num" style={{color:'#10b981'}}>{inboundCount}</div>
+            <div className="adj-kpi-lbl">Inbound (+)</div>
+            <div style={{fontSize:'0.7rem', color:'#10b981', fontWeight:600, marginTop:'2px'}}>{fmtCcy(totalCostIn)}</div>
+          </div>
+        </div>
+        <div className="adj-kpi-card">
+          <div className="adj-kpi-icon" style={{background:'rgba(239,68,68,0.1)',color:'#ef4444'}}><TrendingDown size={18}/></div>
+          <div>
+            <div className="adj-kpi-num" style={{color:'#ef4444'}}>{outboundCount}</div>
+            <div className="adj-kpi-lbl">Outbound (−)</div>
+            <div style={{fontSize:'0.7rem', color:'#ef4444', fontWeight:600, marginTop:'2px'}}>{fmtCcy(totalCostOut)}</div>
+          </div>
+        </div>
+        <div className="adj-kpi-card">
+          <div className="adj-kpi-icon" style={{background:'rgba(139,92,246,0.1)',color:'#8b5cf6'}}><DollarSign size={18}/></div>
+          <div>
+            <div className="adj-kpi-num" style={{color:'#8b5cf6', fontSize:'0.95rem'}}>{fmtCcy(Math.abs(totalCostIn - totalCostOut))}</div>
+            <div className="adj-kpi-lbl">Net Cost Movement</div>
+            <div style={{fontSize:'0.7rem', color: totalCostIn >= totalCostOut ? '#10b981' : '#ef4444', fontWeight:600, marginTop:'2px'}}>{totalCostIn >= totalCostOut ? '▲ Net positive' : '▼ Net negative'}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="inv-toolbar">
+        <h2 style={{margin:0}}>Stock Movement Log</h2>
+        {canAdjust && (
+          <button className="inv-add-btn" onClick={() => {
+            const first = products[0];
+            if (!first) { alert('Add a product first.'); return; }
+            openAdjustment(first);
+          }}><Sliders size={14}/> New Adjustment</button>
+        )}
+      </div>
+      <div className="inv-toolbar" style={{marginTop:'8px'}}>
+        <div className="inv-search-wrap">
+          <Search size={14} className="inv-search-icon"/>
+          <input className="inv-search" placeholder="Search by product name or notes…"
+            value={adjSearch} onChange={e => setAdjSearch(e.target.value)}/>
+        </div>
+        <select className="inv-select" value={adjFilterType} onChange={e => setAdjFilterType(e.target.value as any)}>
+          <option value="ALL">All Types</option>
+          <optgroup label="— Inbound —">
+            {(['OPENING_STOCK','PURCHASE_RECEIVE','CUSTOMER_RETURN','TRANSFER_IN','PRODUCTION_OUTPUT','ADJUSTMENT_GAIN'] as const).map(t =>
+              <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+            )}
+          </optgroup>
+          <optgroup label="— Outbound —">
+            {(['SALE','SUPPLIER_RETURN','TRANSFER_OUT','DAMAGE','EXPIRY','ADJUSTMENT_LOSS','PRODUCTION_USAGE'] as const).map(t =>
+              <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+            )}
+          </optgroup>
+        </select>
+      </div>
+
+      <div className="inv-table-card" style={{marginTop:'16px'}}>
+        <table className="inv-table">
+          <thead><tr><th>Date & Time</th><th>Product</th><th>Movement Type</th><th>Change</th><th>Before</th><th>After</th><th>By</th><th>Notes</th></tr></thead>
+          <tbody>
+            {filteredAdjustments.length === 0 ? (
+              <tr><td colSpan={8} style={{textAlign:'center',padding:'32px',opacity:0.5}}>No stock movements yet.</td></tr>
+            ) : filteredAdjustments.map(e => {
+              const prod = products.find(p => p.id === e.product_id);
+              return (
+                <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
+                  <td style={{whiteSpace:'nowrap'}}>{fmtDateTime(e.created_at)}</td>
+                  <td style={{fontWeight:600}}>{prod?.name ?? <span style={{opacity:0.5,fontFamily:'monospace'}}>{e.product_id.slice(-8)}</span>}</td>
+                  <td><span className={`inv-move-chip ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>{e.movement_type.replace(/_/g,' ')}</span></td>
+                  <td><strong style={{color: e.quantity_change > 0 ? '#10b981' : '#ef4444'}}>{e.quantity_change > 0 ? '+' : ''}{e.quantity_change}</strong></td>
+                  <td>{e.quantity_before}</td>
+                  <td>{e.quantity_after}</td>
+                  <td>{e.user_id}</td>
+                  <td>{e.notes ?? '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+    );
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 4 — TRANSFERS
+  // ──────────────────────────────────────────────────────────────────────────
+  const [isNewTransferOpen, setIsNewTransferOpen] = useState(false);
+  const [isReceiveTransferOpen, setIsReceiveTransferOpen] = useState(false);
+  const [selectedTransfer, setSelectedTransfer] = useState<StockTransfer | null>(null);
+  const [transferItems, setTransferItems] = useState<{ productId: string; productName: string; sku: string; qty: number; cost: number }[]>([]);
+  const [tFromBranch, setTFromBranch] = useState(currentBranch.id);
+  const [tToBranch, setTToBranch] = useState('');
+  const [tNotes, setTNotes] = useState('');
+  const [tSaving, setTSaving] = useState(false);
+  const [receivedQtys, setReceivedQtys] = useState<Record<string, number>>({});
+
+  const transfers = useLiveQuery(() => db.stockTransfers.where('tenant_id').equals(currentTenant?.id || '').reverse().sortBy('created_at'), [currentTenant?.id]) || [];
+  const selectedTransferItems = useLiveQuery(async () => {
+    if (!selectedTransfer) return [];
+    return db.stockTransferItems.where('transfer_id').equals(selectedTransfer.id).toArray();
+  }, [selectedTransfer?.id]) || [];
+
+  const handleCreateTransfer = async () => {
+    if (!tToBranch || tFromBranch === tToBranch) { alert('Select a valid destination branch.'); return; }
+    if (transferItems.length === 0) { alert('Add at least one item to transfer.'); return; }
+    setTSaving(true);
+    try {
+      await createStockTransfer({
+        tenantId: currentTenant.id, fromBranchId: tFromBranch, toBranchId: tToBranch,
+        items: transferItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, qtyRequested: i.qty, unitCost: i.cost })),
+        notes: tNotes, requestedBy: user?.name || 'System',
+      });
+      setIsNewTransferOpen(false); setTransferItems([]); setTNotes(''); setTToBranch('');
+      alert('✅ Transfer created as Draft. Submit it to deduct stock from source branch.');
+    } catch (e: any) { alert('Error: ' + e.message); }
+    setTSaving(false);
+  };
+
+  const handleSubmitTransfer = async (t: StockTransfer) => {
+    if (!window.confirm(`Submit transfer ${t.transfer_number}? This will deduct stock from ${t.from_branch_id}.`)) return;
+    try {
+      await submitTransfer(t.id, user?.name || 'System');
+      alert('✅ Transfer submitted. Stock deducted from source branch.');
+    } catch (e: any) { alert('Error: ' + e.message); }
+  };
+
+  const handleReceiveTransfer = async () => {
+    if (!selectedTransfer) return;
+    const entries = Object.entries(receivedQtys).map(([itemId, qtyReceived]) => ({ itemId, qtyReceived }));
+    if (entries.length === 0) { alert('Enter received quantities.'); return; }
+    try {
+      await receiveTransfer(selectedTransfer.id, user?.name || 'System', entries);
+      setIsReceiveTransferOpen(false); setSelectedTransfer(null); setReceivedQtys({});
+      alert('✅ Transfer received. Stock credited to destination branch.');
+    } catch (e: any) { alert('Error: ' + e.message); }
+  };
+
+  const STATUS_COLOR: Record<string, string> = {
+    Draft: '#6b7280', Pending: '#f59e0b', 'In Transit': '#6366f1',
+    Received: '#10b981', Cancelled: '#ef4444', Partial: '#f97316',
+  };
+
+  const renderTransfersTab = () => (
+    <div className="inv-transfers-view">
+      <div className="inv-toolbar">
+        <h2 style={{margin:0}}>Stock Transfers</h2>
+        {canTransfer && (
+          <button className="inv-add-btn" onClick={() => setIsNewTransferOpen(true)}>
+            <ArrowLeftRight size={14}/> New Transfer
+          </button>
+        )}
+      </div>
+
+      <div className="inv-table-card" style={{marginTop:'16px'}}>
+        <table className="inv-table">
+          <thead><tr><th>Transfer #</th><th>From</th><th>To</th><th>Status</th><th>Date</th><th>Requested By</th><th>Actions</th></tr></thead>
+          <tbody>
+            {transfers.length === 0 ? (
+              <tr><td colSpan={7} style={{textAlign:'center',padding:'32px',opacity:0.5}}>No transfers yet.</td></tr>
+            ) : transfers.map(t => (
+              <tr key={t.id}>
+                <td><strong>{t.transfer_number}</strong></td>
+                <td>{allBranches.find(b => b.id === t.from_branch_id)?.name ?? t.from_branch_id.slice(-6)}</td>
+                <td>{allBranches.find(b => b.id === t.to_branch_id)?.name ?? t.to_branch_id.slice(-6)}</td>
+                <td><span className="inv-status-pill" style={{background: STATUS_COLOR[t.status] + '22', color: STATUS_COLOR[t.status]}}>{t.status}</span></td>
+                <td>{fmtDate(t.created_at)}</td>
+                <td>{t.requested_by}</td>
+                <td>
+                  {t.status === 'Draft' && <button className="inv-icon-btn edit" onClick={() => handleSubmitTransfer(t)} title="Submit Transfer"><Send size={14}/></button>}
+                  {t.status === 'In Transit' && (
+                    <button className="inv-icon-btn adjust" onClick={() => { setSelectedTransfer(t); setIsReceiveTransferOpen(true); }} title="Receive Transfer"><Check size={14}/></button>
+                  )}
+                  <button className="inv-icon-btn" onClick={() => { setSelectedTransfer(t); }} title="View Details"><Eye size={14}/></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* New Transfer Dialog */}
+      <Dialog isOpen={isNewTransferOpen} onClose={() => setIsNewTransferOpen(false)} title="Create Stock Transfer" size="xl">
+        <div className="inv-transfer-form">
+          <div className="inv-form-grid">
+            <div className="inv-field">
+              <label>From Branch</label>
+              <select className="inv-input" value={tFromBranch} onChange={e => setTFromBranch(e.target.value)}>
+                {allBranches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="inv-field">
+              <label>To Branch</label>
+              <select className="inv-input" value={tToBranch} onChange={e => setTToBranch(e.target.value)}>
+                <option value="">— Select Destination —</option>
+                {allBranches.filter(b => b.id !== tFromBranch).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="inv-field full">
+              <label>Notes</label>
+              <input className="inv-input" value={tNotes} onChange={e => setTNotes(e.target.value)} placeholder="Transfer notes…"/>
+            </div>
+          </div>
+
+          <div className="inv-transfer-items">
+            <h4>Transfer Items</h4>
+            {transferItems.map((item, idx) => (
+              <div key={idx} className="inv-transfer-item-row">
+                <select className="inv-input" value={item.productId} onChange={e => {
+                  const p = products.find(x => x.id === e.target.value);
+                  if (!p) return;
+                  setTransferItems(prev => prev.map((ti, i) => i === idx ? {...ti, productId: p.id, productName: p.name, sku: p.sku??p.id.slice(-8), cost: p.buyingPrice} : ti));
+                }}>
+                  <option value="">— Select Product —</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <input className="inv-input" type="number" min="1" placeholder="Qty" value={item.qty}
+                  onChange={e => setTransferItems(prev => prev.map((ti, i) => i === idx ? {...ti, qty: Number(e.target.value)} : ti))}
+                  style={{width:'80px'}}/>
+                <button className="inv-icon-btn delete" onClick={() => setTransferItems(prev => prev.filter((_,i) => i !== idx))}><X size={13}/></button>
+              </div>
+            ))}
+            <button className="inv-add-btn outline" onClick={() => setTransferItems(prev => [...prev, {productId:'',productName:'',sku:'',qty:1,cost:0}])}>
+              <Plus size={13}/> Add Item
+            </button>
+          </div>
+
+          <div className="inv-confirm-actions" style={{marginTop:'16px'}}>
+            <button className="inv-cancel-btn" onClick={() => setIsNewTransferOpen(false)}>Cancel</button>
+            <button className="inv-save-btn" onClick={handleCreateTransfer} disabled={tSaving}>
+              {tSaving ? <RefreshCw size={14} className="spin"/> : <ArrowLeftRight size={14}/>} Create Transfer
+            </button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Receive Transfer Dialog */}
+      <Dialog isOpen={isReceiveTransferOpen} onClose={() => setIsReceiveTransferOpen(false)} title={`Receive: ${selectedTransfer?.transfer_number}`} size="lg">
+        <div className="inv-receive-form">
+          <p style={{opacity:0.7,marginTop:0}}>Enter the actual quantities received. Leave blank to match requested quantity.</p>
+          <table className="inv-table">
+            <thead><tr><th>Product</th><th>SKU</th><th>Requested</th><th>Received Qty</th></tr></thead>
+            <tbody>
+              {selectedTransferItems.map(item => (
+                <tr key={item.id}>
+                  <td>{item.product_name}</td>
+                  <td><code>{item.sku}</code></td>
+                  <td>{item.qty_requested}</td>
+                  <td>
+                    <input className="inv-input" type="number" min="0" max={item.qty_requested}
+                      placeholder={String(item.qty_requested)}
+                      value={receivedQtys[item.id] ?? ''}
+                      onChange={e => setReceivedQtys(prev => ({...prev, [item.id]: Number(e.target.value)}))}
+                      style={{width:'100px'}}/>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="inv-confirm-actions">
+            <button className="inv-cancel-btn" onClick={() => setIsReceiveTransferOpen(false)}>Cancel</button>
+            <button className="inv-save-btn" onClick={handleReceiveTransfer}><Check size={14}/> Confirm Receipt</button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 5 — PHYSICAL COUNT
+  // ──────────────────────────────────────────────────────────────────────────
+  const [isNewCountOpen, setIsNewCountOpen] = useState(false);
+  const [selectedCount, setSelectedCount] = useState<PhysicalCount | null>(null);
+  const [isCountDetailOpen, setIsCountDetailOpen] = useState(false);
+  const [countNotes, setCountNotes] = useState('');
+  const [countCreating, setCountCreating] = useState(false);
+  const [countBarcodeInput, setCountBarcodeInput] = useState('');
+  const countInputRef = useRef<HTMLInputElement>(null);
+
+  const physicalCounts = useLiveQuery(() =>
+    db.physicalCounts.where('tenant_id').equals(currentTenant?.id || '').reverse().sortBy('created_at')
+  , [currentTenant?.id]) || [];
+
+  const countItems = useLiveQuery(async () => {
+    if (!selectedCount) return [];
+    return db.physicalCountItems.where('count_id').equals(selectedCount.id).toArray();
+  }, [selectedCount?.id]) || [];
+
+  const handleCreateCount = async () => {
+    setCountCreating(true);
+    try {
+      const count = await createPhysicalCount({
+        tenantId: currentTenant.id, branchId: currentBranch.id,
+        notes: countNotes, createdBy: user?.name || 'System',
+        module: activeModule,
+      });
+      setSelectedCount(count); setIsNewCountOpen(false); setIsCountDetailOpen(true);
+    } catch (e: any) { alert('Error: ' + e.message); }
+    setCountCreating(false);
+  };
+
+  const handleCountItemQty = async (itemId: string, qty: number) => {
+    await updateCountItem(itemId, qty);
+  };
+
+  const handleApproveCount = async () => {
+    if (!selectedCount) return;
+    if (!window.confirm('Approve this stock count? This will automatically create ledger adjustment entries for all variances.')) return;
+    try {
+      await approvePhysicalCount(selectedCount.id, user?.name || 'System');
+      alert('✅ Stock count approved. Ledger adjustments created.');
+      setIsCountDetailOpen(false); setSelectedCount(null);
+    } catch (e: any) { alert('Error: ' + e.message); }
+  };
+
+  const COUNT_STATUS_COLOR: Record<string, string> = {
+    Draft: '#6b7280', Counting: '#6366f1', 'Pending Approval': '#f59e0b', Approved: '#10b981', Cancelled: '#ef4444',
+  };
+
+  const renderStockCountTab = () => (
+    <div className="inv-count-view">
+      <div className="inv-toolbar">
+        <h2 style={{margin:0}}>Physical Stock Counts</h2>
+        <button className="inv-add-btn" onClick={() => setIsNewCountOpen(true)}>
+          <ClipboardList size={14}/> New Count Session
+        </button>
+      </div>
+
+      <div className="inv-table-card" style={{marginTop:'16px'}}>
+        <table className="inv-table">
+          <thead>
+            <tr>
+              <th>Count #</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th>Total Items</th>
+              <th>Variances</th>
+              <th>Variance Value</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {physicalCounts.length === 0 ? (
+              <tr><td colSpan={7} style={{textAlign:'center',padding:'32px',opacity:0.5}}>No stock counts yet.</td></tr>
+            ) : physicalCounts.map(c => (
+              <tr key={c.id}>
+                <td><strong>{c.count_number}</strong></td>
+                <td>{fmtDate(c.created_at)}</td>
+                <td>
+                  <span className="inv-status-pill" style={{background:COUNT_STATUS_COLOR[c.status]+'22',color:COUNT_STATUS_COLOR[c.status]}}>
+                    {c.status}
+                  </span>
+                </td>
+                <td>{c.total_items}</td>
+                <td>{c.variance_items}</td>
+                <td>{fmtCcy(c.variance_value)}</td>
+                <td>
+                  <button className="inv-icon-btn edit" onClick={() => { setSelectedCount(c); setIsCountDetailOpen(true); }} title="Open Count">
+                    <ChevronRight size={14}/>
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* New Count Dialog */}
+      <Dialog isOpen={isNewCountOpen} onClose={() => setIsNewCountOpen(false)} title="Start Physical Stock Count" size="sm">
+        <div className="inv-form-grid">
+          <div className="inv-field full">
+            <label>Notes (optional)</label>
+            <textarea className="inv-input" rows={3} value={countNotes} onChange={e => setCountNotes(e.target.value)} placeholder="Reason for count, area covered, etc."/>
+          </div>
+          <div className="inv-confirm-actions">
+            <button className="inv-cancel-btn" onClick={() => setIsNewCountOpen(false)}>Cancel</button>
+            <button className="inv-save-btn" onClick={handleCreateCount} disabled={countCreating}>
+              {countCreating ? <RefreshCw size={14} className="spin"/> : <ClipboardList size={14}/>} Start Count
+            </button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Count Detail Dialog */}
+      <Dialog isOpen={isCountDetailOpen} onClose={() => setIsCountDetailOpen(false)} title={`Count: ${selectedCount?.count_number ?? ''}`} size="xl">
+        <div className="inv-count-detail">
+          {selectedCount && (() => {
+            const liveVarianceItems = countItems.filter(i => i.counted_quantity >= 0 && (i.counted_quantity - i.system_quantity) !== 0);
+            const liveVarianceCount = liveVarianceItems.length;
+            const liveVarianceValue = liveVarianceItems.reduce((s, i) => s + Math.abs((i.counted_quantity - i.system_quantity) * i.unit_cost), 0);
+
+            const displayVarianceItems = ['Approved', 'Cancelled'].includes(selectedCount.status)
+              ? selectedCount.variance_items
+              : liveVarianceCount;
+
+            const displayVarianceValue = ['Approved', 'Cancelled'].includes(selectedCount.status)
+              ? selectedCount.variance_value
+              : liveVarianceValue;
+
+            return (
+              <>
+                <div className="inv-count-status-bar">
+                  <span>Status: <strong style={{color:COUNT_STATUS_COLOR[selectedCount.status]}}>{selectedCount.status}</strong></span>
+                  <span>Total Items: <strong>{selectedCount.total_items}</strong></span>
+                  <span>Variances: <strong style={{color:displayVarianceItems>0?'#f59e0b':'#10b981'}}>{displayVarianceItems}</strong></span>
+                  <span>Variance Value: <strong style={{color:'#ef4444'}}>{fmtCcy(displayVarianceValue)}</strong></span>
+                </div>
+
+                {['Draft','Counting'].includes(selectedCount.status) && (
+                  <div className="inv-scanner-bar">
+                    <Barcode size={14}/>
+                    <input ref={countInputRef} className="inv-input" placeholder="Scan barcode or search SKU…"
+                      value={countBarcodeInput} onChange={e => setCountBarcodeInput(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter') {
+                          const val = countBarcodeInput.trim();
+                          const match = countItems.find(i => i.sku === val || i.product_name.toLowerCase().includes(val.toLowerCase()));
+                          if (match) {
+                            const newQty = (match.counted_quantity >= 0 ? match.counted_quantity : 0) + 1;
+                            await handleCountItemQty(match.id, newQty);
+                            setCountBarcodeInput('');
+                          } else {
+                            alert(`No match for: "${val}"`);
+                            setCountBarcodeInput('');
+                          }
+                        }
+                      }}/>
+                    <span style={{opacity:0.6,fontSize:'0.8rem'}}>Press Enter to auto-increment count</span>
+                  </div>
+                )}
+
+                <div style={{overflowX:'auto'}}>
+                  <table className="inv-table">
+                    <thead>
+                      <tr>
+                        <th>Product</th><th>SKU</th><th>System Qty</th><th>Counted Qty</th>
+                        <th>Variance</th><th>Unit Cost</th><th>Variance Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {countItems.map(item => {
+                        const counted = item.counted_quantity;
+                        const variance = counted >= 0 ? counted - item.system_quantity : 0;
+                        const varValue = Math.abs(variance * item.unit_cost);
+                        return (
+                          <tr key={item.id} className={variance > 0 ? 'inv-row-inbound' : variance < 0 ? 'inv-row-outbound' : ''}>
+                            <td>{item.product_name}</td>
+                            <td><code style={{fontSize:'0.75rem'}}>{item.sku}</code></td>
+                            <td>{item.system_quantity}</td>
+                            <td>
+                              {['Approved','Cancelled'].includes(selectedCount.status) ? (
+                                <span>{counted >= 0 ? counted : '—'}</span>
+                              ) : (
+                                <CountInput
+                                  initialValue={counted}
+                                  onSave={val => handleCountItemQty(item.id, val)}
+                                />
+                              )}
+                            </td>
+                            <td>
+                              {variance === 0 ? <span style={{color:'#10b981'}}>✓</span> :
+                                <strong style={{color: variance > 0 ? '#10b981' : '#ef4444'}}>{variance > 0 ? '+' : ''}{variance}</strong>
+                              }
+                            </td>
+                            <td>{fmtCcy(item.unit_cost)}</td>
+                            <td>{variance !== 0 ? <span style={{color:'#f59e0b'}}>{fmtCcy(varValue)}</span> : '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="inv-count-footer">
+                  {selectedCount.status === 'Counting' && (
+                    <button className="inv-save-btn" onClick={async () => { await submitCountForApproval(selectedCount.id); const updated = await db.physicalCounts.get(selectedCount.id); if (updated) setSelectedCount(updated); }}>
+                      <Send size={14}/> Submit for Approval
+                    </button>
+                  )}
+                  {selectedCount.status === 'Draft' && (
+                    <button className="inv-save-btn" onClick={async () => { await db.physicalCounts.update(selectedCount.id, {status:'Counting'}); const updated = await db.physicalCounts.get(selectedCount.id); if (updated) setSelectedCount(updated); }}>
+                      <CheckCircle2 size={14}/> Start Counting
+                    </button>
+                  )}
+                  {selectedCount.status === 'Pending Approval' && (
+                    <button className="inv-save-btn" style={{background:'#10b981'}} onClick={handleApproveCount}>
+                      <Shield size={14}/> Approve & Apply Adjustments
+                    </button>
+                  )}
+                  <button className="inv-cancel-btn" onClick={() => setIsCountDetailOpen(false)}>Close</button>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      </Dialog>
+    </div>
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TAB 6 — REPORTS
+  // ──────────────────────────────────────────────────────────────────────────
+  const [activeReport, setActiveReport] = useState<ReportType>('balance');
+  const [reportData, setReportData] = useState<any[]>([]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [valMethod, setValMethod] = useState<'FIFO' | 'WAC'>('FIFO');
+  const [slowDays, setSlowDays] = useState(30);
+
+  const REPORTS: { id: ReportType; label: string; icon: React.ReactNode }[] = [
+    { id: 'balance',   label: 'Stock Balance',     icon: <BarChart3 size={14}/> },
+    { id: 'movements', label: 'Stock Movements',   icon: <Activity size={14}/> },
+    { id: 'valuation', label: 'Valuation',          icon: <DollarSign size={14}/> },
+    { id: 'batch',     label: 'Batch / Lot',        icon: <Archive size={14}/> },
+    { id: 'expiry',    label: 'Expiry',             icon: <Calendar size={14}/> },
+    { id: 'reorder',   label: 'Reorder',            icon: <Target size={14}/> },
+    { id: 'slow',      label: 'Slow Moving',        icon: <TrendingDown size={14}/> },
+    { id: 'negative',  label: 'Negative Stock',     icon: <AlertCircle size={14}/> },
+  ];
+
+  const runReport = useCallback(async () => {
+    setReportLoading(true);
+    setReportData([]);
+    try {
+      let data: any[] = [];
+      if (activeReport === 'balance') {
+        data = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+      } else if (activeReport === 'movements') {
+        const all = await db.stockLedger.where('tenant_id').equals(currentTenant.id).toArray();
+        data = all.sort((a, b) => b.created_at - a.created_at).slice(0, 200);
+      } else if (activeReport === 'valuation') {
+        data = await generateValuationReport(currentTenant.id, currentBranch.id, valMethod);
+      } else if (activeReport === 'batch') {
+        data = await db.batchLots.where('tenant_id').equals(currentTenant.id).toArray();
+      } else if (activeReport === 'expiry') {
+        data = await refreshExpiryAlerts(currentTenant.id, currentBranch.id);
+      } else if (activeReport === 'reorder') {
+        data = await getReorderReport(currentTenant.id, currentBranch.id);
+      } else if (activeReport === 'slow') {
+        data = await getSlowMovingReport(currentTenant.id, currentBranch.id, slowDays);
+      } else if (activeReport === 'negative') {
+        data = await getNegativeStockReport(currentTenant.id, currentBranch.id);
+      }
+      setReportData(data);
+    } catch (e: any) { alert('Report error: ' + e.message); }
+    setReportLoading(false);
+  }, [activeReport, currentTenant.id, currentBranch.id, valMethod, slowDays]);
+
+  useEffect(() => { runReport(); }, [activeReport]);
+
+  const renderReportsTab = () => (
+    <div className="inv-reports-view">
+      <div className="inv-reports-sidebar">
+        {REPORTS.map(r => (
+          <button key={r.id} className={`inv-report-btn ${activeReport === r.id ? 'active' : ''}`}
+            onClick={() => setActiveReport(r.id)}>
+            {r.icon} {r.label}
+          </button>
+        ))}
+      </div>
+      <div className="inv-reports-main">
+        <div className="inv-reports-header">
+          <h2 style={{margin:0}}>{REPORTS.find(r => r.id === activeReport)?.label}</h2>
+          <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+            {activeReport === 'valuation' && (
+              <select className="inv-select" value={valMethod} onChange={e => setValMethod(e.target.value as any)}>
+                <option value="FIFO">FIFO</option><option value="WAC">Weighted Average</option>
+              </select>
+            )}
+            {activeReport === 'slow' && (
+              <select className="inv-select" value={slowDays} onChange={e => setSlowDays(Number(e.target.value))}>
+                <option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
+              </select>
+            )}
+            <button className="inv-refresh-btn" onClick={runReport} disabled={reportLoading}>
+              <RefreshCw size={14} className={reportLoading ? 'spin' : ''}/> {reportLoading ? 'Loading…' : 'Run Report'}
+            </button>
+          </div>
+        </div>
+
+        {reportLoading ? (
+          <div className="inv-loading"><RefreshCw size={24} className="spin"/><p>Running report…</p></div>
+        ) : (
+          <div className="inv-report-table-wrap">
+            {activeReport === 'balance' && (
+              <table className="inv-table">
+                <thead><tr><th>Product</th><th>Category</th><th>Stock</th><th>Buy Price</th><th>Sell Price</th><th>Stock Value</th><th>Module</th></tr></thead>
+                <tbody>{(reportData as Product[]).map(p => (
+                  <tr key={p.id} className={p.stock <= 0 ? 'inv-row-danger' : p.stock < 10 ? 'inv-row-warning' : ''}>
+                    <td><strong>{p.name}</strong>{p.hasVariants && <span className="inv-badge ml-2">+vars</span>}</td>
+                    <td>{p.category}</td>
+                    <td><strong style={{color: p.stock <= 0 ? '#ef4444' : p.stock < 10 ? '#f59e0b' : '#10b981'}}>{fmtNum(p.stock)}</strong></td>
+                    <td>{fmtCcy(p.buyingPrice)}</td>
+                    <td>{fmtCcy(p.sellingPrice || p.price)}</td>
+                    <td>{fmtCcy(p.stock * p.buyingPrice)}</td>
+                    <td>{p.module}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {activeReport === 'movements' && (
+              <table className="inv-table">
+                <thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Change</th><th>Before</th><th>After</th><th>Cost</th><th>User</th><th>Notes</th></tr></thead>
+                <tbody>{(reportData as StockLedgerEntry[]).map(e => (
+                  <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type)?'inv-row-inbound':'inv-row-outbound'}>
+                    <td style={{whiteSpace:'nowrap'}}>{fmtDateTime(e.created_at)}</td>
+                    <td>{products.find(p=>p.id===e.product_id)?.name ?? e.product_id.slice(-8)}</td>
+                    <td><span className="inv-move-type">{e.movement_type.replace(/_/g,' ')}</span></td>
+                    <td><strong style={{color:e.quantity_change>0?'#10b981':'#ef4444'}}>{e.quantity_change>0?'+':''}{e.quantity_change}</strong></td>
+                    <td>{e.quantity_before}</td><td>{e.quantity_after}</td>
+                    <td>{fmtCcy(e.total_cost)}</td><td>{e.user_id}</td><td>{e.notes??'—'}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {activeReport === 'valuation' && (
+              <>
+                <div className="inv-report-summary">
+                  Total Inventory Value ({valMethod}): <strong>{fmtCcy((reportData as any[]).reduce((s,v)=>s+v.total_value,0))}</strong>
+                </div>
+                <table className="inv-table">
+                  <thead><tr><th>Product</th><th>Method</th><th>Qty</th><th>Unit Value</th><th>Total Value</th></tr></thead>
+                  <tbody>{(reportData as any[]).filter(v=>v.quantity>0).map((v,i) => (
+                    <tr key={i}><td><strong>{v.product_name}</strong></td><td>{v.method}</td>
+                    <td>{fmtNum(v.quantity)}</td><td>{fmtCcy(v.unit_value)}</td>
+                    <td><strong>{fmtCcy(v.total_value)}</strong></td></tr>
+                  ))}</tbody>
+                </table>
+              </>
+            )}
+            {activeReport === 'batch' && (
+              <table className="inv-table">
+                <thead><tr><th>Batch #</th><th>Product</th><th>Received</th><th>Expiry</th><th>Remaining</th><th>Unit Cost</th><th>Status</th></tr></thead>
+                <tbody>{(reportData as BatchLot[]).map(b => {
+                  const prod = products.find(p=>p.id===b.product_id);
+                  const isExpired = b.expiry_date && b.expiry_date < Date.now();
+                  return (
+                    <tr key={b.id} className={isExpired?'inv-row-danger':''}>
+                      <td><strong>{b.batch_number}</strong></td>
+                      <td>{prod?.name ?? b.product_id.slice(-8)}</td>
+                      <td>{fmtDate(b.received_date)}</td>
+                      <td>{b.expiry_date ? fmtDate(b.expiry_date) : '—'}</td>
+                      <td><strong style={{color:b.quantity_remaining===0?'#ef4444':'#10b981'}}>{b.quantity_remaining}</strong></td>
+                      <td>{fmtCcy(b.unit_cost)}</td>
+                      <td><span className={`inv-status-pill ${isExpired?'expired':b.status.toLowerCase()}`}>{isExpired?'Expired':b.status}</span></td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+            )}
+            {activeReport === 'expiry' && (
+              <table className="inv-table">
+                <thead><tr><th>Product</th><th>Batch #</th><th>Expiry Date</th><th>Remaining Qty</th><th>Alert Level</th></tr></thead>
+                <tbody>{(reportData as any[]).map((a,i) => (
+                  <tr key={i} className={a.alert_level==='EXPIRED'?'inv-row-danger':a.alert_level==='TODAY'?'inv-row-danger':a.alert_level==='WEEK'?'inv-row-warning':'inv-row-inbound'}>
+                    <td><strong>{a.product_name}</strong></td>
+                    <td>{a.batch_number}</td>
+                    <td>{fmtDate(a.expiry_date)}</td>
+                    <td>{a.quantity_remaining}</td>
+                    <td><span className={`inv-status-pill ${a.alert_level.toLowerCase()}`}>{a.alert_level}</span></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {activeReport === 'reorder' && (
+              <table className="inv-table">
+                <thead><tr><th>Product</th><th>Current Stock</th><th>Min Level</th><th>Deficit</th><th>To Reorder</th><th>Supplier</th><th>Lead Time</th></tr></thead>
+                <tbody>{(reportData as any[]).map((a,i) => (
+                  <tr key={i} className="inv-row-warning">
+                    <td><strong>{a.product?.name}</strong></td>
+                    <td><strong style={{color:'#ef4444'}}>{a.currentStock}</strong></td>
+                    <td>{a.rule?.min_quantity}</td>
+                    <td><strong style={{color:'#f59e0b'}}>{a.deficit}</strong></td>
+                    <td>{a.toReorder}</td>
+                    <td>{a.rule?.preferred_supplier_name ?? '—'}</td>
+                    <td>{a.rule?.lead_time_days}d</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {activeReport === 'slow' && (
+              <table className="inv-table">
+                <thead><tr><th>Product</th><th>Category</th><th>Stock</th><th>Days Since Last Sale</th><th>Stock Value</th></tr></thead>
+                <tbody>{(reportData as any[]).map((a,i) => (
+                  <tr key={i} className="inv-row-warning">
+                    <td><strong>{a.product?.name}</strong></td>
+                    <td>{a.product?.category}</td>
+                    <td>{a.product?.stock}</td>
+                    <td>{a.daysSinceLastSale !== null ? `${a.daysSinceLastSale} days` : 'Never sold'}</td>
+                    <td>{fmtCcy((a.product?.stock??0)*(a.product?.buyingPrice??0))}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {activeReport === 'negative' && (
+              <table className="inv-table">
+                <thead><tr><th>Product</th><th>Category</th><th>Stock (Negative)</th><th>Buy Price</th><th>Module</th></tr></thead>
+                <tbody>{(reportData as Product[]).map(p => (
+                  <tr key={p.id} className="inv-row-danger">
+                    <td><strong>{p.name}</strong></td>
+                    <td>{p.category}</td>
+                    <td><strong style={{color:'#ef4444'}}>{p.stock}</strong></td>
+                    <td>{fmtCcy(p.buyingPrice)}</td>
+                    <td>{p.module}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+            {reportData.length === 0 && !reportLoading && (
+              <div className="inv-empty-state"><FileText size={40} opacity={0.3}/><p>No data for this report.</p></div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderRecipesTab = () => {
+    const isRetail = activeModule === 'Retail';
+    return (
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h3 className="text-base font-bold text-slate-800 dark:text-white">
+              {isRetail ? 'Product Bundles & Kits' : 'Cocktail & Drink Recipes'}
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {isRetail 
+                ? 'Configure constituent items for gift hampers, product packs, or bundle deals' 
+                : 'Configure ingredient components for custom cocktails or blended beverages'}
+            </p>
+          </div>
+          <button onClick={() => setIsRecipeModalOpen(true)} className="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded-lg hover:bg-primary-dark flex items-center gap-1.5">
+            <Plus size={14} /> {isRetail ? 'Create Product Bundle' : 'Create Recipe'}
+          </button>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          {liveRecipes && liveRecipes.map((r: any) => (
+            <div key={r.id} className="p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl space-y-3 shadow-sm">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h4 className="font-bold text-slate-800 dark:text-white text-sm">{r.productName}</h4>
+                  <p className="text-[10px] text-slate-400">
+                    {isRetail ? 'Pack Contents' : `Recipe: ${r.name} (Yields: ${r.yield_quantity} Unit)`}
+                  </p>
+                </div>
+                <button 
+                  onClick={async () => {
+                    if (confirm(isRetail ? 'Delete this product bundle configuration?' : 'Delete this recipe?')) {
+                      await db.recipes.delete(r.id);
+                      const items = await db.recipeItems.where('recipe_id').equals(r.id).toArray();
+                      for (const item of items) {
+                        await db.recipeItems.delete(item.id);
+                      }
+                      alert(isRetail ? 'Product bundle configuration deleted.' : 'Recipe deleted.');
+                    }
+                  }}
+                  className="text-slate-400 hover:text-danger p-1"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-darkbg-border/40 pt-2.5 space-y-1.5">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  {isRetail ? 'Constituent Items' : 'Ingredients'}
+                </span>
+                {r.items.map((item: any) => (
+                  <div key={item.id} className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
+                    <span>{item.ingredientName}</span>
+                    <span className="font-semibold">{item.quantity} {item.unit}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {(!liveRecipes || liveRecipes.length === 0) && (
+            <div className="sm:col-span-2 text-center py-8 text-slate-400 italic text-xs bg-slate-50 dark:bg-darkbg/20 border border-dashed rounded-xl">
+              {isRetail 
+                ? 'No product bundles configured yet. Click "Create Product Bundle" above to package multiple items.' 
+                : 'No recipes configured. Click "Create Recipe" above to configure ingredients.'}
+            </div>
+          )}
+        </div>
+
+        {/* Recipe / Bundle Builder Dialog */}
+        <Dialog
+          isOpen={isRecipeModalOpen}
+          onClose={() => setIsRecipeModalOpen(false)}
+          title={isRetail ? 'Create Product Bundle / Kit' : 'Create Beverage Recipe'}
+          description={isRetail ? 'Link a composite bundle to its constituent individual stock items' : 'Link a menu cocktail/drink to its raw ingredient stocks'}
+          size="lg"
+        >
+          <form onSubmit={handleSaveRecipe} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
+                {isRetail ? 'Target Bundle Product *' : 'Target Beverage Product *'}
+              </label>
+              <select
+                value={selectedRecipeProduct}
+                onChange={(e) => setSelectedRecipeProduct(e.target.value)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                required
+              >
+                <option value="">
+                  {isRetail ? '— Select Target Product Bundle —' : '— Select Target Drink (e.g. Mojito) —'}
+                </option>
+                {products.filter(p => p.module === activeModule).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Input 
+                label={isRetail ? 'Bundle Pack Title *' : 'Recipe Title *'} 
+                placeholder={isRetail ? 'e.g. Gift Pack 2026' : 'e.g. Standard 1-Shot Mix'} 
+                value={recipeName}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRecipeName(e.target.value)}
+                required
+              />
+              <Input 
+                label="Yield Qty *" 
+                type="number" 
+                placeholder="1" 
+                value={recipeYield}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRecipeYield(parseInt(e.target.value) || 1)}
+                required
+              />
+            </div>
+
+            <div className="space-y-2 border-t border-slate-100 dark:border-darkbg-border/30 pt-3">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isRetail ? 'Constituent Items & Quantities' : 'Ingredient Quantities'}
+                </span>
+                <button 
+                  type="button" 
+                  onClick={() => setRecipeLines([...recipeLines, { ingredientId: '', qty: 1, unit: isRetail ? 'Unit' : 'ml' }])}
+                  className="text-[10px] text-primary hover:underline font-bold"
+                >
+                  + Add Line
+                </button>
+              </div>
+
+              {recipeLines.map((line, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <select
+                    value={line.ingredientId}
+                    onChange={(e) => {
+                      const newLines = [...recipeLines];
+                      newLines[idx].ingredientId = e.target.value;
+                      setRecipeLines(newLines);
+                    }}
+                    className="h-9 flex-1 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                    required
+                  >
+                    <option value="">
+                      {isRetail ? '— Select Constituent Product —' : '— Select Ingredient Stock —'}
+                    </option>
+                    {products.map(p => (
+                      <option key={p.id} value={p.id}>{p.name} ({p.stock} units left)</option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="number"
+                    placeholder="Qty"
+                    value={line.qty}
+                    onChange={(e) => {
+                      const newLines = [...recipeLines];
+                      newLines[idx].qty = parseFloat(e.target.value) || 0;
+                      setRecipeLines(newLines);
+                    }}
+                    className="h-9 w-20 rounded-lg border border-slate-200 bg-slate-50 text-xs text-center dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                    required
+                  />
+
+                  <select
+                    value={line.unit}
+                    onChange={(e) => {
+                      const newLines = [...recipeLines];
+                      newLines[idx].unit = e.target.value;
+                      setRecipeLines(newLines);
+                    }}
+                    className="h-9 w-24 rounded-lg border border-slate-200 bg-slate-50 text-xs px-1 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                  >
+                    {isRetail ? (
+                      <>
+                        <option value="Unit">Unit(s)</option>
+                        <option value="Pcs">Piece(s)</option>
+                        <option value="Box">Box(es)</option>
+                        <option value="Kg">kg</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="ml">ml</option>
+                        <option value="Bottle">Bottle</option>
+                        <option value="Can">Can</option>
+                        <option value="g">grams</option>
+                      </>
+                    )}
+                  </select>
+
+                  {recipeLines.length > 1 && (
+                    <button 
+                      type="button" 
+                      onClick={() => setRecipeLines(recipeLines.filter((_, i) => i !== idx))}
+                      className="text-slate-400 hover:text-danger p-1"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-100 dark:border-darkbg-border/30 pt-3">
+              <Button variant="outline" type="button" onClick={() => setIsRecipeModalOpen(false)}>Cancel</Button>
+              <Button variant="primary" type="submit">
+                {isRetail ? 'Save Product Bundle' : 'Save Recipe'}
+              </Button>
+            </div>
+          </form>
+        </Dialog>
+      </div>
+    );
+  };
+
+  const renderWastageTab = () => {
+    const totalLeakageCost = (liveWastages || []).reduce((sum, item) => {
+      let multiplier = 1;
+      if (item.unit === 'ml') {
+        multiplier = 1 / 750;
+      } else if (item.unit === 'Shot') {
+        multiplier = 30 / 750;
+      }
+      return sum + (item.quantity * item.buyingPrice * multiplier);
+    }, 0);
+
+    const reasonStats: Record<string, number> = {};
+    (liveWastages || []).forEach(l => {
+      reasonStats[l.reason] = (reasonStats[l.reason] || 0) + 1;
+    });
+
+    const aiInsightsList = [
+      "Friday 7PM-10PM is your highest demand period. Schedule extra bartender capacity.",
+      "Vodka/Spirit consumption increased 30% but sales increased only 10%. Check for unauthorized spillage.",
+      "Safari Lager stock levels forecast to deplete in 3 days based on current run rates."
+    ];
+
+    return (
+      <div className="space-y-6">
+        {/* Analytics Header Grid */}
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm flex flex-col justify-between">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Financial Leakage (Cost)</span>
+            <div className="mt-2">
+              <span className="text-xl font-extrabold text-danger">Tsh. {Math.round(totalLeakageCost).toLocaleString()}</span>
+              <p className="text-[9px] text-slate-400 mt-1">Based on bottle cost ratio allocations</p>
+            </div>
+          </div>
+
+          <div className="p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm flex flex-col justify-between">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Top Spillage Reasons</span>
+            <div className="mt-2 text-xs space-y-1">
+              {Object.keys(reasonStats).length === 0 ? (
+                <span className="text-slate-400 italic">No spillage logged</span>
+              ) : (
+                Object.entries(reasonStats).slice(0, 3).map(([r, count]) => (
+                  <div key={r} className="flex justify-between font-semibold">
+                    <span className="text-slate-600 dark:text-slate-400">{r}</span>
+                    <span className="text-slate-900 dark:text-white">{count} logs</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="p-4 bg-gradient-to-r from-violet-500/10 to-indigo-500/10 border border-violet-500/20 rounded-xl flex flex-col justify-between">
+            <span className="text-[10px] font-extrabold text-violet-600 dark:text-violet-400 uppercase tracking-wider flex items-center gap-1.5">
+              <span>✨ AI Smart Insights</span>
+            </span>
+            <div className="mt-2 text-[10px] text-slate-600 dark:text-slate-300 space-y-1.5 font-medium">
+              {aiInsightsList.map((ins, i) => (
+                <div key={i} className="flex gap-1">
+                  <span>💡</span>
+                  <span>{ins}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-3">
+        {/* Log Wastage Form */}
+        <div className="p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 dark:text-white">Record Beverage Spillage</h3>
+            <p className="text-[10px] text-slate-500">Instantly deduct lost pour or broke bottle stocks from inventory ledger</p>
+          </div>
+
+          <form onSubmit={handleSaveWastage} className="space-y-3">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Damaged / Spilt Drink *</label>
+              <select
+                value={wastageProductId}
+                onChange={(e) => setWastageProductId(e.target.value)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                required
+              >
+                <option value="">— Select Beverage Product —</option>
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.stock} units left)</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Input 
+                label="Lost Quantity *" 
+                type="number" 
+                placeholder="60" 
+                value={wastageQty}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWastageQty(parseFloat(e.target.value) || 0)}
+                required
+              />
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Unit *</label>
+                <select 
+                  value={wastageUnit}
+                  onChange={(e) => setWastageUnit(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                >
+                  <option value="ml">ml</option>
+                  <option value="Bottle">Bottle</option>
+                  <option value="Can">Can</option>
+                  <option value="Shot">Shot</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Loss Reason *</label>
+              <select 
+                value={wastageReason}
+                onChange={(e) => setWastageReason(e.target.value as any)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+              >
+                <option value="SPILL">SPILL (Spillage on Floor)</option>
+                <option value="BAD POUR">BAD POUR (Foamy Head / Overflow)</option>
+                <option value="EXPIRED">EXPIRED (Past shelf date)</option>
+                <option value="FREE TASTING">FREE TASTING (Customer promo sampling)</option>
+                <option value="DAMAGED">DAMAGED (Broken glass/bottle)</option>
+                <option value="STAFF DRINK">STAFF DRINK (Authorized shift drink)</option>
+                <option value="OTHER">OTHER / UNACCOUNTED SHRINKAGE</option>
+              </select>
+            </div>
+
+            <Input 
+              label="Audit Notes" 
+              placeholder="e.g. Customer bumped bartender arm" 
+              value={wastageNotes}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWastageNotes(e.target.value)}
+            />
+
+            <Button variant="danger" type="submit" className="w-full flex items-center justify-center gap-1.5">
+              <AlertTriangle size={14} /> Commit Wastage Adjustment
+            </Button>
+          </form>
+        </div>
+
+        {/* Wastage Logs List */}
+        <div className="md:col-span-2 p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm space-y-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 dark:text-white">Recent Wastage Audit Ledger</h3>
+            <p className="text-[10px] text-slate-500">Immutable log of authorized shrinkage and pouring variances</p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 dark:border-darkbg-border/30 bg-slate-50 dark:bg-darkbg/50 font-bold uppercase tracking-wider text-slate-500">
+                  <th className="p-2">Timestamp</th>
+                  <th className="p-2">Drink</th>
+                  <th className="p-2">Lost Qty</th>
+                  <th className="p-2">Reason</th>
+                  <th className="p-2">Logged By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/20">
+                {liveWastages && liveWastages.map((l: any) => (
+                  <tr key={l.id}>
+                    <td className="p-2 text-slate-400 font-mono">{new Date(l.timestamp).toLocaleTimeString()}</td>
+                    <td className="p-2 font-bold">{l.productName}</td>
+                    <td className="p-2 text-danger font-semibold">-{l.quantity} {l.unit}</td>
+                    <td className="p-2">
+                      <Badge variant="danger">{l.reason}</Badge>
+                    </td>
+                    <td className="p-2 text-slate-500">{l.employee_id}</td>
+                  </tr>
+                ))}
+
+                {(!liveWastages || liveWastages.length === 0) && (
+                  <tr>
+                    <td colSpan={5} className="text-center py-8 text-slate-400 italic text-xs">No spillage or wastage logged today.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      </div>
+    );
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ──────────────────────────────────────────────────────────────────────────
+  const TOP_TABS: { id: InventoryTab; label: string; icon: React.ReactNode; badge?: number }[] = [
+    { id: 'dashboard',   label: 'Dashboard',    icon: <BarChart3 size={15}/>, },
+    { id: 'products',    label: 'Products',     icon: <Package size={15}/>,   badge: stats.total },
+    { id: 'categories',  label: 'Categories & Brands',   icon: <Tag size={15}/>,       badge: allCategories.length },
+    { id: 'adjustments', label: 'Adjustments',  icon: <Sliders size={15}/>,  },
+    { id: 'transfers',   label: 'Transfers',    icon: <ArrowLeftRight size={15}/>, badge: kpis?.pendingTransfers },
+    { id: 'alerts',      label: 'Stock Alerts', icon: <AlertTriangle size={15}/>,   badge: kpis?.lowStockCount },
+    { id: 'count',       label: 'Stock Count',  icon: <ClipboardList size={15}/>, badge: kpis?.pendingCounts },
+    { id: 'reports',     label: 'Reports',      icon: <FileText size={15}/>,  },
+    ...(activeModule === 'Bar' ? [
+      { id: 'recipes' as any, label: 'Recipes & Pour Control', icon: <Activity size={15}/> },
+      { id: 'wastage' as any, label: 'Wastage & Spillage', icon: <AlertTriangle size={15}/> }
+    ] : activeModule === 'Retail' ? [
+      { id: 'recipes' as any, label: 'Product Bundles & Kits', icon: <Layers size={15}/> }
+    ] : [])
+  ];
+
+  return (
+    <div className="inventory-root">
+
+
+      {/* Top navigation tabs */}
+      <div className="inv-top-tabs">
+        {TOP_TABS.map(t => (
+          <button key={t.id} className={`inv-top-tab ${invTab === t.id ? 'active' : ''}`}
+            onClick={() => setInvTab(t.id)}>
+            {t.icon} {t.label}
+            {!!t.badge && t.badge > 0 && <span className="inv-tab-badge">{t.badge}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div className="inv-tab-body">
+        {invTab === 'dashboard'   && renderDashboardTab()}
+        {invTab === 'products'    && renderProductsTab()}
+        {invTab === 'categories'  && renderCategoriesTab()}
+        {invTab === 'adjustments' && renderAdjustmentsTab()}
+        {invTab === 'transfers'   && renderTransfersTab()}
+        {invTab === 'alerts'      && renderAlertsTab()}
+        {invTab === 'count'       && renderStockCountTab()}
+        {invTab === 'reports'     && renderReportsTab()}
+        {invTab === 'recipes'     && renderRecipesTab()}
+        {invTab === 'wastage'     && renderWastageTab()}
+      </div>
+
+      {/* ── Global Stock Adjustment Dialog ─────────────────────────────────────
+           Rendered at root level so it works when triggered from ANY tab
+           (e.g. the Sliders button on product cards in the Products tab).    */}
+      {/* ── Global Bulk Stock Adjustment Dialog ────────────────────────────────
+           Multi-line: add as many product/variant rows as needed, submit all. */}
+      <Dialog
+        isOpen={isAdjustmentOpen}
+        onClose={() => { setIsAdjustmentOpen(false); setAdjustLines([makeBlankLine()]); }}
+        title="Bulk Stock Adjustment"
+        size="xl"
+      >
+        <form onSubmit={handleBulkAdjustment}>
+          {/* Transaction Date/Time field */}
+          <div style={{ display: 'flex', gap: '16px', marginBottom: '16px', alignItems: 'center', width: '100%' }}>
+            {!((securitySetting?.config || DEFAULT_SECURITY_CONFIG) as SecurityConfig).allowBackdatedInventory ? (
+              <div style={{ width: '100%' }}>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b', marginBottom: '4px' }}>
+                  Adjustment Date & Time (Disabled by Policy)
+                </label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    className="inv-input"
+                    type="datetime-local"
+                    value={adjustmentDate}
+                    disabled
+                    required
+                    style={{ width: '250px', opacity: 0.6, cursor: 'not-allowed' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#e11d48', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Shield size={14} /> Backdated inventory adjustments are disabled.
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div style={{ width: '280px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b', margin: 0 }}>
+                    Adjustment Date & Time
+                  </label>
+                  {!['Super Admin', 'Business Owner', 'Tenant Owner', 'Branch Manager'].includes(user?.role || '') && (
+                    <span style={{ fontSize: '9px', background: '#fef3c7', color: '#d97706', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>Requires Approval</span>
+                  )}
+                </div>
+                <input
+                  className="inv-input"
+                  type="datetime-local"
+                  value={adjustmentDate}
+                  onChange={e => setAdjustmentDate(e.target.value)}
+                  required
+                  style={{ width: '100%' }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Scrollable line table */}
+          <div style={{overflowX:'auto', maxHeight:'60vh', overflowY:'auto'}}>
+            <table className="inv-table" style={{minWidth:'820px', fontSize:'12px'}}>
+              <thead>
+                <tr>
+                  <th style={{width:'20%'}}>Product</th>
+                  <th style={{width:'15%'}}>Variant</th>
+                  <th style={{width:'20%'}}>Movement Type</th>
+                  <th style={{width:'14%', minWidth:'90px'}}>Qty</th>
+                  <th style={{width:'25%'}}>Notes</th>
+                  <th style={{width:'6%'}}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {adjustLines.map((line) => {
+                  const prod = products.find(p => p.id === line.productId);
+                  const variants = variantCache[line.productId] || [];
+                  return (
+                    <tr key={line.id}>
+                      {/* Product */}
+                      <td>
+                        <select
+                          className="inv-input" style={{width:'100%'}}
+                          value={line.productId}
+                          onChange={e => updateLine(line.id, { productId: e.target.value, variantId: '' })}
+                        >
+                          <option value="">— Select —</option>
+                          {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                      </td>
+                      {/* Variant */}
+                      <td>
+                        {prod?.hasVariants ? (
+                          <select
+                            className="inv-input" style={{width:'100%'}}
+                            value={line.variantId}
+                            onChange={e => updateLine(line.id, { variantId: e.target.value })}
+                          >
+                            <option value="">— Variant —</option>
+                            {variants.map(v => (
+                              <option key={v.id} value={v.id}>
+                                {Object.values(v.attributes).join(' / ')}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span style={{opacity:0.4, fontSize:'11px', paddingLeft:'4px'}}>N/A</span>
+                        )}
+                      </td>
+                      {/* Movement Type */}
+                      <td>
+                        <select
+                          className="inv-input" style={{width:'100%'}}
+                          value={line.movementType}
+                          onChange={e => updateLine(line.id, { movementType: e.target.value as StockLedgerEntry['movement_type'] })}
+                        >
+                          <optgroup label="Inbound (+)">
+                            {(['OPENING_STOCK','PURCHASE_RECEIVE','CUSTOMER_RETURN','TRANSFER_IN','PRODUCTION_OUTPUT','ADJUSTMENT_GAIN'] as const).map(t =>
+                              <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+                            )}
+                          </optgroup>
+                          <optgroup label="Outbound (−)">
+                            {(['SALE','SUPPLIER_RETURN','TRANSFER_OUT','DAMAGE','EXPIRY','ADJUSTMENT_LOSS','PRODUCTION_USAGE'] as const).map(t =>
+                              <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+                            )}
+                          </optgroup>
+                        </select>
+                      </td>
+                      {/* Qty */}
+                      <td style={{minWidth:'90px'}}>
+                        <input
+                          className="inv-input" style={{width:'100%', textAlign:'center'}}
+                          type="number" min="1"
+                          value={line.qty || ''}
+                          onChange={e => updateLine(line.id, { qty: Number(e.target.value) })}
+                          required
+                        />
+                      </td>
+                      {/* Notes */}
+                      <td>
+                        <input
+                          className="inv-input" style={{width:'100%'}}
+                          value={line.notes}
+                          placeholder="Optional reason…"
+                          onChange={e => updateLine(line.id, { notes: e.target.value })}
+                        />
+                      </td>
+                      {/* Remove */}
+                      <td style={{textAlign:'center'}}>
+                        {adjustLines.length > 1 && (
+                          <button
+                            type="button"
+                            title="Remove row"
+                            onClick={() => removeLine(line.id)}
+                            style={{background:'none',border:'none',cursor:'pointer',color:'#ef4444',padding:'2px 4px'}}
+                          >✕</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Add row + summary */}
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'12px', gap:'12px'}}>
+            <button
+              type="button"
+              className="inv-add-btn"
+              onClick={addLine}
+              style={{flexShrink:0}}
+            >
+              + Add Another Product / Variant
+            </button>
+            <span style={{fontSize:'11px', opacity:0.6}}>
+              {adjustLines.length} line{adjustLines.length !== 1 ? 's' : ''} • All will be recorded together
+            </span>
+            <div className="inv-confirm-actions" style={{margin:0}}>
+              <button
+                type="button"
+                className="inv-cancel-btn"
+                onClick={() => { setIsAdjustmentOpen(false); setAdjustLines([makeBlankLine()]); }}
+              >Cancel</button>
+              <button
+                type="submit"
+                className="inv-save-btn"
+                disabled={adjSubmitting}
+              >
+                <Check size={14}/> {adjSubmitting ? 'Saving…' : `Record ${adjustLines.length} Movement${adjustLines.length !== 1 ? 's' : ''}`}
+              </button>
+            </div>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Delete confirmation */}
+
+      {/* ── Barcode Labels Printer Dialog ───────────────────────────────────── */}
+      <Dialog
+        isOpen={isBarcodePrinterOpen}
+        onClose={() => { setIsBarcodePrinterOpen(false); setBcProductId(''); setBcVariantId(''); }}
+        title="Print Product Barcode Labels"
+        size="lg"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="inv-field">
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Select Product / Variant</label>
+              <select
+                value={bcProductId + (bcVariantId ? `|${bcVariantId}` : '')}
+                onChange={e => {
+                  const parts = e.target.value.split('|');
+                  setBcProductId(parts[0]);
+                  setBcVariantId(parts[1] || '');
+                }}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+              >
+                <option value="">— Select Product or Variant —</option>
+                {selectableItems.map((item, idx) => (
+                  <option key={idx} value={item.id + (item.variantId ? `|${item.variantId}` : '')}>
+                    {item.name} (SKU: {item.sku})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="inv-field">
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Layout Template</label>
+              <select
+                value={bcLayout}
+                onChange={e => setBcLayout(e.target.value as any)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+              >
+                <option value="single">Single Label Sticker</option>
+                <option value="sheet">Sheet of Labels (Grid)</option>
+              </select>
+            </div>
+
+            {bcLayout === 'sheet' && (
+              <div className="inv-field col-span-2">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Number of Labels to Print</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={bcQty}
+                  onChange={e => setBcQty(Math.max(1, Number(e.target.value)))}
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                />
+              </div>
+            )}
+          </div>
+
+          {selectedBcItem ? (
+            <div className="border border-slate-100 dark:border-darkbg-border/30 rounded-xl p-4 bg-slate-50 dark:bg-darkbg/40 space-y-3">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Live Label Tag Preview</span>
+              <div className="flex justify-center">
+                {/* Visual Label sticker */}
+                <div className="border border-slate-300 dark:border-slate-700 bg-white p-3 rounded shadow-sm text-center w-[180px] font-mono text-black">
+                  <div className="text-[8px] font-bold tracking-wider text-slate-500 uppercase mb-1">DukaPos Store</div>
+                  <div className="text-[10px] font-bold text-slate-800 truncate mb-1">{selectedBcItem.name}</div>
+                  <div className="text-[12px] font-extrabold text-slate-950 mb-1.5">{fmtCcy(selectedBcItem.price)}</div>
+                  
+                  {/* CSS barcode columns */}
+                  <div className="flex justify-center items-stretch h-9 bg-white px-2 py-1 gap-[1.5px] border-y border-dashed border-slate-200">
+                    {(selectedBcItem.sku || '').split('').map((char, idx) => {
+                      const code = char.charCodeAt(0);
+                      const w1 = (code & 1) ? '3px' : '1px';
+                      const w2 = (code & 2) ? '2px' : '1px';
+                      return (
+                        <React.Fragment key={idx}>
+                          <div className="bg-black" style={{ width: w1 }} />
+                          <div className="bg-white" style={{ width: '1px' }} />
+                          <div className="bg-black" style={{ width: w2 }} />
+                          <div className="bg-white" style={{ width: '1px' }} />
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[9px] font-bold tracking-widest text-slate-700 mt-1 uppercase">* {selectedBcItem.sku} *</div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-slate-200/50 dark:border-darkbg-border/30 pt-3">
+                <Button variant="outline" onClick={() => setIsBarcodePrinterOpen(false)}>Cancel</Button>
+                <Button variant="primary" onClick={handlePrintLabels} className="flex items-center gap-1.5">
+                  <Barcode size={14} /> Print {bcLayout === 'single' ? 'Single Sticker' : `${bcQty} Label Sheet`}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-6 text-slate-400 italic">Select a product to view the printable barcode sticker preview.</div>
+          )}
+        </div>
+      </Dialog>
+
+      {/* ── Bulk CSV Product Importer Dialog ────────────────────────────────── */}
+      <Dialog
+        isOpen={isCsvImportOpen}
+        onClose={() => { setIsCsvImportOpen(false); setCsvData(''); setCsvParsedRows([]); setCsvHasParsed(false); }}
+        title="Bulk Product Import (CSV)"
+        size="lg"
+      >
+        <form onSubmit={handleCsvImport} className="space-y-4 text-xs">
+          {/* Hidden file input */}
+          <input
+            ref={csvFileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: 'none' }}
+            onChange={handleCsvFileInput}
+          />
+
+          {!csvHasParsed ? (
+            <>
+              {/* Template instructions */}
+              <div className="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl p-4 text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
+                <span className="font-bold text-blue-600 dark:text-blue-400 block text-xs mb-1">📋 CSV Template Instructions</span>
+                <p>Required columns: <strong>Name, Category</strong>. Optional: <strong>Buying Price, Selling Price, SKU, Barcode, Brand, Stock</strong>.</p>
+                <p className="text-[10px] text-slate-400 italic">Aliases supported (e.g. Product Name, Buying_price, Qty, Cost).</p>
+                <div className="bg-white dark:bg-darkbg p-2 rounded border border-slate-200 dark:border-darkbg-border/50 font-mono mt-2 text-[10px] text-slate-800 dark:text-slate-200 select-all overflow-x-auto">
+                  Name,Category,Buying Price,Selling Price,SKU,Barcode,Brand,Stock<br/>
+                  Premium Rice 5kg,Grains,15000,18500,PR-GOLD-01,600123456,Tanzania Gold,50<br/>
+                  Cooking Oil 1L,Oils,4500,5800,OIL-KOR-1L,,Kori Oil,120
+                </div>
+              </div>
+
+              {/* Drag & Drop Zone */}
+              <div
+                className={`csv-dropzone ${csvDragActive ? 'active' : ''} ${csvData ? 'has-file' : ''}`}
+                onDragEnter={e => { e.preventDefault(); setCsvDragActive(true); }}
+                onDragOver={e => { e.preventDefault(); setCsvDragActive(true); }}
+                onDragLeave={() => setCsvDragActive(false)}
+                onDrop={handleCsvFileDrop}
+                onClick={() => !csvData && csvFileInputRef.current?.click()}
+                style={{ cursor: csvData ? 'default' : 'pointer' }}
+              >
+                {csvData ? (
+                  <div className="csv-dropzone-hasfile">
+                    <div className="csv-dropzone-fileinfo">
+                      <span className="csv-file-icon">📄</span>
+                      <div>
+                        <div style={{fontWeight:700, fontSize:'0.85rem', color:'#0f172a'}} className="dark:text-white">CSV data loaded</div>
+                        <div style={{fontSize:'0.75rem', color:'#64748b'}}>{csvData.split('\n').filter(Boolean).length} lines detected</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="csv-clear-btn"
+                        onClick={e => { e.stopPropagation(); setCsvData(''); }}
+                        title="Clear and upload new file"
+                      >✕ Clear</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="csv-dropzone-empty">
+                    <div className="csv-drop-icon">☁️</div>
+                    <div className="csv-drop-title">Drag & Drop your CSV file here</div>
+                    <div className="csv-drop-sub">or</div>
+                    <button
+                      type="button"
+                      className="csv-browse-btn"
+                      onClick={e => { e.stopPropagation(); csvFileInputRef.current?.click(); }}
+                    >
+                      📂 Browse Files
+                    </button>
+                    <div className="csv-drop-formats">Supports: .csv files</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Paste fallback */}
+              <div className="inv-field">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
+                  — or Paste CSV Data Directly —
+                </label>
+                <textarea
+                  rows={5}
+                  value={csvData}
+                  onChange={e => setCsvData(e.target.value)}
+                  placeholder={"Name,Category,Buying Price,Selling Price,SKU,Barcode,Brand,Stock\nProduct Name,Category Name,1000,1500,SKU-001,,Brand Name,10"}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-mono p-3 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+
+              <div className="flex justify-between items-center border-t border-slate-100 dark:border-darkbg-border/30 pt-3">
+                <div className="text-[11px] text-slate-400">
+                  {csvData ? `✅ ${csvData.split('\n').filter(l => l.trim()).length - 1} data rows detected` : 'No data yet'}
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" type="button" onClick={() => { setIsCsvImportOpen(false); setCsvData(''); }}>Cancel</Button>
+                  <Button variant="primary" type="button" onClick={handleParseAndValidateCsv} disabled={!csvData.trim()}>
+                    <CheckCircle2 size={13}/> Validate &amp; Preview
+                  </Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-4">
+                {/* Validation summary header */}
+                <div className="csv-validation-header">
+                  <div className="csv-val-stats">
+                    <div className="csv-val-stat total">
+                      <span className="csv-val-num">{csvParsedRows.length}</span>
+                      <span className="csv-val-label">Total Rows</span>
+                    </div>
+                    <div className="csv-val-stat ready">
+                      <span className="csv-val-num">{csvParsedRows.filter(r => r.isValid).length}</span>
+                      <span className="csv-val-label">Ready</span>
+                    </div>
+                    <div className="csv-val-stat error">
+                      <span className="csv-val-num">{csvParsedRows.filter(r => !r.isValid).length}</span>
+                      <span className="csv-val-label">Invalid</span>
+                    </div>
+                  </div>
+                  <Button size="xs" variant="outline" type="button" onClick={() => setCsvHasParsed(false)}>
+                    ← Back / Edit
+                  </Button>
+                </div>
+
+                <div className="border dark:border-darkbg-border rounded-lg overflow-hidden max-h-[40vh] overflow-y-auto">
+                  <table className="w-full text-left" style={{ borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr className="bg-slate-100 dark:bg-darkbg text-[10px] uppercase text-slate-400 font-bold border-b dark:border-darkbg-border">
+                        <th className="p-2 text-center">Line</th>
+                        <th className="p-2">Name</th>
+                        <th className="p-2">Category</th>
+                        <th className="p-2 text-right">Buying</th>
+                        <th className="p-2 text-right">Selling</th>
+                        <th className="p-2 text-right">Stock</th>
+                        <th className="p-2">SKU</th>
+                        <th className="p-2">Status / Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {csvParsedRows.slice(0, 50).map((row, idx) => (
+                        <tr key={idx} className={`border-b dark:border-darkbg-border text-[11px] ${row.isValid ? 'hover:bg-slate-50 dark:hover:bg-darkbg/35' : 'bg-red-50/20 dark:bg-red-950/10'}`}>
+                          <td className="p-2 text-center text-slate-400 font-mono">{row.lineNum}</td>
+                          <td className="p-2 font-bold text-slate-800 dark:text-white truncate max-w-[120px]">{row.name}</td>
+                          <td className="p-2 text-slate-500">{row.category}</td>
+                          <td className="p-2 text-right font-mono">{row.buyingPrice > 0 ? fmtCcy(row.buyingPrice) : '—'}</td>
+                          <td className="p-2 text-right font-mono">{row.sellingPrice > 0 ? fmtCcy(row.sellingPrice) : '—'}</td>
+                          <td className="p-2 text-right font-mono font-bold">{row.stock > 0 ? row.stock : '—'}</td>
+                          <td className="p-2 font-mono text-slate-500 truncate max-w-[80px]">{row.sku || '—'}</td>
+                          <td className="p-2">
+                            {row.isValid ? (
+                              <Badge variant="success">Ready</Badge>
+                            ) : (
+                              <div className="text-danger font-semibold flex flex-col gap-0.5 max-w-[150px] leading-tight">
+                                {row.errors.map((err: string, eIdx: number) => (
+                                  <span key={eIdx}>• {err}</span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {csvParsedRows.length > 50 && (
+                        <tr>
+                          <td colSpan={8} className="p-3 text-center text-slate-400 italic bg-slate-50 dark:bg-darkbg">
+                            ... and {csvParsedRows.length - 50} more rows (not showing in preview)
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-slate-100 dark:border-darkbg-border/30 pt-3">
+                <Button variant="outline" type="button" onClick={() => { setIsCsvImportOpen(false); setCsvData(''); setCsvParsedRows([]); setCsvHasParsed(false); }}>Cancel</Button>
+                <Button
+                  variant="primary"
+                  type="submit"
+                  disabled={csvLoading || csvParsedRows.filter(r => r.isValid).length === 0}
+                >
+                  {csvLoading ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}
+                  {csvLoading ? 'Importing…' : `Confirm & Import ${csvParsedRows.filter(r => r.isValid).length} Products`}
+                </Button>
+              </div>
+            </>
+          )}
+        </form>
+      </Dialog>
+
+      {/* ── Category Manager Dialog ────────────────────────────────────────── */}
+      <Dialog
+        isOpen={isCategoryManagerOpen}
+        onClose={() => setIsCategoryManagerOpen(false)}
+        title="Category Management"
+        size="md"
+      >
+        <div className="space-y-4 text-sm">
+          {/* Add new category */}
+          <div className="cat-add-bar">
+            <div style={{flex:1}}>
+              <label style={{fontSize:'0.73rem',fontWeight:600,color:'#64748b',display:'block',marginBottom:'4px',textTransform:'uppercase'}}>New Category Name</label>
+              <input
+                className="inv-input"
+                style={{width:'100%'}}
+                value={newCategoryName}
+                onChange={e => setNewCategoryName(e.target.value)}
+                placeholder="e.g. Beverages, Electronics, Grains…"
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newCategoryName.trim()) {
+                    openEditor(null, { category: newCategoryName.trim() });
+                    setNewCategoryName('');
+                    setIsCategoryManagerOpen(false);
+                  }
+                }}
+              />
+            </div>
+            <button
+              className="inv-add-btn"
+              style={{alignSelf:'flex-end', whiteSpace:'nowrap'}}
+              onClick={() => {
+                if (!newCategoryName.trim()) return;
+                openEditor(null, { category: newCategoryName.trim() });
+                setNewCategoryName('');
+                setIsCategoryManagerOpen(false);
+              }}
+            >
+              <Plus size={14}/> Add &amp; Create Product
+            </button>
+          </div>
+
+          {/* Search */}
+          <div className="inv-search-wrap" style={{minWidth:'unset'}}>
+            <Search size={14} className="inv-search-icon"/>
+            <input className="inv-search" placeholder="Search categories…" value={categorySearch} onChange={e => setCategorySearch(e.target.value)}/>
+          </div>
+
+          {/* Category list */}
+          <div className="cat-list">
+            {allCategories
+              .filter(c => c.name.toLowerCase().includes(categorySearch.toLowerCase()))
+              .map(c => (
+                <div key={c.name} className="cat-list-row">
+                  <div className="cat-list-dot" style={{background: `hsl(${(c.name.charCodeAt(0) * 37) % 360}, 60%, 55%)`}}/>
+                  <div className="cat-list-info">
+                    <span className="cat-list-name">{c.name}</span>
+                    <span className="cat-list-count">{c.count} product{c.count !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      title="Rename Category"
+                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
+                      onClick={() => handleRenameCategory(c.name)}
+                    >
+                      <Edit size={12} />
+                    </button>
+                    <button
+                      title="Delete Category"
+                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
+                      onClick={() => handleDeleteCategory(c.name)}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                    <button
+                      className="inv-add-btn outline"
+                      style={{padding:'4px 10px',fontSize:'0.75rem', marginLeft: '4px'}}
+                      onClick={() => {
+                        openEditor(null, { category: c.name });
+                        setIsCategoryManagerOpen(false);
+                      }}
+                    >
+                      + Add Product
+                    </button>
+                  </div>
+                </div>
+              ))}
+            {allCategories.length === 0 && (
+              <div style={{textAlign:'center',padding:'24px',opacity:0.5}}>
+                <Tag size={28} style={{marginBottom:'8px', display:'block', margin:'0 auto'}}/>
+                <p>No categories yet. Add products to create categories.</p>
+              </div>
+            )}
+          </div>
+
+          <div style={{borderTop:'1px solid #e2e8f0',paddingTop:'12px',display:'flex',justifyContent:'flex-end'}}>
+            <button className="inv-cancel-btn" onClick={() => setIsCategoryManagerOpen(false)}>Close</button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Supervisor PIN Approval Modal */}
+      <Dialog
+        isOpen={isPinModalOpen}
+        onClose={() => setIsPinModalOpen(false)}
+        title="Supervisor Authorization Required"
+        description={pinReason}
+      >
+        <form onSubmit={handleVerifyPin} className="space-y-4 font-sans">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Supervisor PIN</label>
+            <input
+              type="password"
+              placeholder="••••"
+              value={enteredPin}
+              onChange={e => setEnteredPin(e.target.value)}
+              className="h-10 w-full text-center text-lg font-bold tracking-widest rounded-lg border border-slate-200 focus:outline-none dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={() => setIsPinModalOpen(false)}>Cancel</Button>
+            <Button variant="primary" type="submit">Verify PIN</Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* ── Real Camera Barcode & QR Scanner Dialog ─────────────────────────────── */}
+      <Dialog
+        isOpen={isCameraScannerOpen}
+        onClose={() => setIsCameraScannerOpen(false)}
+        title="📷 Real Camera Barcode & QR Scanner"
+        description="Point device camera at the product barcode to scan automatically"
+        size="md"
+      >
+        <div className="space-y-4 text-center">
+          <div
+            id="barcode-camera-reader"
+            className="w-full max-w-sm mx-auto overflow-hidden rounded-2xl border-2 border-dashed border-indigo-500 bg-slate-900 shadow-inner min-h-[260px] flex items-center justify-center relative"
+          >
+            {scannerError && (
+              <div className="p-4 text-xs font-semibold text-red-400">
+                ⚠️ {scannerError}
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-slate-500 font-medium">
+            Supports EAN-13, EAN-8, Code 128, UPC-A, UPC-E, &amp; QR Barcodes
+          </p>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-darkbg-border/30">
+            <Button variant="outline" size="sm" type="button" onClick={() => setIsCameraScannerOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* ── Product Photo Camera Stream Dialog ───────────────────────────── */}
+      <Dialog
+        isOpen={isPhotoCameraOpen}
+        onClose={stopPhotoCamera}
+        title="📷 Take Product Photo"
+        description="Align product in frame and click Snap Photo to capture"
+        size="md"
+      >
+        <div className="space-y-4 text-center">
+          <div className="w-full max-w-sm mx-auto overflow-hidden rounded-2xl border-2 border-slate-700 bg-slate-950 shadow-xl aspect-video flex items-center justify-center relative">
+            <video
+              ref={photoVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+          </div>
+
+          <div className="flex justify-between items-center pt-2 border-t border-slate-100 dark:border-darkbg-border/30">
+            <Button variant="outline" size="sm" type="button" onClick={stopPhotoCamera}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" type="button" onClick={capturePhoto} className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700">
+              <Camera size={14} /> Snap Photo 📸
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
+  );
+};
+
+// Helper component to manage counted quantity input state locally without focus loss
+interface CountInputProps {
+  initialValue: number;
+  onSave: (val: number) => void;
+}
+const CountInput: React.FC<CountInputProps> = ({ initialValue, onSave }) => {
+  const [val, setVal] = React.useState(initialValue >= 0 ? String(initialValue) : '');
+
+  React.useEffect(() => {
+    setVal(initialValue >= 0 ? String(initialValue) : '');
+  }, [initialValue]);
+
+  return (
+    <input
+      className="inv-input"
+      type="number"
+      min="0"
+      placeholder="Count…"
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => {
+        const num = val === '' ? -1 : Number(val);
+        if (num !== initialValue) {
+          onSave(num);
+        }
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          const num = val === '' ? -1 : Number(val);
+          if (num !== initialValue) {
+            onSave(num);
+          }
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      style={{ width: '80px' }}
+    />
+  );
+};

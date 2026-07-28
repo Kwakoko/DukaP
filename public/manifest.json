@@ -1,0 +1,18 @@
+{
+  "short_name": "DukaPos",
+  "name": "DukaPos SaaS Platform",
+  "description": "Multi-Tenant, Multi-Branch & Offline-First POS SaaS System",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/9721/9721016.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F8F9FA",
+  "theme_color": "#0F62FE",
+  "display": "standalone",
+  "orientation": "any"
+}
