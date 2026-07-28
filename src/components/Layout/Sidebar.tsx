@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { 
   BarChart3, DollarSign, Package, Users, LineChart, 
   Settings, Grid, CookingPot, FileText, 
-  Coins, TrendingUp, Sparkles, Building,
+  Coins, TrendingUp, Sparkles,
   ChevronDown, HelpCircle, HardHat, Gavel, 
   Home, Sprout, Wrench, Fuel, GraduationCap, 
   BookOpen, Shield, Droplet, Bus, Trash2, Boxes, 

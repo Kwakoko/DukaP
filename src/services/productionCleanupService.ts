@@ -174,7 +174,7 @@ export const productionCleanupService = {
       purgedCounts.recipes = await db.recipes.count();
       await db.recipes.clear();
 
-      purgedCounts.recipeItems = await db.recipeItems.clear();
+      purgedCounts.recipeItems = await db.recipeItems.count();
       await db.recipeItems.clear();
 
       purgedCounts.wastageLogs = await db.wastageLogs.count();
@@ -183,7 +183,7 @@ export const productionCleanupService = {
       purgedCounts.tabs = await db.tabs.count();
       await db.tabs.clear();
 
-      purgedCounts.barTables = await db.barTables.clear();
+      purgedCounts.barTables = await db.barTables.count();
       await db.barTables.clear();
 
       purgedCounts.tips = await db.tips.count();

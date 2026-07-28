@@ -3,7 +3,7 @@ import { useAuth, type User, type UserRole } from '../../context/AuthContext';
 import { useModule, MODULE_MANIFESTS, type IndustryModule } from '../../context/ModuleContext';
 import { Button, Input, Badge } from '../UI/custom-ui';
 import { 
-  Database, Shield, ChevronRight, MapPin, AlertTriangle, Landmark, Store, Pill, Utensils, Zap, Building2,
+  Shield, ChevronRight, MapPin, AlertTriangle, Landmark, Store, Pill, Utensils, Zap, Building2,
   Mail, Lock as LockIcon, Key as KeyIcon, Users, Wallet, Package, Calculator, Eye, EyeOff, ArrowRight, X, Loader
 } from 'lucide-react';
 import { seedDatabase, db } from '../../db/dexie';
@@ -631,17 +631,17 @@ export const AuthGateway: React.FC = () => {
         }
 
         if (activeTenant) {
-          let branchRec = await db.branches.where('tenant_id').equals(activeTenant.id).first();
+          let branchRec: any = await db.branches.where('tenant_id').equals(activeTenant.id).first();
           if (!branchRec) {
             const cloudB = await cloudDb.cloud_branches.where('tenant_id').equals(activeTenant.id).first();
-            branchRec = cloudB || { id: `branch-${activeTenant.id}-hq`, tenant_id: activeTenant.id, name: 'Main Branch', location: 'Headquarters', is_headquarters: true };
+            branchRec = cloudB || { id: `branch-${activeTenant.id}-hq`, tenant_id: activeTenant.id, name: 'Main Branch', location: 'Headquarters', is_headquarters: true, status: 'Active', created_at: Date.now() };
             await db.branches.put(branchRec as any);
           }
           const healedRole: any = {
             id: `ubr-${activeTenant.id}-fallback`,
             user_id: dbUser.id,
             tenant_id: activeTenant.id,
-            branch_id: branchRec.id,
+            branch_id: branchRec?.id || `branch-${activeTenant.id}-hq`,
             industry_id: 'ind-retail',
             role_id: dbUser.is_super_admin ? 'Super Admin' : 'Business Owner'
           };

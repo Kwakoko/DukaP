@@ -2260,7 +2260,6 @@ export async function seedDatabase() {
     // even if the main product seed was already applied previously.
     if (rolesCount === 0) {
       const NOW_RBAC = Date.now();
-      const DAY_RBAC = 86400000;
 
       // Seed Permissions
       const seedPermissions: Permission[] = [

@@ -659,11 +659,11 @@ export async function seedCloudDatabase() {
   ];
 
   const initialBranches: CloudBranch[] = [
-    { id: 'branch-dar-hq', tenant_id: 'tenant-101', name: 'Dar es Salaam HQ Branch', location: 'Posta, Dar es Salaam' },
-    { id: 'branch-arusha-depot', tenant_id: 'tenant-101', name: 'Arusha Retail Branch', location: 'Njiro, Arusha' },
-    { id: 'branch-london-office', tenant_id: 'tenant-101', name: 'London Restaurant Branch', location: 'London, UK' },
-    { id: 'branch-pharm-main', tenant_id: 'tenant-102', name: 'Pharmacy Main Branch', location: 'Arusha Town' },
-    { id: 'branch-bongo-main', tenant_id: 'tenant-106', name: 'Bongo Lounge — Msasani', location: 'Slipway Road, Msasani, Dar es Salaam' }
+    { id: 'branch-dar-hq', tenant_id: 'tenant-101', name: 'Dar es Salaam HQ Branch', location: 'Posta, Dar es Salaam', is_headquarters: true, status: 'Active', created_at: NOW },
+    { id: 'branch-arusha-depot', tenant_id: 'tenant-101', name: 'Arusha Retail Branch', location: 'Njiro, Arusha', is_headquarters: false, status: 'Active', created_at: NOW },
+    { id: 'branch-london-office', tenant_id: 'tenant-101', name: 'London Restaurant Branch', location: 'London, UK', is_headquarters: false, status: 'Active', created_at: NOW },
+    { id: 'branch-pharm-main', tenant_id: 'tenant-102', name: 'Pharmacy Main Branch', location: 'Arusha Town', is_headquarters: true, status: 'Active', created_at: NOW },
+    { id: 'branch-bongo-main', tenant_id: 'tenant-106', name: 'Bongo Lounge — Msasani', location: 'Slipway Road, Msasani, Dar es Salaam', is_headquarters: true, status: 'Active', created_at: NOW }
   ];
 
   await cloudDb.cloud_products.bulkPut(initialProducts);

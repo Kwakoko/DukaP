@@ -4,7 +4,7 @@ import { useModule, type IndustryModule, MODULE_MANIFESTS } from '../../context/
 import { useSyncState } from '../../context/SyncContext';
 import { 
   Search, Sun, Moon, Wifi, WifiOff, RefreshCw, 
-  ChevronDown, User, Layers, Shield, MapPin, Database, Lock, X, LogOut, CreditCard, Smartphone,
+  ChevronDown, User, Layers, Shield, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
   Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check
 } from 'lucide-react';
 import { db } from '../../db/dexie';
@@ -338,10 +338,11 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   }, [currentTenant.id, currentBranch?.id, isSuperAdminView]) || 0;
 
   // 5a. Read subscription records reactively (read-only — no writes allowed in liveQuery)
-  const rawSubs = useLiveQuery(
-    () => isSuperAdminView
-      ? Promise.resolve([])
-      : db.tenantSubscriptions.where('tenant_id').equals(currentTenant.id).toArray(),
+  const rawSubs = useLiveQuery<any[]>(
+    async () => {
+      if (isSuperAdminView) return [];
+      return db.tenantSubscriptions.where('tenant_id').equals(currentTenant.id).toArray();
+    },
     [currentTenant.id, isSuperAdminView]
   ) || [];
 
@@ -381,8 +382,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
   // 5c. Derive alert state from the raw reactive subscription list (pure computation, no writes)
   const subscriptionAlerts = useMemo(() => {
-    if (isSuperAdminView || rawSubs.length === 0) return null;
-    const activeSub = rawSubs.find(s =>
+    if (isSuperAdminView || !Array.isArray(rawSubs) || rawSubs.length === 0) return null;
+    const activeSub: any = rawSubs.find((s: any) =>
       (s.status as string) === 'ACTIVE' || (s.status as string) === 'Active' ||
       (s.status as string) === 'TRIAL' || (s.status as string) === 'Trial'
     );

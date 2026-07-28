@@ -5,7 +5,6 @@
 
 import { validateEnvironmentSecrets, envConfig } from '../config/environment';
 import { productionAuthService } from './productionAuthService';
-import { tenantIsolationGuard } from './tenantIsolationGuard';
 import { productionDatabaseService } from './productionDatabaseService';
 import { productionSyncEngine } from './productionSyncEngine';
 import { monitoringService } from './monitoringService';

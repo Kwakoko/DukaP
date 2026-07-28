@@ -7,7 +7,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, Database, RefreshCw, CheckCircle2, Activity,
-  HardDrive, Key, Trash2, Lock, Unlock, AlertTriangle, Check, ShieldAlert, Sparkles
+  HardDrive, Key, Trash2, Lock, Unlock, AlertTriangle, Check, Sparkles
 } from 'lucide-react';
 import { productionReadinessVerifier, type SuiteSummary } from '../../services/productionReadinessVerifier';
 import { monitoringService, type SystemTelemetry } from '../../services/monitoringService';
