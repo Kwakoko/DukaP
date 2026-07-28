@@ -257,6 +257,16 @@ export const Subscriptions: React.FC = () => {
       await db.subscriptionPlans.put(payload);
 
       try {
+        await fetch('/api/subscriptionPlans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant-admin-system' },
+          body: JSON.stringify(payload)
+        });
+      } catch (apiErr) {
+        console.warn('[API Persistence] DevServer sync notice:', apiErr);
+      }
+
+      try {
         await supabase.from('subscriptionPlans').insert(payload as any);
       } catch (cloudErr) {
         console.warn('[Cloud Sync] Failed to push subscription plan to Cloud:', cloudErr);

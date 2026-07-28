@@ -1705,9 +1705,9 @@ export const AuthGateway: React.FC = () => {
                 <div className="grid grid-cols-2 gap-3">
                   {(configuredPlans.length > 0 ? configuredPlans : [
                     { id: 'plan-trial', name: 'Free Trial', code: 'TRIAL', description: '14-day evaluation trial', price: 0 },
-                    { id: 'plan-starter', name: 'Starter Plan', code: 'STARTER', description: 'For small single-shop businesses', price: 25000 },
-                    { id: 'plan-business', name: 'Business Plan', code: 'BUSINESS', description: 'Retail stores with multiple branches', price: 60000 },
-                    { id: 'plan-enterprise', name: 'Enterprise Plan', code: 'ENTERPRISE', description: 'Infinite scale & dedicated support', price: 150000 }
+                    { id: 'plan-starter', name: 'Starter Plan', code: 'STARTER', description: 'For small single-shop businesses', price: 12000 },
+                    { id: 'plan-business', name: 'Business Plan', code: 'BUSINESS', description: 'Retail stores with multiple branches', price: 16000 },
+                    { id: 'plan-enterprise', name: 'Enterprise Plan', code: 'ENTERPRISE', description: 'Infinite scale & dedicated support', price: 30000 }
                   ]).map((p: any) => (
                     <button
                       key={p.id}

@@ -162,13 +162,15 @@ export class SuperAdminService {
       // Upsert cloud subscription record
       const subId = `sub-${tenantId}`;
       const NOW = Date.now();
+      const targetPlan = await cloudDb.cloud_subscription_plans.get(newPlan);
+      const planAmount = targetPlan ? targetPlan.price : (newPlan.includes('Enterprise') ? 30000 : newPlan.includes('Business') ? 16000 : newPlan.includes('Starter') ? 12000 : 0);
       await cloudDb.cloud_subscriptions.put({
         id: subId,
         tenant_id: tenantId,
         plan_id: newPlan,
         status: 'ACTIVE',
         billing_cycle: 'MONTHLY',
-        amount: newPlan.includes('Enterprise') ? 120000 : newPlan.includes('Growth') ? 55000 : 25000,
+        amount: planAmount,
         currency: 'TZS',
         current_period_start: NOW,
         current_period_end: NOW + 30 * 86400000,

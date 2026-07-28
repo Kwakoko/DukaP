@@ -140,9 +140,9 @@ export const TenantManagement: React.FC = () => {
     if (list.length === 0) {
       return [
         { id: 'plan-trial', name: 'Free Trial', price: 0 },
-        { id: 'plan-starter', name: 'Starter Plan', price: 25000 },
-        { id: 'plan-business', name: 'Business Plan', price: 60000 },
-        { id: 'plan-enterprise', name: 'Enterprise Plan', price: 150000 }
+        { id: 'plan-starter', name: 'Starter Plan', price: 12000 },
+        { id: 'plan-business', name: 'Business Plan', price: 16000 },
+        { id: 'plan-enterprise', name: 'Enterprise Plan', price: 30000 }
       ];
     }
     return list;
