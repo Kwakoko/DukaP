@@ -4,7 +4,7 @@ import { useModule, type IndustryModule, MODULE_MANIFESTS } from '../../context/
 import { useSyncState } from '../../context/SyncContext';
 import { 
   Search, Sun, Moon, Wifi, WifiOff, RefreshCw, 
-  ChevronDown, User, Layers, Shield, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
+  ChevronDown, User, Layers, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
   Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check
 } from 'lucide-react';
 import { db } from '../../db/dexie';
@@ -20,7 +20,6 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { 
     role, 
-    setRole, 
     currentBranch, 
     toggleTheme, 
     currentTenant, 
@@ -37,7 +36,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { activeModule, setActiveModule } = useModule();
   const { isOnline, isSyncing, syncProgress, pendingCount, toggleOfflineSimulation, syncLogs, syncData } = useSyncState();
 
-  const [showRoleDropdown, setShowRoleDropdown] = useState(false);
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
   const [showModuleDropdown, setShowModuleDropdown] = useState(false);
   const [showSyncDropdown, setShowSyncDropdown] = useState(false);
@@ -160,7 +158,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const profileContainerRef = useRef<HTMLDivElement>(null);
   const moduleContainerRef = useRef<HTMLDivElement>(null);
   const branchContainerRef = useRef<HTMLDivElement>(null);
-  const roleContainerRef = useRef<HTMLDivElement>(null);
   const syncContainerRef = useRef<HTMLDivElement>(null);
   const notifContainerRef = useRef<HTMLDivElement>(null);
 
@@ -176,9 +173,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       if (branchContainerRef.current && !branchContainerRef.current.contains(event.target as Node)) {
         setShowBranchDropdown(false);
       }
-      if (roleContainerRef.current && !roleContainerRef.current.contains(event.target as Node)) {
-        setShowRoleDropdown(false);
-      }
+
       if (syncContainerRef.current && !syncContainerRef.current.contains(event.target as Node)) {
         setShowSyncDropdown(false);
       }
@@ -529,20 +524,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
         </div>
       )}
       
-      {/* Super Admin Control Plane Info Bar */}
-      {role === 'Super Admin' && !impersonatedTenant && (
-        <div className="bg-slate-900 text-white font-bold text-[10px] py-1.5 px-4 text-center select-none flex items-center justify-between z-50 shrink-0 sticky top-0 border-b border-slate-800">
-          <span>🛡️ Super Admin Control Plane is Active</span>
-          <button 
-            onClick={() => {
-              setIsSuperAdminView(!isSuperAdminView);
-            }}
-            className="underline hover:text-slate-200 text-[10px]"
-          >
-            Switch to {isSuperAdminView ? 'Tenant View' : 'Admin Console'}
-          </button>
-        </div>
-      )}
 
       {/* Demo Workspace Warning Banner */}
       {currentTenant.status?.toUpperCase() === 'DEMO' && (
@@ -602,7 +583,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                   onClick={() => {
                     setShowModuleDropdown(!showModuleDropdown);
                     setShowBranchDropdown(false);
-                    setShowRoleDropdown(false);
                     setShowSyncDropdown(false);
                   }}
                   className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
@@ -685,7 +665,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 onClick={() => {
                   setShowBranchDropdown(!showBranchDropdown);
                   setShowModuleDropdown(false);
-                  setShowRoleDropdown(false);
                   setShowSyncDropdown(false);
                 }}
                 className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm"
@@ -734,43 +713,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
             </div>
           )}
 
-          {/* Role Switcher (RBAC Testing) */}
-          <div className="relative" ref={roleContainerRef}>
-            <button
-              onClick={() => {
-                setShowRoleDropdown(!showRoleDropdown);
-                setShowModuleDropdown(false);
-                setShowBranchDropdown(false);
-                setShowSyncDropdown(false);
-              }}
-              className="flex items-center space-x-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-            >
-              <Shield className="h-3.5 w-3.5 text-slate-400" />
-              <span className="hidden md:inline">{role}</span>
-              <ChevronDown className="h-3 w-3" />
-            </button>
-            
-            {showRoleDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowRoleDropdown(false)} />}
-            {showRoleDropdown && (
-              <div className="absolute right-0 mt-2 w-52 rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card z-50">
-                <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Testing RBAC Roles</div>
-                {['Super Admin', 'Business Owner', 'Business Administrator', 'Branch Manager', 'Cashier', 'Inventory Officer', 'Accountant'].map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => {
-                      setRole(r as any);
-                      setShowRoleDropdown(false);
-                    }}
-                    className={`flex w-full items-center rounded-lg px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                      role === r ? 'bg-primary/5 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    {r}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
 
           {/* Offline Status & Sync Queue Indicator */}
           <div className="relative" ref={syncContainerRef}>
@@ -779,7 +721,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 setShowSyncDropdown(!showSyncDropdown);
                 setShowModuleDropdown(false);
                 setShowBranchDropdown(false);
-                setShowRoleDropdown(false);
                 setShowProfileDropdown(false);
               }}
               className={`flex items-center space-x-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition ${
@@ -883,7 +824,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 setShowProfileDropdown(false);
                 setShowModuleDropdown(false);
                 setShowBranchDropdown(false);
-                setShowRoleDropdown(false);
                 setShowSyncDropdown(false);
               }}
               className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
@@ -978,7 +918,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 setShowProfileDropdown(!showProfileDropdown);
                 setShowModuleDropdown(false);
                 setShowBranchDropdown(false);
-                setShowRoleDropdown(false);
                 setShowSyncDropdown(false);
               }}
               className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-tr from-primary to-indigo-500 text-white font-bold text-[10px] shadow-sm hover:scale-105 transition duration-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:focus:ring-offset-darkbg shrink-0"

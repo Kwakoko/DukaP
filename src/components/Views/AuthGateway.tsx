@@ -987,10 +987,6 @@ export const AuthGateway: React.FC = () => {
     setUser(createdUser);
   };
 
-  const prefillDemo = (_profileType: 'owner' | 'cashier' | 'admin' | 'bar') => {
-    setErrorMsg('');
-  };
-
   const getIndustryIcon = (indName: string) => {
     switch (indName.toLowerCase()) {
       case 'retail': return <Store className="h-4 w-4 text-emerald-500" />;
@@ -1854,37 +1850,6 @@ export const AuthGateway: React.FC = () => {
             </div>
           </div>
         )}
-          </div>
-
-          {/* Quick Demo Bypass Box */}
-          <div className="w-full p-4 bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-darkbg-border rounded-xl text-center animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">⚡ Prefill Demo Portals</h4>
-            <div className="flex flex-wrap justify-center gap-2">
-              <button 
-                onClick={() => prefillDemo('owner')}
-                className="px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-darkbg text-[10px] font-bold text-primary dark:text-primary-dark rounded border border-slate-200 dark:border-darkbg-border shadow-sm active:scale-95 transition"
-              >
-                Conglomerate Owner (Juma)
-              </button>
-              <button 
-                onClick={() => prefillDemo('cashier')}
-                className="px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-darkbg text-[10px] font-bold text-success rounded border border-slate-200 dark:border-darkbg-border shadow-sm active:scale-95 transition"
-              >
-                Single Cashier (Amani)
-              </button>
-              <button 
-                onClick={() => prefillDemo('bar')}
-                className="px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-darkbg text-[10px] font-bold text-amber-600 rounded border border-slate-200 dark:border-darkbg-border shadow-sm active:scale-95 transition"
-              >
-                Bongo Lounge (Bar)
-              </button>
-              <button 
-                onClick={() => prefillDemo('admin')}
-                className="px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-darkbg text-[10px] font-bold text-red-600 rounded border border-slate-200 dark:border-darkbg-border shadow-sm active:scale-95 transition"
-              >
-                Super Admin Access
-              </button>
-            </div>
           </div>
 
         </div>
