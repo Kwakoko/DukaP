@@ -1,11 +1,21 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useModule } from '../../context/ModuleContext';
-import { db, type TableEntity, type PricingRule, type UserDevice, type UserSession } from '../../db/dexie';
+import { 
+  db, 
+  purgeAllProducts, 
+  purgeAllSales, 
+  purgeAllDefaultsAndUsers, 
+  type TableEntity, 
+  type PricingRule, 
+  type UserDevice, 
+  type UserSession 
+} from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Input, Badge } from '../UI/custom-ui';
 import { 
-  Plus, Trash2, Flame, MapPin, Globe, Sliders, User, RotateCcw
+  Plus, Trash2, Flame, MapPin, Globe, Sliders, User, RotateCcw,
+  BookOpen, Check, Copy, Download, RefreshCw, Cpu, Database, ShieldCheck, FileText, Shield, CreditCard
 } from 'lucide-react';
 import { 
   SettingsResolver,
@@ -18,35 +28,52 @@ import {
 import { Subscriptions } from './Subscriptions';
 import { BusinessProfile } from './BusinessProfile';
 
-export const Settings: React.FC<{ initialTab?: string }> = () => {
+export const Settings: React.FC<{ initialTab?: string }> = ({ initialTab }) => {
   const { currentTenant, currentBranch, role, branches, user } = useAuth();
-  const { activeModule, activeTab: layoutTab } = useModule();
+  const { activeModule, activeTab: layoutTab, setActiveTab } = useModule();
 
-  // Active configurations section resolved from layout sidebar activeTab
-  const activeTab = useMemo<'localization' | 'pos' | 'inventory' | 'tax' | 'security' | 'devices' | 'audit' | 'bar' | 'subscriptions'>(() => {
-    switch (layoutTab) {
+  // Active configurations section resolved from layout sidebar activeTab or initialTab prop
+  const activeTab = useMemo<'localization' | 'pos' | 'inventory' | 'tax' | 'security' | 'devices' | 'audit' | 'bar' | 'subscriptions' | 'developer' | 'manual'>(() => {
+    const target = initialTab || layoutTab;
+    switch (target) {
       case 'Business Profile & Identity':
+      case 'localization':
         return 'localization';
       case 'POS Configurations':
+      case 'pos':
         return 'pos';
       case 'Inventory Rules':
+      case 'inventory':
         return 'inventory';
       case 'Tax & Billing':
+      case 'tax':
         return 'tax';
       case 'Security Policies':
+      case 'security':
         return 'security';
       case 'Terminals & Sessions':
+      case 'devices':
         return 'devices';
       case 'Subscriptions & Billing':
+      case 'subscriptions':
         return 'subscriptions';
+      case 'Developer Options':
+      case 'developer':
+        return 'developer';
+      case 'User Manual & Guide':
+      case 'User Manual':
+      case 'manual':
+        return 'manual';
       case 'Change Log':
+      case 'audit':
         return 'audit';
       case 'Bar Tables & Promo':
+      case 'bar':
         return 'bar';
       default:
         return 'localization';
     }
-  }, [layoutTab]);
+  }, [layoutTab, initialTab]);
   const [editingScope, setEditingScope] = useState<'tenant' | 'branch' | 'user'>('tenant');
   const [selectedBranchId, setSelectedBranchId] = useState(currentBranch.id);
 
@@ -373,6 +400,44 @@ export const Settings: React.FC<{ initialTab?: string }> = () => {
         )}
       </div>
 
+      {/* Quick Settings Sub-Navigation Tabs */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200/60 dark:border-darkbg-border text-xs font-bold no-scrollbar">
+        {[
+          { id: 'Business Profile & Identity', label: 'Business Identity', icon: Globe },
+          { id: 'POS Configurations', label: 'POS Configs', icon: Sliders },
+          { id: 'Inventory Rules', label: 'Inventory Rules', icon: Database },
+          { id: 'Tax & Billing', label: 'Tax & VAT', icon: ShieldCheck },
+          { id: 'Security Policies', label: 'Security & Access', icon: Shield },
+          { id: 'Terminals & Sessions', label: 'Terminals & Sessions', icon: User },
+          { id: 'Subscriptions & Billing', label: 'Subscriptions', icon: CreditCard },
+          { id: 'Developer Options', label: 'Developer Options', icon: Cpu, badge: 'DEV', badgeColor: 'bg-red-500 text-white' },
+          { id: 'User Manual & Guide', label: 'User Manual & Guide', icon: BookOpen, badge: 'GUIDE', badgeColor: 'bg-amber-500 text-white' },
+          { id: 'Change Log', label: 'Change Log', icon: RotateCcw }
+        ].map((tab) => {
+          const isActive = layoutTab === tab.id || (tab.id === 'User Manual & Guide' && layoutTab === 'User Manual');
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-3 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 text-xs select-none cursor-pointer border ${
+                isActive
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-black'
+                  : 'bg-white dark:bg-darkbg hover:bg-slate-50 dark:hover:bg-darkbg-card text-slate-700 dark:text-slate-300 border-slate-200 dark:border-darkbg-border font-semibold'
+              }`}
+            >
+              <Icon size={13} className={isActive ? 'text-white' : 'text-slate-500'} />
+              <span>{tab.label}</span>
+              {tab.badge && (
+                <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono font-extrabold ${tab.badgeColor}`}>
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Configurations Fields Main Panel */}
       <div className="w-full">
         {activeTab === 'subscriptions' && <Subscriptions />}
@@ -388,6 +453,8 @@ export const Settings: React.FC<{ initialTab?: string }> = () => {
                 {activeTab === 'devices' && 'Active Terminals & Sessions'}
                 {activeTab === 'audit' && 'Configuration Audit History'}
                 {activeTab === 'bar' && 'Bar Layout & Happy Hour Rules'}
+                {activeTab === 'developer' && 'Developer & System Control Options'}
+                {activeTab === 'manual' && 'DukaPos Operational User Manual & Training Guide'}
               </CardTitle>
               <CardDescription>
                 {activeTab === 'pos' && 'Enforce checkout restrictions, receipt headers, printing targets, and prefix rules.'}
@@ -397,6 +464,8 @@ export const Settings: React.FC<{ initialTab?: string }> = () => {
                 {activeTab === 'devices' && 'Track active terminal keys, device security tags, and remote logout controls.'}
                 {activeTab === 'audit' && 'Review details of recent settings updates, tracking before and after states.'}
                 {activeTab === 'bar' && 'Manage dining area seating layouts, lounge tables, and active discount periods.'}
+                {activeTab === 'developer' && 'Isolated tenant database purge routines, release channels, and runtime IndexedDB diagnostics.'}
+                {activeTab === 'manual' && 'Complete role-based access rules (RBAC), checkout workflows, offline sync, and stock requisition instructions.'}
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-5">
@@ -1065,9 +1134,425 @@ export const Settings: React.FC<{ initialTab?: string }> = () => {
                 </div>
               )}
 
+              {/* Developer Options Tab */}
+              {activeTab === 'developer' && (
+                <DeveloperOptionsSection tenantId={currentTenant.id} />
+              )}
+
+              {/* User Manual Tab */}
+              {activeTab === 'manual' && (
+                <UserManualSection />
+              )}
+
             </CardContent>
           </Card>
         )}
+      </div>
+    </div>
+  );
+};
+
+const HoldToPurgeButton: React.FC<{
+  label: string;
+  successMessage: string;
+  isAuthorized: boolean;
+  onPurge: () => Promise<void>;
+}> = ({ label, successMessage, isAuthorized, onPurge }) => {
+  const [holding, setHolding] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const timerRef = React.useRef<any>(null);
+  const intervalRef = React.useRef<any>(null);
+
+  const startHold = (e?: React.SyntheticEvent) => {
+    if (!isAuthorized) {
+      alert('Permission Denied: Only Business Owners, Administrators, and Super Admins can execute tenant purge routines.');
+      return;
+    }
+    if (e && e.type.startsWith('touch')) {
+      // Prevent context menus or text selection on touch screens
+      try { e.preventDefault(); } catch (_) {}
+    }
+    console.info('[DeveloperPurge] Hold initiated for action:', label);
+    setHolding(true);
+    setProgress(0);
+    const startTime = Date.now();
+
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (timerRef.current) clearTimeout(timerRef.current);
+
+    intervalRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const pct = Math.min(100, (elapsed / 2000) * 100);
+      setProgress(pct);
+    }, 50);
+
+    timerRef.current = setTimeout(async () => {
+      clearInterval(intervalRef.current);
+      setProgress(100);
+      setLoading(true);
+      console.info('[DeveloperPurge] 2-second hold threshold reached for action:', label);
+
+      const confirmPurge = window.confirm(
+        `⚠️ DESTRUCTIVE DEVELOPER ACTION:\n\n` +
+        `Are you sure you want to permanently execute:\n"${label}"?\n\n` +
+        `This operation will purge records directly from IndexedDB and cannot be reversed.`
+      );
+
+      if (confirmPurge) {
+        try {
+          console.info('[DeveloperPurge] Calling purge function...');
+          await onPurge();
+          console.info('[DeveloperPurge] Purge operation finished successfully.');
+          window.dispatchEvent(new CustomEvent('DUKAPOS_DATA_PURGED', { detail: { label } }));
+          alert(successMessage);
+        } catch (err: any) {
+          console.error('[DeveloperPurge] Error executing purge:', err);
+          alert('Purge Error: ' + err.message);
+        }
+      } else {
+        console.info('[DeveloperPurge] Purge cancelled by user in confirmation dialog.');
+      }
+
+      setLoading(false);
+      setHolding(false);
+      setProgress(0);
+    }, 2000);
+  };
+
+  const endHold = () => {
+    if (holding) {
+      console.info('[DeveloperPurge] Hold released before 2s threshold.');
+    }
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setHolding(false);
+    setProgress(0);
+  };
+
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50/40 dark:bg-red-950/20 p-4 space-y-3">
+      {holding && (
+        <div 
+          className="absolute inset-0 bg-red-500/20 transition-all duration-75"
+          style={{ width: `${progress}%` }}
+        />
+      )}
+      <div className="relative z-10 flex flex-col justify-between h-full space-y-3">
+        <div>
+          <h4 className="text-xs font-black text-red-900 dark:text-red-300">{label}</h4>
+          <p className="text-[10px] text-red-700 dark:text-red-400 mt-1 leading-snug">
+            Hold down continuously for 2 seconds to purge isolated records.
+          </p>
+        </div>
+        <button
+          type="button"
+          onMouseDown={startHold}
+          onMouseUp={endHold}
+          onMouseLeave={endHold}
+          onTouchStart={startHold}
+          onTouchEnd={endHold}
+          onTouchCancel={endHold}
+          disabled={loading}
+          className="w-full py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-wider shadow-sm transition active:scale-95 select-none cursor-pointer flex items-center justify-center gap-1.5"
+        >
+          {loading ? (
+            <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Purging...</span>
+          ) : holding ? (
+            <span>Hold for 2s... ({Math.round(progress)}%)</span>
+          ) : (
+            <>
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Press & Hold (2s) to Purge</span>
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) => {
+  const { role, hasPermission } = useAuth();
+  const [channel, setChannel] = useState<'stable' | 'canary'>('stable');
+
+  const isAuthorized = hasPermission('settings.manage') || ['Super Admin', 'Business Owner', 'Tenant Owner', 'Business Administrator'].includes(role);
+
+  return (
+    <div className="space-y-6 text-xs font-sans">
+      {/* Release Channel & Environment Card */}
+      <div className="bg-slate-50 dark:bg-darkbg/40 border border-slate-200 dark:border-darkbg-border rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-darkbg-border pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400">
+              <Cpu className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 dark:text-white text-xs">Developer Update Channel</h3>
+              <p className="text-[11px] text-slate-500">Choose between public stability or edge developer channels.</p>
+            </div>
+          </div>
+          <Badge variant="outline" className="font-mono text-[10px] bg-indigo-50 text-indigo-700 border-indigo-200">
+            v2026.4.1-PWA
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1.5">
+              Active Software Channel
+            </label>
+            <select
+              value={channel}
+              onChange={(e) => {
+                const ch = e.target.value as 'stable' | 'canary';
+                setChannel(ch);
+                alert(`Channel updated to ${ch.toUpperCase()}. Canary mode enables experimental sync engines.`);
+              }}
+              className="w-full h-9 bg-white dark:bg-darkbg text-slate-800 dark:text-white font-bold rounded-xl border border-slate-200 dark:border-darkbg-border px-3 focus:outline-none"
+            >
+              <option value="stable">Stable 2026 (Production Default)</option>
+              <option value="canary">Canary Nightly (Developer Testers)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1 bg-white dark:bg-darkbg p-3 rounded-xl border border-slate-200 dark:border-darkbg-border font-mono text-[10px]">
+            <div className="flex justify-between text-slate-500">
+              <span>Database Engine:</span>
+              <span className="font-bold text-slate-800 dark:text-slate-200">Dexie IndexedDB (v21)</span>
+            </div>
+            <div className="flex justify-between text-slate-500">
+              <span>Isolation Tenant ID:</span>
+              <span className="font-bold text-indigo-600 dark:text-indigo-400 truncate max-w-[140px]">{tenantId}</span>
+            </div>
+            <div className="flex justify-between text-slate-500">
+              <span>Offline Lock State:</span>
+              <span className="font-bold text-emerald-600">UNLOCKED (PRODUCTION)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tenant Purge Tools */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Sliders className="w-4 h-4 text-red-500" />
+          <h3 className="font-extrabold text-slate-900 dark:text-white text-xs">Tenant Store Cleanup Tools</h3>
+        </div>
+        <p className="text-[11px] text-slate-500">
+          Hold down buttons for 2 continuous seconds to purge sample demo registry entries safely.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <HoldToPurgeButton
+            label="Delete All Products & Stock Ledgers"
+            successMessage="All products catalog and stock transaction logs have been purged successfully."
+            isAuthorized={isAuthorized}
+            onPurge={async () => {
+              await purgeAllProducts(tenantId);
+            }}
+          />
+          <HoldToPurgeButton
+            label="Delete All Sales & Receipts Permanently"
+            successMessage="All point of sales receipts history and shift records have been purged permanently."
+            isAuthorized={isAuthorized}
+            onPurge={async () => {
+              await purgeAllSales(tenantId);
+            }}
+          />
+          <HoldToPurgeButton
+            label="Delete Contacts & Expense Records"
+            successMessage="All customer, supplier, and expense ledgers have been cleared successfully."
+            isAuthorized={isAuthorized}
+            onPurge={async () => {
+              await purgeAllDefaultsAndUsers(tenantId);
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UserManualSection: React.FC = () => {
+  const [copied, setCopied] = useState(false);
+
+  const rawManualUrl = '/docs/USER_MANUAL.md';
+
+  const handleCopyManualText = () => {
+    const text = `DukaPos User Operational Manual
+
+1. Role-Based Access Control (RBAC) Matrix
+- Owner: Full access (Master Catalog, POS Checkout, Branch Allocations, Financial Logs, Org settings).
+- Manager: Branch management (Master Catalog, POS Checkout, Branch Allocations).
+- Accountant (Tanzanian Mhasibu): View-only write barrier on inventory increases/reductions to prevent internal fraud. Access to ledgers, charts, compliance & audit logs.
+- Cashier: Locked out of configuration panels, price edits, and SKU modifications.
+
+2. Core Operational Workflows
+- POS Checkout: Scan barcode or search items, select customer to award loyalty points (1 point per 1,000 TZS), choose payment method (Cash, Card, Mobile Money), checkout to decrement stock via StockLedger and print receipt.
+- Offline-First Operations: Runs inside browser IndexedDB cache. Synchronizes when reconnected.
+- Cross-Branch Stock Requisitions: Request -> Approval -> Ledger Requisition (TRANSFER-OUT from source, TRANSFER-IN to target).
+- Subscriptions & Lockout Policies: 14-day trial. Overdue subscriptions trigger read-only lock.`;
+
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-6 text-xs font-sans">
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 rounded-2xl">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-amber-500 text-white shadow-sm">
+            <BookOpen className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-black text-amber-950 dark:text-amber-200 text-sm">DukaPos Operational User Manual</h3>
+            <p className="text-[11px] text-amber-800/80 dark:text-amber-300">RBAC matrices, POS checkout rules, offline sync protocols & stock requisitions.</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopyManualText}
+            className="px-3 py-1.5 rounded-xl bg-white dark:bg-darkbg text-slate-800 dark:text-white border border-slate-200 dark:border-darkbg-border font-bold text-[11px] hover:bg-slate-50 flex items-center gap-1.5 shadow-sm transition"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
+            <span>{copied ? 'Copied!' : 'Copy Summary'}</span>
+          </button>
+
+          <a
+            href={rawManualUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-sm transition"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Download Raw File</span>
+          </a>
+        </div>
+      </div>
+
+      {/* Manual Content Cards */}
+      <div className="space-y-4">
+        {/* Section 1: RBAC Matrix */}
+        <div className="border border-slate-200 dark:border-darkbg-border rounded-2xl p-5 space-y-3 bg-white dark:bg-darkbg/40">
+          <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-extrabold text-sm border-b dark:border-darkbg-border pb-2">
+            <ShieldCheck className="w-4 h-4" />
+            <span>1. Role-Based Access Control (RBAC) Matrix</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-darkbg text-slate-600 dark:text-slate-400 font-bold border-b dark:border-darkbg-border">
+                  <th className="p-2.5">Role</th>
+                  <th className="p-2.5">Target Users</th>
+                  <th className="p-2.5 text-center">Master Catalog Edit</th>
+                  <th className="p-2.5 text-center">POS Checkout</th>
+                  <th className="p-2.5 text-center">Branch Allocations</th>
+                  <th className="p-2.5 text-center">Financial Audit Logs</th>
+                  <th className="p-2.5 text-center">Org Settings</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/30">
+                <tr>
+                  <td className="p-2.5 font-bold text-slate-900 dark:text-white">Owner</td>
+                  <td className="p-2.5 text-slate-500">Business Owners</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                </tr>
+                <tr>
+                  <td className="p-2.5 font-bold text-slate-900 dark:text-white">Manager</td>
+                  <td className="p-2.5 text-slate-500">Branch Managers</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                </tr>
+                <tr>
+                  <td className="p-2.5 font-bold text-slate-900 dark:text-white">Accountant</td>
+                  <td className="p-2.5 text-slate-500">Tanzanian <i>Mhasibu</i></td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                </tr>
+                <tr>
+                  <td className="p-2.5 font-bold text-slate-900 dark:text-white">Cashier</td>
+                  <td className="p-2.5 text-slate-500">Store Operators</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-emerald-600">Yes</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                  <td className="p-2.5 text-center font-bold text-red-500">No</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/30 rounded-xl p-3 text-[11px] text-amber-900 dark:text-amber-300 space-y-1">
+            <p className="font-bold">🇹🇿 Tanzanian "Mhasibu" (Accountant) Write Barrier:</p>
+            <p>To prevent internal fraud, accountants cannot perform manual stock increases or inventory reductions. They can inspect ledgers, download sales charts, run tax compliance reviews, and inspect audit logs.</p>
+          </div>
+        </div>
+
+        {/* Section 2: Core Workflows */}
+        <div className="border border-slate-200 dark:border-darkbg-border rounded-2xl p-5 space-y-3 bg-white dark:bg-darkbg/40">
+          <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-extrabold text-sm border-b dark:border-darkbg-border pb-2">
+            <FileText className="w-4 h-4" />
+            <span>2. Core Operational Workflows</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-2 p-3 bg-slate-50 dark:bg-darkbg rounded-xl border border-slate-200 dark:border-darkbg-border">
+              <h4 className="font-bold text-slate-900 dark:text-white">🛒 POS Checkout Workflow</h4>
+              <ol className="list-decimal pl-4 space-y-1 text-slate-600 dark:text-slate-400 text-[11px]">
+                <li>Navigate to POS tab & scan barcode or search item.</li>
+                <li>Select customer from dropdown to award <strong>Loyalty Points</strong> (1 pt per 1,000 TZS).</li>
+                <li>Select payment method (Cash, Card, M-Pesa, Tigo Pesa).</li>
+                <li>Click <strong>Checkout</strong> to decrement stock via <code>StockLedger</code> and generate receipt.</li>
+              </ol>
+            </div>
+
+            <div className="space-y-2 p-3 bg-slate-50 dark:bg-darkbg rounded-xl border border-slate-200 dark:border-darkbg-border">
+              <h4 className="font-bold text-slate-900 dark:text-white">📶 Offline-First Operations</h4>
+              <ul className="list-disc pl-4 space-y-1 text-slate-600 dark:text-slate-400 text-[11px]">
+                <li><strong>Offline Execution:</strong> Keep checking out customers, adding items, and recording shifts offline inside browser IndexedDB cache.</li>
+                <li><strong>Status Indicator:</strong> 🟢 Connected (Synced) · 🟡 Syncing · 🔴 Offline (Queued locally).</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 3: Stock Requisitions & Subscriptions */}
+        <div className="border border-slate-200 dark:border-darkbg-border rounded-2xl p-5 space-y-3 bg-white dark:bg-darkbg/40">
+          <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-extrabold text-sm border-b dark:border-darkbg-border pb-2">
+            <Database className="w-4 h-4" />
+            <span>3. Cross-Branch Stock Requisitions & Lockout Policies</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-400">
+              <h4 className="font-bold text-slate-900 dark:text-white">📦 Cross-Branch Stock Requisitions</h4>
+              <p>1. <strong>Request:</strong> Branch Manager requests stock from another outlet.</p>
+              <p>2. <strong>Approval:</strong> Manager or Owner approves source request.</p>
+              <p>3. <strong>Ledger Update:</strong> Source decremented (<code>TRANSFER-OUT</code>), Target incremented (<code>TRANSFER-IN</code>).</p>
+            </div>
+
+            <div className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-400">
+              <h4 className="font-bold text-slate-900 dark:text-white">💳 Subscriptions & Lockout Policies</h4>
+              <p>• <strong>Free Trial:</strong> 14 days evaluation package.</p>
+              <p>• <strong>Lockout Policy:</strong> Overdue subscriptions trigger read-only lock, disabling registers until renewal payment is confirmed.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

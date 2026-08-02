@@ -17,6 +17,7 @@ import './POS.css';
 import { decreaseInventoryForSale } from '../../services/inventoryService';
 import { sessionService } from '../../services/sessionService';
 import { DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../../services/settingsService';
+import { cashDrawerService } from '../../services/cashDrawerService';
 
 // Local POS Cart item interface
 interface CartItem {
@@ -41,15 +42,15 @@ export const POS: React.FC = () => {
   // --- IndexedDB Live Queries ---
   const products = useLiveQuery(() => 
     db.products.where('tenant_id').equals(currentTenant?.id || '')
-      .and(p => p.branch_id === currentBranch?.id && p.module === activeModule)
+      .and(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive')
       .toArray()
-  , [currentTenant?.id, currentBranch?.id, activeModule]) || [];
+  , [currentTenant?.id]) || [];
 
   const productVariants = useLiveQuery(() =>
     db.productVariants.where('tenant_id').equals(currentTenant?.id || '')
-      .and(v => v.branch_id === currentBranch?.id)
+      .and(v => v.status !== 'Inactive')
       .toArray()
-  , [currentTenant?.id, currentBranch?.id]) || [];
+  , [currentTenant?.id]) || [];
 
   const customers = useLiveQuery(() => {
     const typeMap: Record<string, string> = {
@@ -71,6 +72,32 @@ export const POS: React.FC = () => {
   // Active cashier shift live query
   const activeShift = useLiveQuery(async () => {
     if (!user || !currentTenant?.id || !currentBranch?.id) return undefined;
+
+    // 1. Check cashDrawerSessions first
+    const drawerSession = await db.cashDrawerSessions
+      .where('tenant_id').equals(currentTenant.id)
+      .and(s => s.branch_id === currentBranch.id && s.status === 'OPEN')
+      .first();
+
+    if (drawerSession) {
+      return {
+        id: drawerSession.id,
+        tenant_id: drawerSession.tenant_id,
+        branch_id: drawerSession.branch_id,
+        cashier_id: drawerSession.cashier_id,
+        cashier_name: drawerSession.cashier_name,
+        status: 'OPEN' as const,
+        opening_time: drawerSession.opening_time,
+        opening_float: drawerSession.opening_float,
+        cash_sales: 0,
+        mpesa_sales: 0,
+        bank_sales: 0,
+        cash_in: 0,
+        cash_out: 0
+      };
+    }
+
+    // 2. Fall back to posShifts
     return await db.posShifts
       .where('cashier_id').equals(user.id)
       .and(s => s.status === 'OPEN' && s.tenant_id === currentTenant.id && s.branch_id === currentBranch.id)
@@ -711,6 +738,28 @@ export const POS: React.FC = () => {
     };
 
     await db.posShifts.add(newShift);
+
+    // Also sync CashDrawer session
+    try {
+      const drawer = await cashDrawerService.ensureDefaultDrawerExists(currentTenant.id, currentBranch.id);
+      let session = await cashDrawerService.getActiveSession(currentTenant.id, currentBranch.id, drawer.id);
+      if (!session) {
+        await cashDrawerService.openDrawerSession(
+          currentTenant.id,
+          currentBranch.id,
+          drawer.id,
+          'POS-TERM-01',
+          user.id,
+          user.name,
+          'Morning',
+          openingFloat,
+          []
+        );
+      }
+    } catch (err) {
+      console.warn('[POS] CashDrawer sync failed on open shift:', err);
+    }
+
     setIsShiftOpenModalOpen(false);
     alert(`Shift successfully opened with float Tsh. ${openingFloat.toLocaleString()}`);
   };
@@ -729,6 +778,27 @@ export const POS: React.FC = () => {
     };
 
     await db.posShifts.put(finalShift);
+
+    // Also sync CashDrawer session close
+    try {
+      const drawer = await cashDrawerService.ensureDefaultDrawerExists(currentTenant.id, currentBranch.id);
+      const session = await cashDrawerService.getActiveSession(currentTenant.id, currentBranch.id, drawer.id);
+      if (session) {
+        await cashDrawerService.performBlindCashClosingCount(
+          currentTenant.id,
+          currentBranch.id,
+          drawer.id,
+          session.id,
+          user?.id || 'usr-cashier',
+          user?.name || 'Authorized Cashier',
+          [],
+          500
+        );
+      }
+    } catch (err) {
+      console.warn('[POS] CashDrawer sync failed on close shift:', err);
+    }
+
     setIsShiftCloseModalOpen(false);
     alert(`Shift reconciled & closed successfully.\nVariance: Tsh. ${(closeCashActual - expectedCash).toLocaleString()}`);
   };
@@ -1027,6 +1097,43 @@ export const POS: React.FC = () => {
       }
 
       await db.posShifts.put(updatedShift);
+
+      // Also log cash sale into CashDrawer ledger for real-time running balance
+      const cashPortion = isPaymentSplit ? splitAmounts.Cash : (paymentMethod === 'Cash' ? cartTotal : 0);
+      if (cashPortion > 0) {
+        try {
+          const drawer = await cashDrawerService.ensureDefaultDrawerExists(currentTenant.id, currentBranch.id);
+          let session = await cashDrawerService.getActiveSession(currentTenant.id, currentBranch.id, drawer.id);
+          if (!session) {
+            session = await cashDrawerService.openDrawerSession(
+              currentTenant.id,
+              currentBranch.id,
+              drawer.id,
+              'POS-TERM-01',
+              user?.id || 'usr-cashier',
+              user?.name || 'Cashier',
+              'Morning',
+              activeShift.opening_float || 0,
+              []
+            );
+          }
+          if (session) {
+            await cashDrawerService.recordCashSale(
+              currentTenant.id,
+              currentBranch.id,
+              drawer.id,
+              session.id,
+              cashPortion,
+              user?.id || 'usr-cashier',
+              user?.name || 'Cashier',
+              'POS-TERM-01',
+              orderId
+            );
+          }
+        } catch (err) {
+          console.warn('[POS] Failed to log cash sale into CashDrawer ledger:', err);
+        }
+      }
 
       // Apply loyalty points and update outstanding balance if Credit, or wallet if Wallet
       if (selectedCustomer) {
@@ -1570,6 +1677,12 @@ export const POS: React.FC = () => {
                 <div className="flex justify-between">
                   <span>Loyalty Points:</span>
                   <span className="font-bold text-slate-800 dark:text-white">{selectedCustomer.loyaltyPoints} pts</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Wallet Balance:</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                    Tsh. {(selectedCustomer.walletBalance || 0).toLocaleString()}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Outstanding Bal:</span>
@@ -2219,6 +2332,25 @@ export const POS: React.FC = () => {
                 onChange={(e) => setCashReceived(Number(e.target.value))}
                 required
               />
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCashReceived(cartTotal)}
+                  className="px-2.5 py-1 bg-slate-100 dark:bg-darkbg-border text-slate-700 dark:text-slate-200 text-[10px] font-bold rounded-lg hover:bg-slate-200 transition"
+                >
+                  Exact Amount
+                </button>
+                {[1000, 2000, 5000, 10000, 20000, 50000].map(amt => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setCashReceived(amt >= cartTotal ? amt : Math.ceil(cartTotal / amt) * amt)}
+                    className="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono font-bold rounded-lg hover:bg-indigo-100 transition"
+                  >
+                    Tsh {amt.toLocaleString()}
+                  </button>
+                ))}
+              </div>
               {cashReceived > cartTotal && (
                 <div className="p-3 bg-green-50 border border-green-200/50 rounded-lg text-xs flex justify-between font-bold text-green-700 dark:bg-green-950/20 dark:border-green-900/40 dark:text-green-400">
                   <span>Change Due:</span>
@@ -2310,7 +2442,7 @@ export const POS: React.FC = () => {
 
               <div className="text-center text-[8px] space-y-1">
                 <p>CUSTOMER RECEIPT</p>
-                <p>Powered by DukaPos Offline-First</p>
+                <p>Powered by DukaPos Business Operating System</p>
                 <p className="font-semibold">{new Date(lastCompletedOrder.timestamp).toLocaleString()}</p>
               </div>
             </div>

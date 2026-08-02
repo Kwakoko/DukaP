@@ -6,11 +6,11 @@ import {
   Shield, ChevronRight, MapPin, AlertTriangle, Landmark, Store, Pill, Utensils, Zap, Building2,
   Mail, Lock as LockIcon, Key as KeyIcon, Users, Wallet, Package, Calculator, Eye, EyeOff, ArrowRight, X, Loader
 } from 'lucide-react';
-import { seedDatabase, db } from '../../db/dexie';
+import { db } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { supabase, setMockAuthOverride } from '../../db/supabaseClient';
 import { cloudDb } from '../../db/supabaseMock';
-import { tenantDemoService } from '../../services/tenantDemoService';
+
 import { tenantProvisioningService } from '../../services/tenantProvisioningService';
 import { tenantRecoveryService } from '../../services/tenantRecoveryService';
 import { SuperAdminService } from '../../services/superAdminService';
@@ -37,6 +37,50 @@ const workspaceRoles = [
   { id: 'storekeeper', name: 'Storekeeper', icon: Package, defaultEmail: 'clerk@dukapos.com', defaultPass: 'clerk123' },
   { id: 'accountant', name: 'Accountant', icon: Calculator, defaultEmail: 'accountant@dukapos.com', defaultPass: 'accountant123' },
 ];
+
+export const resolveFriendlyRole = async (roleIdOrName: string, fallbackRole?: string): Promise<UserRole> => {
+  const validRoles: UserRole[] = ['Super Admin', 'Business Owner', 'Tenant Owner', 'Business Administrator', 'Branch Manager', 'Cashier', 'Inventory Officer', 'Accountant'];
+  if (validRoles.includes(roleIdOrName as UserRole)) return roleIdOrName as UserRole;
+
+  const clean = (roleIdOrName || '').trim().toLowerCase();
+  if (clean === 'super admin' || clean.includes('super_admin')) return 'Super Admin';
+  if (clean.includes('owner') || clean.startsWith('role-owner')) return 'Tenant Owner';
+  if (clean.includes('admin') || clean.startsWith('role-admin')) return 'Business Administrator';
+  if (clean.includes('manager') || clean.startsWith('role-manager')) return 'Branch Manager';
+  if (clean.includes('cashier') || clean.startsWith('role-cashier')) return 'Cashier';
+  if (clean.includes('inventory')) return 'Inventory Officer';
+  if (clean.includes('accountant')) return 'Accountant';
+
+  try {
+    let roleObj = await db.roles.get(roleIdOrName);
+    if (!roleObj) {
+      roleObj = await db.roles.where('slug').equals(clean.replace(/\s+/g, '_')).first();
+    }
+    if (roleObj) {
+      if (roleObj.slug === 'tenant_owner' || roleObj.slug === 'business_owner' || roleObj.name.toLowerCase().includes('owner')) return 'Tenant Owner';
+      if (roleObj.slug === 'business_administrator' || roleObj.name.toLowerCase().includes('admin')) return 'Business Administrator';
+      if (roleObj.slug === 'branch_manager' || roleObj.name.toLowerCase().includes('manager')) return 'Branch Manager';
+      if (roleObj.slug === 'cashier' || roleObj.name.toLowerCase().includes('cashier')) return 'Cashier';
+      if (roleObj.slug === 'inventory_officer' || roleObj.name.toLowerCase().includes('inventory')) return 'Inventory Officer';
+      if (roleObj.slug === 'accountant' || roleObj.name.toLowerCase().includes('accountant')) return 'Accountant';
+      if (roleObj.name) return roleObj.name as UserRole;
+    }
+  } catch (_) {}
+
+  if (fallbackRole) {
+    if (validRoles.includes(fallbackRole as UserRole)) return fallbackRole as UserRole;
+    const fClean = fallbackRole.toLowerCase();
+    if (fClean.includes('owner')) return 'Tenant Owner';
+    if (fClean.includes('admin')) return 'Business Administrator';
+    if (fClean.includes('manager')) return 'Branch Manager';
+    if (fClean.includes('inventory')) return 'Inventory Officer';
+    if (fClean.includes('accountant')) return 'Accountant';
+    if (fClean.includes('cashier')) return 'Cashier';
+    return fallbackRole as UserRole;
+  }
+
+  return (roleIdOrName as UserRole) || 'Cashier';
+};
 
 const featurePool = [
   {
@@ -311,11 +355,14 @@ export const AuthGateway: React.FC = () => {
         return;
       }
 
+
+
       const resolvedList: ResolvedContext[] = [];
       for (const r of roles) {
         const branch = await db.branches.get(r.branch_id);
         const t = await db.tenants.get(r.tenant_id);
         const ind = await db.industries.get(r.industry_id || '');
+        const roleLabel = await resolveFriendlyRole(r.role_id, dbUser.role);
         
         resolvedList.push({
           id: r.id || '',
@@ -326,7 +373,7 @@ export const AuthGateway: React.FC = () => {
           branchLocation: branch?.location || 'Unknown Location',
           industry_id: r.industry_id,
           industryName: ind?.name || 'Retail',
-          role: r.role_id as UserRole
+          role: roleLabel
         });
       }
 
@@ -389,7 +436,6 @@ export const AuthGateway: React.FC = () => {
   const [dateFormat, setDateFormat] = useState('YYYY-MM-DD');
 
   const [selectedPlan, setSelectedPlan] = useState<'Trial' | 'Monthly' | 'Annual' | 'Enterprise'>('Trial');
-  const [loadDemoData, setLoadDemoData] = useState(true);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionProgress, setProvisionProgress] = useState(0);
   const [provisionLogs, setProvisionLogs] = useState<string[]>([]);
@@ -530,17 +576,28 @@ export const AuthGateway: React.FC = () => {
 
       // Fallback: lookup in local Dexie if cloud lookup failed
       if (!dbUser) {
-        dbUser = await db.users.where('email').equals(normalizedEmail).first();
+        try {
+          dbUser = await db.users.where('email').equalsIgnoreCase(normalizedEmail).first()
+               || await db.users.where('username').equalsIgnoreCase(normalizedEmail).first();
+        } catch (_) {}
+
         if (!dbUser) {
           const allUsers = await db.users.toArray();
           dbUser = allUsers.find(u => 
-            u.email?.toLowerCase() === normalizedEmail ||
-            u.phone?.replace(/\D/g, '') === inputIdentifier.replace(/\D/g, '')
+            (u.email && u.email.trim().toLowerCase() === normalizedEmail) ||
+            (u.username && u.username.trim().toLowerCase() === normalizedEmail) ||
+            (u.phone && u.phone.replace(/\D/g, '') === inputIdentifier.replace(/\D/g, '')) ||
+            (u.user_code && u.user_code.trim().toLowerCase() === normalizedEmail)
           );
         }
       }
 
-      if (!dbUser || dbUser.password_hash !== loginPassword) {
+      const passMatch = dbUser && (
+        dbUser.password_hash === loginPassword || 
+        dbUser.password_hash === loginPassword.trim()
+      );
+
+      if (!dbUser || !passMatch) {
         setErrorMsg('Invalid credentials. Please verify your email, phone, or business code and password.');
         return;
       }
@@ -712,6 +769,7 @@ export const AuthGateway: React.FC = () => {
         const br = await db.branches.get(r.branch_id);
         const ind = await db.industries.get(r.industry_id);
         const t = await db.tenants.get(r.tenant_id);
+        const roleLabel = await resolveFriendlyRole(r.role_id, dbUser.role);
         
         resolvedList.push({
           id: r.id,
@@ -722,7 +780,7 @@ export const AuthGateway: React.FC = () => {
           branchLocation: br?.location || 'Unknown Location',
           industry_id: r.industry_id,
           industryName: ind?.name || 'Retail',
-          role: r.role_id as UserRole
+          role: roleLabel
         });
       }
 
@@ -872,7 +930,7 @@ export const AuthGateway: React.FC = () => {
           language,
           dateFormat,
           plan: selectedPlan === 'Trial' ? 'Basic' : selectedPlan === 'Monthly' ? 'Professional' : selectedPlan === 'Annual' ? 'Professional' : 'Enterprise',
-          status: loadDemoData ? 'Demo' : (selectedPlan === 'Trial' ? 'Trial' : 'Active'),
+          status: selectedPlan === 'Trial' ? 'Trial' : 'Active',
           subscribedModules: selectedSubscribedModules
         }
       );
@@ -881,63 +939,7 @@ export const AuthGateway: React.FC = () => {
       setProvisionProgress(70);
       setProvisionLogs(prev => [...prev, '[Roles] Mapping default role clearances (Tenant Owner, Cashier, Accountant)...', '[Settings] Building default double-entry Chart of Accounts (COA)...']);
       
-      await seedDatabase();
 
-      if (loadDemoData) {
-        await sleep(900);
-        setProvisionProgress(90);
-        setProvisionLogs(prev => [...prev, '[AI Engine] Generating custom categories, staff configurations and tax records...', '[Demo] Seeding realistic operational transactions (sales, inventory)...']);
-
-        let mappedTemplate: 'Retail' | 'Restaurant' | 'Pharmacy' | 'Bar' | 'Garage' | 'Hotel' | 'SACCO' = 'Retail';
-        if (businessType === 'Restaurant') mappedTemplate = 'Restaurant';
-        else if (businessType === 'Pharmacy') mappedTemplate = 'Pharmacy';
-        else if (businessType === 'Bar') mappedTemplate = 'Bar';
-        else if (businessType === 'Garage') mappedTemplate = 'Garage';
-        else if (businessType === 'Hotel') mappedTemplate = 'Hotel';
-        else if (businessType === 'SACCO') mappedTemplate = 'SACCO';
-        await tenantDemoService.seedDemoData(cleanTenantId, cleanBranchId, mappedTemplate);
-
-        // Seed product catalog in cloud db
-        setMockAuthOverride({
-          tenant_id: cleanTenantId,
-          user_id: ownerUserId,
-          user_name: fullName || 'New Owner'
-        });
-        try {
-          await supabase.from('products').insert([
-            {
-              id: `ret-1-${cleanTenantId}`,
-              name: 'Premium Rice 5kg',
-              category: 'Grains',
-              buyingPrice: 15000,
-              sellingPrice: 18500,
-              price: 18500,
-              stock: 50,
-              tenant_id: cleanTenantId,
-              branch_id: cleanBranchId,
-              module: businessType,
-              hasVariants: false,
-              brand: 'Tanzania Gold',
-              description: 'Premium long grain white rice',
-              supplier: 'Mbeya Farmers Ltd',
-              created_at: Date.now(),
-              updated_at: Date.now(),
-              created_by: ownerUserId,
-              tenantId: cleanTenantId,
-              branchId: cleanBranchId,
-              categoryId: 'Grains',
-              costPrice: 15000,
-              status: 'Active',
-              version: 1,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              createdBy: ownerUserId
-            }
-          ]);
-        } finally {
-          setMockAuthOverride(null);
-        }
-      }
 
       await sleep(600);
       setProvisionProgress(100);
@@ -980,7 +982,7 @@ export const AuthGateway: React.FC = () => {
       id: createdTenantId,
       name: businessName || 'My DukaPos Business',
       plan: selectedPlan === 'Enterprise' ? 'Enterprise' : selectedPlan === 'Trial' ? 'Basic' : 'Professional',
-      status: loadDemoData ? 'Demo' : (selectedPlan === 'Trial' ? 'Trial' : 'Active')
+      status: selectedPlan === 'Trial' ? 'Trial' : 'Active'
     });
     setActiveModule(businessType);
     setActiveTab('Dashboard');
@@ -1011,17 +1013,17 @@ export const AuthGateway: React.FC = () => {
           </div>
           <div>
             <span className="text-xl font-black tracking-tight text-white block leading-none">DukaPos</span>
-            <span className="text-[9px] font-bold text-emerald-300 tracking-wider block mt-1">MOBILE POINT OF SALE</span>
+            <span className="text-[9px] font-bold text-blue-200 tracking-wider block mt-1">BUSINESS OPERATING SYSTEM</span>
           </div>
         </div>
 
         <div className="relative z-10 space-y-6 text-left">
           <div className="space-y-3">
             <h1 className="text-3xl xl:text-4xl font-extrabold text-white tracking-tight leading-tight">
-              Manage Your <span className="text-[#fbc02d] block mt-1">Business Smarter</span>
+              Run Your <span className="text-[#fbc02d] block mt-1">Entire Business</span>
             </h1>
             <p className="text-xs xl:text-sm text-indigo-100/80 leading-relaxed font-sans font-normal">
-              The complete POS & Backoffice suite tailored for modern retail, pharmacies, and restaurant chains.
+              The complete Business Operating System for retail, pharmacies, restaurants, SACCOs, and more — all in one powerful platform.
             </p>
           </div>
 
@@ -1069,7 +1071,7 @@ export const AuthGateway: React.FC = () => {
             </div>
             <div className="text-left">
               <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white block leading-none">DukaPos</span>
-              <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 tracking-wider block mt-1">MOBILE POINT OF SALE</span>
+              <span className="text-[9px] font-bold text-blue-600 dark:text-blue-400 tracking-wider block mt-1">BUSINESS OPERATING SYSTEM</span>
             </div>
           </div>
 
@@ -1078,7 +1080,7 @@ export const AuthGateway: React.FC = () => {
             {/* Top Header info inside card */}
             <div className="bg-gradient-to-r from-primary to-blue-600 p-4 text-white text-center">
               <h2 className="text-sm font-bold tracking-tight">DukaPos Gateway</h2>
-              <p className="text-[10px] text-white/80 mt-0.5">Secure Multi-Tenant Authentication & Provisioning</p>
+              <p className="text-[10px] text-white/80 mt-0.5">Business Operating System · Secure Multi-Tenant Access</p>
             </div>
 
         {/* UNIFIED TAB-BASED LOGIN PANEL */}
@@ -1431,14 +1433,32 @@ export const AuthGateway: React.FC = () => {
                   <div className="flex items-center gap-3 p-3 bg-white dark:bg-darkbg border border-slate-200 dark:border-darkbg-border rounded-xl">
                     <div className="p-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 text-[#5b3ce4]">
                       {(() => {
-                        const matchedRole = workspaceRoles.find(r => r.name.toLowerCase() === selectedContext.role.toLowerCase() || r.id === selectedContext.role.toLowerCase());
+                        const cleanRole = (selectedContext.role || '').toLowerCase();
+                        const isOwner = cleanRole.includes('owner') || cleanRole.startsWith('role-owner');
+                        const isAdmin = cleanRole.includes('admin') || cleanRole.startsWith('role-admin');
+                        const isManager = cleanRole.includes('manager') || cleanRole.startsWith('role-manager');
+                        const isCashier = cleanRole.includes('cashier') || cleanRole.startsWith('role-cashier');
+                        
+                        const displayRole = isOwner ? 'Tenant Owner' : isAdmin ? 'Business Administrator' : isManager ? 'Branch Manager' : isCashier ? 'Cashier' : selectedContext.role;
+                        const matchedRole = workspaceRoles.find(r => r.name.toLowerCase() === displayRole.toLowerCase() || r.id === displayRole.toLowerCase());
                         const RoleIcon = matchedRole?.icon || KeyIcon;
                         return <RoleIcon className="h-5 w-5" />;
                       })()}
                     </div>
                     <div className="flex-1">
                       <div className="text-[10px] text-slate-400 font-semibold leading-none">System Privilege Level</div>
-                      <div className="text-xs font-bold text-slate-800 dark:text-white mt-1 uppercase tracking-wider">{selectedContext.role}</div>
+                      <div className="text-xs font-bold text-slate-800 dark:text-white mt-1 uppercase tracking-wider">
+                        {(() => {
+                          const cleanRole = (selectedContext.role || '').toLowerCase();
+                          if (cleanRole.includes('owner') || cleanRole.startsWith('role-owner')) return 'Tenant Owner';
+                          if (cleanRole.includes('admin') || cleanRole.startsWith('role-admin')) return 'Business Administrator';
+                          if (cleanRole.includes('manager') || cleanRole.startsWith('role-manager')) return 'Branch Manager';
+                          if (cleanRole.includes('cashier') || cleanRole.startsWith('role-cashier')) return 'Cashier';
+                          if (cleanRole.includes('inventory')) return 'Inventory Officer';
+                          if (cleanRole.includes('accountant')) return 'Accountant';
+                          return selectedContext.role;
+                        })()}
+                      </div>
                     </div>
                     <span className="text-[9px] bg-slate-100 dark:bg-darkbg text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md font-bold uppercase border border-slate-200 dark:border-darkbg-border">
                       Read-Only
@@ -1727,19 +1747,6 @@ export const AuthGateway: React.FC = () => {
                   ))}
                 </div>
 
-                <div className="flex items-center space-x-2 bg-slate-50 dark:bg-darkbg/40 p-3 rounded-lg border border-slate-200/50 dark:border-darkbg-border/30 text-left">
-                  <input
-                    id="loadDemoData"
-                    type="checkbox"
-                    checked={loadDemoData}
-                    onChange={(e) => setLoadDemoData(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary dark:border-darkbg-border dark:bg-darkbg"
-                  />
-                  <label htmlFor="loadDemoData" className="text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer select-none">
-                    Seed realistic demo records & product templates matching {businessType}
-                  </label>
-                </div>
-
                 <div className="flex space-x-3 pt-2">
                   <Button variant="outline" className="w-1/2" onClick={() => setWizardStep(3)}>
                     <span>Back</span>
@@ -1767,7 +1774,7 @@ export const AuthGateway: React.FC = () => {
                     {isReady ? 'Workspace Ready!' : 'Central Tenant Provisioning'}
                   </h4>
                   <p className="text-xs text-slate-400">
-                    {isReady ? 'Your isolated workspace has been successfully created.' : 'Automating tenant configurations and seeding defaults.'}
+                    {isReady ? 'Your isolated workspace has been successfully created.' : 'Configuring workspace and saving tenant configurations.'}
                   </p>
                 </div>
 

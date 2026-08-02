@@ -1,6 +1,5 @@
-import { db, type Product, type ProductVariant, type Category, type Brand, saveProductAndVariants } from '../db/dexie';
-import { supabase } from '../db/supabaseClient';
-
+import { db, type Product, type ProductVariant, type Category, type Brand, saveProductAndVariants, syncParentStock } from '../db/dexie';
+import { cloudDb } from '../db/supabaseMock';
 
 export interface UserContext {
   id: string;
@@ -10,174 +9,252 @@ export interface UserContext {
   name: string;
 }
 
-// ─── Permission Check ────────────────────────────────────────────────────────
 export function validateProductPermission(
   action: 'view' | 'create' | 'editPrice' | 'delete',
   role: string
 ): boolean {
-  if (role === 'Super Admin' || role === 'Business Owner') return true;
+  if (!role) return false;
+  const cleanRole = role.trim().toLowerCase();
+
+  // Super Admin, Business Owner & Tenant Owner have full unrestricted access
+  if (
+    cleanRole === 'super admin' ||
+    cleanRole === 'business owner' ||
+    cleanRole === 'tenant owner' ||
+    cleanRole === 'tenant_owner' ||
+    cleanRole.includes('owner') ||
+    cleanRole.startsWith('role-owner')
+  ) {
+    return true;
+  }
   
   if (action === 'delete') {
-    // Only Owner and Super Admin can delete
-    return false;
+    return (
+      cleanRole === 'business administrator' ||
+      cleanRole.includes('admin')
+    );
   }
   
   if (action === 'create' || action === 'editPrice') {
-    // Branch Manager can create and edit price
-    return role === 'Branch Manager';
+    return (
+      cleanRole === 'business administrator' ||
+      cleanRole === 'branch manager' ||
+      cleanRole === 'inventory officer' ||
+      cleanRole.includes('admin') ||
+      cleanRole.includes('manager') ||
+      cleanRole.includes('inventory')
+    );
   }
   
   if (action === 'view') {
-    return true; // Cashiers, Accountants, etc. can view
+    return true;
   }
   
   return false;
 }
 
 // ─── Schema Mapper: camelCase <=> snake_case ────────────────────────────────
-export function mapProductToLocal(prod: Product): Product {
-  // Enforce snake_case properties on local db write
+export function mapProductToLocal(prod: any): Product {
+  const tenantId = prod.tenantId || prod.tenant_id || '';
+  const branchId = prod.branchId || prod.branch_id || '';
   return {
     ...prod,
-    tenant_id: prod.tenantId || prod.tenant_id || '',
-    branch_id: prod.branchId || prod.branch_id || '',
+    tenant_id: tenantId,
+    branch_id: branchId,
+    tenantId,
+    branchId,
     buyingPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
     sellingPrice: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
     price: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
     category: prod.category || prod.categoryId || '',
-    // Make sure camelCase fields are preserved for serialization compatibility
-    tenantId: prod.tenantId || prod.tenant_id,
-    branchId: prod.branchId || prod.branch_id,
+    module: prod.module || 'Retail',
     costPrice: prod.costPrice !== undefined ? prod.costPrice : prod.buyingPrice,
     categoryId: prod.categoryId || prod.category,
     status: prod.status || 'Active',
     version: prod.version || 1,
-    createdAt: prod.createdAt || (prod as any).created_at || Date.now(),
-    updatedAt: prod.updatedAt || (prod as any).updated_at || Date.now(),
-    createdBy: prod.createdBy || (prod as any).created_by || 'usr-unknown'
-  };
+    createdAt: prod.createdAt || prod.created_at || Date.now(),
+    updatedAt: prod.updatedAt || prod.updated_at || Date.now(),
+    createdBy: prod.createdBy || prod.created_by || 'usr-unknown',
+    // CRITICAL: Never mark as SYNCED unless coming from the server with syncStatus already set
+    syncStatus: prod.syncStatus || 'PENDING',
+  } as Product;
 }
 
 export function mapProductToCloud(prod: Product): any {
-  // Enforce camelCase format for PostgreSQL server
+  const tenantId = prod.tenantId || prod.tenant_id || '';
+  const branchId = prod.branchId || prod.branch_id || '';
   return {
     id: prod.id,
     name: prod.name,
     categoryId: prod.categoryId || prod.category || '',
+    category: prod.categoryId || prod.category || '',
     costPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
+    buyingPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
     sellingPrice: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
     price: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
     stock: prod.stock || 0,
     expiryDate: prod.expiryDate,
-    tenantId: prod.tenantId || prod.tenant_id || '',
-    branchId: prod.branchId || prod.branch_id || '',
+    tenantId,
+    branchId,
+    tenant_id: tenantId,
+    branch_id: branchId,
     module: prod.module || 'Retail',
     hasVariants: prod.hasVariants || false,
     brand: prod.brand,
     description: prod.description,
     supplier: prod.supplier,
+    supplier_id: (prod as any).supplier_id,
+    sku: prod.sku,
+    barcode: prod.barcode,
     image: prod.image,
+    image_url: (prod as any).image_url,
     attributes: prod.attributes,
-    
-    // Server-specific properties
-    tenant_id: prod.tenantId || prod.tenant_id || '',
-    branch_id: prod.branchId || prod.branch_id || '',
-    category: prod.categoryId || prod.category || '',
-    buyingPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
-    created_at: prod.createdAt || (prod as any).created_at || Date.now(),
-    updated_at: prod.updatedAt || (prod as any).updated_at || Date.now(),
-    created_by: prod.createdBy || (prod as any).created_by || 'usr-unknown',
-
+    taxRate: (prod as any).taxRate,
+    origin: (prod as any).origin || 'PRODUCTION',
     status: prod.status || 'Active',
     version: prod.version || 1,
     createdAt: prod.createdAt || (prod as any).created_at || Date.now(),
     updatedAt: prod.updatedAt || (prod as any).updated_at || Date.now(),
-    deletedAt: prod.deletedAt,
+    created_at: prod.createdAt || (prod as any).created_at || Date.now(),
+    updated_at: prod.updatedAt || (prod as any).updated_at || Date.now(),
+    created_by: prod.createdBy || (prod as any).created_by || 'usr-unknown',
     createdBy: prod.createdBy || (prod as any).created_by || 'usr-unknown',
-    updatedBy: prod.updatedBy
+    updatedBy: prod.updatedBy,
+    deletedAt: prod.deletedAt,
   };
 }
 
+/**
+ * Attempts a direct write to the server for durability.
+ * This is a fire-and-forget secondary path — the sync queue is the primary.
+ * If this fails, the sync queue will handle it asynchronously.
+ */
+async function attemptDirectCloudWrite(
+  action: 'INSERT' | 'UPDATE' | 'DELETE',
+  payload: any,
+  tenantId: string,
+  userId: string
+): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-tenant-id': tenantId,
+      'x-user-id': userId,
+    };
+
+    if (action === 'DELETE') {
+      const res = await fetch(`/api/products/${payload.id}`, {
+        method: 'DELETE',
+        headers,
+      });
+      return res.ok;
+    } else {
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      return res.ok;
+    }
+  } catch {
+    return false;
+  }
+}
+
 export class ProductService {
-  // Create Product
+  // ─── Create Product ────────────────────────────────────────────────────────
   static async createProduct(
     input: Omit<Product, 'id' | 'updatedAt' | 'version' | 'syncStatus'>,
     user: UserContext,
     _isOnline: boolean
   ): Promise<Product> {
-    // 1. Permission checks
     if (!validateProductPermission('create', user.role)) {
       throw new Error(`Permission Denied: User role '${user.role}' cannot create products.`);
     }
 
-    // 2. Validate tenant & branch ownership
     const tenantId = input.tenantId || input.tenant_id || user.tenant_id;
     const branchId = input.branchId || input.branch_id || user.branch_id;
     if (tenantId !== user.tenant_id) {
       throw new Error('Security Error: Tenant ID mismatch.');
     }
 
-    // 3. Create initial product — respect pre-defined temporary IDs (e.g. for offline sync)
-    //    or generate a UUID for Client ID Sovereignty.
     const clientUUID = (input as any).id || (typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : `prod-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
 
+    const now = Date.now();
     const newProd: Product = {
       ...input,
       id: clientUUID,
       tenantId,
       branchId,
+      tenant_id: tenantId,
+      branch_id: branchId,
+      module: input.module || 'Retail',
       categoryId: input.categoryId || input.category || '',
       costPrice: input.costPrice !== undefined ? input.costPrice : (input.buyingPrice || 0),
       sellingPrice: input.sellingPrice !== undefined ? input.sellingPrice : (input.price || 0),
       price: input.sellingPrice !== undefined ? input.sellingPrice : (input.price || 0),
       status: input.status || 'Active',
+      origin: (input as any).origin || 'PRODUCTION',
       version: 1,
-      createdAt: input.createdAt || Date.now(),
-      updatedAt: Date.now(),
+      createdAt: input.createdAt || now,
+      updatedAt: now,
       createdBy: user.id,
-      syncStatus: 'PENDING'  // Always PENDING until server confirms
+      syncStatus: 'PENDING',
     };
 
     const mappedLocal = mapProductToLocal(newProd);
-
-    // 4. Atomic save to IndexedDB (product + empty variant array)
-    //    Use the deep write pipeline so the transaction is guaranteed atomic.
     await saveProductAndVariants(mappedLocal, []);
 
-    // Remove the duplicate queue entry added by saveProductAndVariants,
-    // then add our own cloud-format entry
-    const lastQueued = await db.syncQueue
+    const rawQueued = await db.syncQueue
       .where('entityName').equals('products')
-      .and(item => item.payload?.id === newProd.id)
+      .and(item => item.payload?.id === newProd.id && item.status === 'Pending')
       .last();
-    if (lastQueued?.id !== undefined) await db.syncQueue.delete(lastQueued.id);
+    if (rawQueued?.id !== undefined) {
+      await db.syncQueue.update(rawQueued.id, {
+        payload: mapProductToCloud(newProd),
+      });
+    } else {
+      await db.syncQueue.add({
+        actionType: 'INSERT',
+        entityName: 'products',
+        payload: mapProductToCloud(newProd),
+        timestamp: now,
+        status: 'Pending',
+      });
+    }
 
-    // 5. Audit Logging
     await db.securityAuditLogs.put({
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
       tenant_id: tenantId,
       branch_id: branchId,
       user_id: user.id,
       action: 'PRODUCT_CREATED',
-      created_at: Date.now(),
-      details: `Created product '${newProd.name}' (${newProd.id})`
+      created_at: now,
+      details: `Created product '${newProd.name}' (${newProd.id})`,
     } as any);
 
-    // 6. Queue Sync
-    await db.syncQueue.add({
-      actionType: 'INSERT',
-      entityName: 'products',
-      payload: mapProductToCloud(newProd),
-      timestamp: Date.now(),
-      status: 'Pending'
-    });
+    attemptDirectCloudWrite('INSERT', mapProductToCloud(newProd), tenantId, user.id)
+      .then(success => {
+        if (success) {
+          db.products.update(newProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any)
+            .then(() => {
+              db.syncQueue
+                .where('entityName').equals('products')
+                .and(item => item.payload?.id === newProd.id && item.status === 'Pending')
+                .delete()
+                .catch(() => {});
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
 
     return newProd;
   }
 
-  // Update Product
+  // ─── Update Product ────────────────────────────────────────────────────────
   static async updateProduct(
     id: string,
     updates: Partial<Product>,
@@ -189,56 +266,73 @@ export class ProductService {
       throw new Error(`Product with ID '${id}' not found.`);
     }
 
-    // 1. Tenant/Branch security validation
     if (existing.tenant_id !== user.tenant_id) {
       throw new Error('Security Violation: Unauthorized product update.');
     }
 
-    // 2. Validate role capability (editPrice check if price is changing)
     const isPriceChanging = updates.sellingPrice !== undefined || updates.costPrice !== undefined || updates.price !== undefined;
     const action = isPriceChanging ? 'editPrice' : 'create';
     if (!validateProductPermission(action, user.role)) {
       throw new Error(`Permission Denied: User role '${user.role}' cannot update this product attribute.`);
     }
 
-    // 3. Apply updates & increment version
+    const now = Date.now();
+
     const updatedProd: Product = {
       ...existing,
       ...updates,
-      updatedAt: Date.now(),
+      tenant_id: existing.tenant_id,
+      branch_id: existing.branch_id,
+      tenantId: existing.tenantId || existing.tenant_id,
+      branchId: existing.branchId || existing.branch_id,
+      updatedAt: now,
       updatedBy: user.id,
       version: (existing.version || 1) + 1,
-      syncStatus: 'PENDING'  // Always PENDING until server confirms update
+      syncStatus: 'PENDING',
     };
 
     const mappedLocal = mapProductToLocal(updatedProd);
     await db.products.put(mappedLocal);
 
-    // 4. Audit Logging
     const auditAction = isPriceChanging ? 'PRODUCT_PRICE_CHANGED' : 'PRODUCT_UPDATED';
     await db.securityAuditLogs.put({
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
       tenant_id: user.tenant_id,
       branch_id: user.branch_id,
       user_id: user.id,
       action: auditAction,
-      created_at: Date.now(),
-      details: `Updated product '${existing.name}'. Price altered: ${isPriceChanging}`
+      created_at: now,
+      details: `Updated product '${existing.name}'. Price altered: ${isPriceChanging}`,
     } as any);
 
-    // 5. Sync queue
     await db.syncQueue.add({
       actionType: 'UPDATE',
       entityName: 'products',
       payload: mapProductToCloud(updatedProd),
-      timestamp: Date.now(),
-      status: 'Pending'
+      timestamp: now,
+      status: 'Pending',
     });
+
+    attemptDirectCloudWrite('UPDATE', mapProductToCloud(updatedProd), user.tenant_id, user.id)
+      .then(success => {
+        if (success) {
+          db.products.update(updatedProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any)
+            .then(() => {
+              db.syncQueue
+                .where('entityName').equals('products')
+                .and(item => item.payload?.id === updatedProd.id && item.status === 'Pending')
+                .delete()
+                .catch(() => {});
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
 
     return updatedProd;
   }
 
-  // Soft Delete Product
+  // ─── Soft Delete Product ───────────────────────────────────────────────────
   static async deleteProduct(
     id: string,
     user: UserContext,
@@ -247,113 +341,208 @@ export class ProductService {
     const existing = await db.products.get(id);
     if (!existing) return false;
 
-    // 1. Tenant validation
     if (existing.tenant_id !== user.tenant_id) {
       throw new Error('Security Violation: Unauthorized product deletion.');
     }
 
-    // 2. Role validation
     if (!validateProductPermission('delete', user.role)) {
       throw new Error(`Permission Denied: User role '${user.role}' cannot delete products.`);
     }
 
-    // 3. Mark soft deleted locally
+    const now = Date.now();
+
     const deletedProd: Product = {
       ...existing,
-      deletedAt: Date.now(),
+      deletedAt: now,
       status: 'Inactive',
-      syncStatus: 'PENDING',  // Always PENDING until server confirms delete
-      version: (existing.version || 1) + 1
+      syncStatus: 'PENDING',
+      version: (existing.version || 1) + 1,
+      updatedAt: now,
     };
 
-    // Soft delete locally: delete from local table, or mark as deleted.
-    // The prompt specifies soft deletion, so we update status and set deletedAt.
     const mappedLocal = mapProductToLocal(deletedProd);
     await db.products.put(mappedLocal);
 
-    // 4. Audit logging
     await db.securityAuditLogs.put({
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
       tenant_id: user.tenant_id,
       branch_id: user.branch_id,
       user_id: user.id,
       action: 'PRODUCT_DELETED',
-      created_at: Date.now(),
-      details: `Soft deleted product '${existing.name}' (${id})`
+      created_at: now,
+      details: `Soft deleted product '${existing.name}' (${id})`,
     } as any);
 
-    // 5. Sync queue
     await db.syncQueue.add({
       actionType: 'DELETE',
       entityName: 'products',
       payload: mapProductToCloud(deletedProd),
-      timestamp: Date.now(),
-      status: 'Pending'
+      timestamp: now,
+      status: 'Pending',
     });
+
+    attemptDirectCloudWrite('UPDATE', mapProductToCloud(deletedProd), user.tenant_id, user.id)
+      .then(success => {
+        if (success) {
+          db.products.update(deletedProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any).catch(() => {});
+          db.syncQueue
+            .where('entityName').equals('products')
+            .and(item => item.payload?.id === deletedProd.id && item.status === 'Pending')
+            .delete()
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
 
     return true;
   }
 
-  // Sync Recovery download
+  // ─── Cloud reconciliation download ────────────────────────────────────────
   static async reconcileCloudChanges(cloudProducts: Product[], tenantId: string) {
-    // Build a set of cloud product IDs for targeted reconciliation.
-    // We ONLY remove local products that:
-    //   (a) exist in the cloud response (so we refresh with authoritative data), AND
-    //   (b) are not PENDING (offline work not yet synced)
-    // This preserves locally-created products that have never been pushed to the cloud.
-    const cloudProductIds = new Set(cloudProducts.map(cp => cp.id));
-
-    const localProds = await db.products.where('tenant_id').equals(tenantId).toArray();
-    for (const lp of localProds) {
-      if (cloudProductIds.has(lp.id) && lp.syncStatus !== 'PENDING') {
-        await db.products.delete(lp.id);
-      }
+    if (!cloudProducts || cloudProducts.length === 0) {
+      return;
     }
 
-    // Resolve primary branch for tenant if not tenant-101
     const tenantBranches = await db.branches.where('tenant_id').equals(tenantId).toArray();
-    const primaryBranchId = tenantBranches.length > 0 ? tenantBranches[0].id : 'branch-dar-hq';
+    const primaryBranchId = tenantBranches.length > 0 ? tenantBranches[0].id : 'branch-main';
 
-    // Upsert recovered products
     for (const cp of cloudProducts) {
-      if (cp.deletedAt || (cp as any).deleted_at || (cp as any).status === 'Inactive') continue; // Skip deleted or inactive items
+      if (cp.deletedAt || (cp as any).deleted_at || (cp as any).status === 'Inactive') {
+        await db.products.delete(cp.id);
+        continue;
+      }
 
-      // Preserve offline-pending local version — don't overwrite with stale cloud data
       const existing = await db.products.get(cp.id);
       if (existing && existing.syncStatus === 'PENDING') {
         continue;
       }
 
-      const bid = cp.branchId || cp.branch_id || 'branch-dar-hq';
+      const bid = cp.branchId || cp.branch_id || primaryBranchId;
       const resolvedBranchId = (bid === 'branch-dar-hq' && tenantId !== 'tenant-101') ? primaryBranchId : bid;
 
       const localFormat = mapProductToLocal({
         ...cp,
         branchId: resolvedBranchId,
         branch_id: resolvedBranchId,
-        syncStatus: 'SYNCED'
+        syncStatus: 'SYNCED',
       });
       await db.products.put(localFormat);
+      if (cp.hasVariants) {
+        await syncParentStock(cp.id);
+      }
     }
   }
 
+  // ─── Automated Variant Deduplication & Cleanup ─────────────────────────────
+  static async cleanDuplicateVariants(tenantId?: string): Promise<{ cleanedCount: number; mergedProducts: number }> {
+    return cleanDuplicateVariants(tenantId);
+  }
+}
+
+export function getVariantAttrSig(attributes: Record<string, string> | undefined | null): string {
+  if (!attributes || typeof attributes !== 'object') return '';
+  const parts: string[] = [];
+  for (const [, v] of Object.entries(attributes)) {
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      parts.push(String(v).trim().toLowerCase());
+    }
+  }
+  return parts.sort().join('|');
+}
+
+export async function cleanDuplicateVariants(tenantId?: string): Promise<{ cleanedCount: number; mergedProducts: number }> {
+  try {
+    let query = db.productVariants.toCollection();
+    if (tenantId) {
+      query = db.productVariants.where('tenant_id').equals(tenantId);
+    }
+    const allVariants = await query.toArray();
+    if (allVariants.length === 0) return { cleanedCount: 0, mergedProducts: 0 };
+
+    const groupedByProduct = new Map<string, ProductVariant[]>();
+    for (const v of allVariants) {
+      if (!groupedByProduct.has(v.productId)) {
+        groupedByProduct.set(v.productId, []);
+      }
+      groupedByProduct.get(v.productId)!.push(v);
+    }
+
+    let cleanedCount = 0;
+    const mergedProductIds = new Set<string>();
+
+    for (const [productId, vars] of groupedByProduct.entries()) {
+      if (vars.length <= 1) continue;
+
+      const sigMap = new Map<string, ProductVariant[]>();
+      for (const v of vars) {
+        const sig = getVariantAttrSig(v.attributes) || (v.sku ? `sku:${v.sku.trim().toLowerCase()}` : `id:${v.id}`);
+        if (!sigMap.has(sig)) sigMap.set(sig, []);
+        sigMap.get(sig)!.push(v);
+      }
+
+      for (const [, group] of sigMap.entries()) {
+        if (group.length <= 1) continue;
+
+        group.sort((a, b) => {
+          const aStock = a.stock || 0;
+          const bStock = b.stock || 0;
+          if (aStock !== bStock) return bStock - aStock;
+          const aHasSku = a.sku ? 1 : 0;
+          const bHasSku = b.sku ? 1 : 0;
+          if (aHasSku !== bHasSku) return bHasSku - aHasSku;
+          return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+        });
+
+        const kept = group[0];
+        const redundant = group.slice(1);
+
+        for (const red of redundant) {
+          const redLedger = await db.stockLedger.where('variant_id').equals(red.id).toArray();
+          for (const l of redLedger) {
+            await db.stockLedger.update(l.id, { variant_id: kept.id });
+          }
+
+          const redBal = await db.stockBalance.where('variant_id').equals(red.id).toArray();
+          for (const b of redBal) {
+            await db.stockBalance.delete(b.id);
+          }
+
+          await db.productVariants.delete(red.id);
+
+          try {
+            await cloudDb.cloud_product_variants.delete(red.id);
+          } catch {}
+
+          const syncItems = await db.syncQueue.where('entityName').equals('productVariants').toArray();
+          for (const sq of syncItems) {
+            if (sq.payload?.id === red.id) {
+              await db.syncQueue.delete(sq.id!);
+            }
+          }
+
+          cleanedCount++;
+          mergedProductIds.add(productId);
+        }
+      }
+
+      if (mergedProductIds.has(productId)) {
+        await syncParentStock(productId);
+      }
+    }
+
+    return { cleanedCount, mergedProducts: mergedProductIds.size };
+  } catch (err) {
+    console.error('Error cleaning duplicate variants:', err);
+    return { cleanedCount: 0, mergedProducts: 0 };
+  }
 }
 
 // ─── createProductWithVariants ──────────────────────────────────────────────
-/**
- * High-level API that creates a product and its variants atomically.
- * Implements Fix #1 (Deep Write Pipeline) + Fix #4 (Client ID Sovereignty).
- *
- * @param input    Product fields (id auto-generated via crypto.randomUUID)
- * @param variants Variant rows (productId auto-bound to the parent)
- * @param user     Authenticated user context
- * @param isOnline Current network state
- */
 export async function createProductWithVariants(
   input: Omit<Product, 'id' | 'updatedAt' | 'version' | 'syncStatus'>,
   variants: Omit<ProductVariant, 'productId' | 'isSynced' | 'syncStatus'>[],
   user: UserContext,
-  isOnline: boolean
+  _isOnline: boolean
 ): Promise<{ product: Product; variants: ProductVariant[] }> {
   if (!validateProductPermission('create', user.role)) {
     throw new Error(`Permission Denied: '${user.role}' cannot create products.`);
@@ -363,7 +552,6 @@ export async function createProductWithVariants(
   const branchId = input.branchId || input.branch_id || user.branch_id;
   if (tenantId !== user.tenant_id) throw new Error('Security Error: Tenant ID mismatch.');
 
-  // Client ID Sovereignty — cryptographic UUID the server must honour exactly.
   const productId = (input as any).id || ((typeof crypto !== 'undefined' && crypto.randomUUID)
     ? crypto.randomUUID()
     : `prod-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
@@ -387,7 +575,7 @@ export async function createProductWithVariants(
     createdAt: prodCreatedAt,
     updatedAt: now,
     createdBy: user.id,
-    syncStatus: isOnline ? 'SYNCED' : 'PENDING',
+    syncStatus: 'PENDING',
     hasVariants: variants.length > 0,
   };
 
@@ -405,144 +593,169 @@ export async function createProductWithVariants(
     createdBy: user.id,
   }));
 
-  // ── Atomic deep write: product + all variants in ONE Dexie transaction ──
   await saveProductAndVariants(product, boundVariants);
+  await syncParentStock(productId);
 
-  // Audit log
+  const rawQueued = await db.syncQueue
+    .where('entityName').equals('products')
+    .and(item => item.payload?.id === productId && item.status === 'Pending')
+    .last();
+  if (rawQueued?.id !== undefined) {
+    await db.syncQueue.update(rawQueued.id, {
+      payload: mapProductToCloud(product),
+    });
+  }
+
   await db.securityAuditLogs.put({
-    id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
     tenant_id: tenantId,
     branch_id: branchId,
     user_id: user.id,
     action: 'PRODUCT_WITH_VARIANTS_CREATED',
     created_at: now,
-    details: `Created '${product.name}' (${productId}) with ${boundVariants.length} variant(s).`
+    details: `Created '${product.name}' (${productId}) with ${boundVariants.length} variant(s).`,
   } as any);
 
   return { product, variants: boundVariants };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CATEGORIES SERVICE (Ported from Project-1 & Enhanced for Cloud/Offline)
+// CATEGORIES SERVICE
 // ═══════════════════════════════════════════════════════════════════════════
 
 export async function fetchCategories(tenantId: string): Promise<Category[]> {
   const local = await db.categories.where('tenant_id').equals(tenantId).toArray();
-  if (local.length > 0) return local;
-  try {
-    const { data } = await supabase.from('categories').select('*').eq('tenant_id', tenantId);
-    if (data && data.length > 0) {
-      await db.categories.bulkPut(data as Category[]);
-      return data as Category[];
-    }
-  } catch (e) {
-    console.warn('[Cloud Sync] Failed to fetch categories from cloud:', e);
-  }
   return local;
 }
 
-export async function createCategory(payload: Partial<Category>): Promise<Category> {
-  const cat: Category = {
-    id: payload.id || `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name: payload.name?.trim() || 'New Category',
-    description: payload.description || '',
-    parent_id: payload.parent_id || undefined,
-    icon: payload.icon || 'Folder',
-    slug: payload.slug || payload.name?.toLowerCase().replace(/\s+/g, '-') || '',
-    is_active: payload.is_active ?? true,
-    tenant_id: payload.tenant_id || '',
+export async function createCategory(
+  input: string | Partial<Category>,
+  tenantId?: string,
+  _branchId?: string
+): Promise<Category> {
+  const catName = typeof input === 'string' ? input : (input.name || '');
+  const tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
+  const category: Category = {
+    id: `cat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    name: catName.trim(),
+    tenant_id: tid,
     created_at: Date.now(),
-    updated_at: Date.now()
   };
-  await db.categories.put(cat);
-  try {
-    await supabase.from('categories').insert(cat as any);
-  } catch (err) {
-    console.warn('[Cloud Sync] Category insert failed:', err);
-  }
-  return cat;
+  await db.categories.put(category);
+  return category;
 }
 
-export async function updateCategory(id: string, payload: Partial<Category>): Promise<void> {
-  const existing = await db.categories.get(id);
-  if (existing) {
-    const updated = { ...existing, ...payload, updated_at: Date.now() };
-    await db.categories.put(updated);
-    try {
-      await supabase.from('categories').update(payload as any).eq('id', id);
-    } catch (err) {
-      console.warn('[Cloud Sync] Category update failed:', err);
-    }
-  }
+export async function updateCategory(id: string, updates: Partial<Category>): Promise<void> {
+  await db.categories.update(id, updates);
 }
 
 export async function deleteCategory(id: string): Promise<void> {
   await db.categories.delete(id);
-  try {
-    await supabase.from('categories').delete().eq('id', id);
-  } catch (err) {
-    console.warn('[Cloud Sync] Category delete failed:', err);
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BRANDS SERVICE (Ported from Project-1 & Enhanced for Cloud/Offline)
+// BRANDS SERVICE
 // ═══════════════════════════════════════════════════════════════════════════
 
 export async function fetchBrands(tenantId: string): Promise<Brand[]> {
-  const local = await db.brands.where('tenant_id').equals(tenantId).toArray();
-  if (local.length > 0) return local;
   try {
-    const { data } = await supabase.from('brands').select('*').eq('tenant_id', tenantId);
-    if (data && data.length > 0) {
-      await db.brands.bulkPut(data as Brand[]);
-      return data as Brand[];
-    }
-  } catch (e) {
-    console.warn('[Cloud Sync] Failed to fetch brands from cloud:', e);
+    return await db.brands.where('tenant_id').equals(tenantId).toArray();
+  } catch {
+    return [];
   }
-  return local;
 }
 
-export async function createBrand(payload: Partial<Brand>): Promise<Brand> {
+export async function createBrand(
+  input: string | Partial<Brand>,
+  tenantId?: string
+): Promise<Brand> {
+  const bName = typeof input === 'string' ? input : (input.name || '');
+  const tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
   const brand: Brand = {
-    id: payload.id || `brand-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name: payload.name?.trim() || 'New Brand',
-    description: payload.description || '',
-    logo_url: payload.logo_url || '',
-    website: payload.website || '',
-    is_active: payload.is_active ?? true,
-    tenant_id: payload.tenant_id || '',
+    id: `brand-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    name: bName.trim(),
+    tenant_id: tid,
     created_at: Date.now(),
-    updated_at: Date.now()
   };
   await db.brands.put(brand);
-  try {
-    await supabase.from('brands').insert(brand as any);
-  } catch (err) {
-    console.warn('[Cloud Sync] Brand insert failed:', err);
-  }
   return brand;
 }
 
-export async function updateBrand(id: string, payload: Partial<Brand>): Promise<void> {
-  const existing = await db.brands.get(id);
-  if (existing) {
-    const updated = { ...existing, ...payload, updated_at: Date.now() };
-    await db.brands.put(updated);
-    try {
-      await supabase.from('brands').update(payload as any).eq('id', id);
-    } catch (err) {
-      console.warn('[Cloud Sync] Brand update failed:', err);
-    }
-  }
+export async function updateBrand(id: string, updates: Partial<Brand>): Promise<void> {
+  await db.brands.update(id, updates);
 }
 
 export async function deleteBrand(id: string): Promise<void> {
   await db.brands.delete(id);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UN-SYNCED PRODUCT RECOVERY ROUTINE (Dual-Layer Sync & Reconciliation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Inspects local IndexedDB for product records marked as PENDING/unsynced,
+ * forces a batch push to backend endpoint /api/products/sync-batch,
+ * and marks local items as SYNCED once acknowledged.
+ */
+export async function recoverUnsyncedProducts(tenantId: string): Promise<number> {
   try {
-    await supabase.from('brands').delete().eq('id', id);
-  } catch (err) {
-    console.warn('[Cloud Sync] Brand delete failed:', err);
+    if (!tenantId) return 0;
+
+    const pendingProducts = await db.products
+      .where('tenant_id').equals(tenantId)
+      .filter(p => p.syncStatus === 'PENDING' || (p as any).isSynced === 0)
+      .toArray();
+
+    if (pendingProducts.length === 0) {
+      return 0;
+    }
+
+    console.log(`Found ${pendingProducts.length} local un-synced product records. Forcing push...`);
+
+    const response = await fetch('/api/products/sync-batch', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-tenant-id': tenantId,
+        'X-Tenant-ID': tenantId,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      },
+      body: JSON.stringify({
+        products: pendingProducts
+      })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const syncedCount = result.syncedCount || pendingProducts.length;
+
+      await db.transaction('rw', db.products, async () => {
+        for (const p of pendingProducts) {
+          await db.products.update(p.id, {
+            syncStatus: 'SYNCED',
+            isSynced: 1
+          } as any);
+        }
+      });
+
+      // Clear pending queue items for these products
+      const pendingIds = new Set(pendingProducts.map(p => p.id));
+      const queueItems = await db.syncQueue.where('entityName').equals('products').toArray();
+      for (const q of queueItems) {
+        if (q.id !== undefined && q.payload?.id && pendingIds.has(q.payload.id)) {
+          await db.syncQueue.delete(q.id);
+        }
+      }
+
+      console.log(`Successfully recovered and synced ${syncedCount} product stocks.`);
+      return syncedCount;
+    }
+    return 0;
+  } catch (error) {
+    console.error("Failed to recover local product stocks:", error);
+    return 0;
   }
 }
+

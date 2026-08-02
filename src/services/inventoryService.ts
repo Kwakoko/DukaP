@@ -36,12 +36,18 @@ function nowMs(): number { return Date.now(); }
 export interface InventoryKPIs {
   totalProducts: number;
   totalVariants: number;
-  totalStockValue: number;       // FIFO-based total value
+  totalStockItems: number;        // Unique products count
+  totalUnitsInStock: number;      // Sum of all stock quantities
+  inventoryBuyingValue: number;   // Current inventory cost (WAC)
+  inventorySellingValue: number;  // Current retail value
+  potentialGrossProfit: number;   // Selling Value - Buying Value
+  averageMarginPercent: number;   // Potential Profit / Selling Value * 100
   lowStockCount: number;
   outOfStockCount: number;
   overstockCount: number;
   expiringThisMonth: number;
   expiredCount: number;
+  inventoryHealthScore: number;   // 0 - 100 score
   todayMovements: number;
   pendingTransfers: number;
   pendingCounts: number;
@@ -52,7 +58,7 @@ export interface InventoryKPIs {
 
 export async function getDashboardKPIs(
   tenantId: string,
-  _branchId: string
+  _branchId?: string
 ): Promise<InventoryKPIs> {
   const [
     products,
@@ -62,7 +68,7 @@ export async function getDashboardKPIs(
     reorderRules,
     transfers,
     counts,
-    ledger30,
+    ledger,
   ] = await Promise.all([
     db.products.where('tenant_id').equals(tenantId).toArray(),
     db.productVariants.where('tenant_id').equals(tenantId).toArray(),
@@ -74,20 +80,65 @@ export async function getDashboardKPIs(
     db.stockLedger.where('tenant_id').equals(tenantId).toArray(),
   ]);
 
+  const activeProducts = products.filter(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive');
   const now = nowMs();
   const dayMs = 86_400_000;
   const todayStart = now - (now % dayMs);
   const monthEnd = now + 30 * dayMs;
 
-  // Stock value from balances
-  const totalStockValue = stockBalances.reduce((s, b) => s + (b.stock_value || 0), 0);
+  let totalUnitsInStock = 0;
+  let inventoryBuyingValue = 0;
+  let inventorySellingValue = 0;
 
-  // Low / out / overstock (checking both simple products and product variants)
+  // Process simple products
+  for (const p of activeProducts) {
+    if (!p.hasVariants) {
+      const qty = Math.max(0, p.stock || 0);
+      totalUnitsInStock += qty;
+
+      // Find average cost from stockBalance or fallback to buyingPrice/costPrice
+      const bal = stockBalances.find(b => b.product_id === p.id && (!b.variant_id || b.variant_id === 'no-variant'));
+      let avgCost = bal ? bal.average_cost : (p.buyingPrice || (p as any).costPrice || 0);
+      if (avgCost <= 0 && p.sellingPrice > 0) {
+        avgCost = Math.round(p.sellingPrice * 0.70 * 100) / 100;
+      }
+      const sellingPrice = p.sellingPrice || p.price || 0;
+
+      inventoryBuyingValue += qty * avgCost;
+      inventorySellingValue += qty * sellingPrice;
+    }
+  }
+
+  // Process product variants
+  for (const v of variants) {
+    const parent = activeProducts.find(p => p.id === v.productId);
+    if (!parent) continue;
+
+    const qty = Math.max(0, v.stock || 0);
+    totalUnitsInStock += qty;
+
+    const bal = stockBalances.find(b => b.product_id === parent.id && b.variant_id === v.id);
+    let avgCost = bal ? bal.average_cost : (v.buyingPrice ?? parent.buyingPrice ?? (parent as any)?.costPrice ?? 0);
+    if (avgCost <= 0 && (v.sellingPrice || parent.sellingPrice)) {
+      avgCost = Math.round(((v.sellingPrice || parent.sellingPrice || 0) * 0.70) * 100) / 100;
+    }
+    const sellingPrice = v.sellingPrice || parent.sellingPrice || parent.price || 0;
+
+    inventoryBuyingValue += qty * avgCost;
+    inventorySellingValue += qty * sellingPrice;
+  }
+
+  inventoryBuyingValue = Math.round(inventoryBuyingValue * 100) / 100;
+  inventorySellingValue = Math.round(inventorySellingValue * 100) / 100;
+  const potentialGrossProfit = Math.round((inventorySellingValue - inventoryBuyingValue) * 100) / 100;
+  const averageMarginPercent = inventorySellingValue > 0 ? Math.round((potentialGrossProfit / inventorySellingValue) * 1000) / 10 : 0;
+
+  // Low / Out / Overstock counts
   let lowStockCount = 0, outOfStockCount = 0, overstockCount = 0;
-  for (const p of products) {
+  for (const p of activeProducts) {
     if (!p.hasVariants) {
       const rule = reorderRules.find(r => r.product_id === p.id && !r.variant_id);
-      const min = rule?.min_quantity ?? 10;
+      const min = rule?.min_quantity ?? p.reorderLevel ?? 10;
       const max = rule?.max_quantity ?? 1000;
       if (p.stock <= 0) outOfStockCount++;
       else if (p.stock < min) lowStockCount++;
@@ -96,6 +147,8 @@ export async function getDashboardKPIs(
   }
 
   for (const v of variants) {
+    const parent = activeProducts.find(p => p.id === v.productId);
+    if (!parent) continue;
     const rule = reorderRules.find(r => r.variant_id === v.id || (r.product_id === v.productId && r.variant_id === v.id));
     const min = rule?.min_quantity ?? v.reorderLevel ?? 5;
     const max = rule?.max_quantity ?? 1000;
@@ -105,41 +158,51 @@ export async function getDashboardKPIs(
   }
 
   // Expiry
-  const expiredCount  = batches.filter(b => b.expiry_date && b.expiry_date < now && b.status === 'Active').length;
+  const expiredCount = batches.filter(b => b.expiry_date && b.expiry_date < now && b.status === 'Active').length;
   const expiringThisMonth = batches.filter(b => b.expiry_date && b.expiry_date >= now && b.expiry_date <= monthEnd && b.status === 'Active').length;
 
-  // Today's movements
-  const todayMovements = ledger30.filter(l => l.created_at >= todayStart).length;
+  // Inventory Health Score (0 - 100)
+  const totalTrackedItems = activeProducts.length + variants.length;
+  let healthScore = 100;
+  if (totalTrackedItems > 0) {
+    const outRatio = outOfStockCount / totalTrackedItems;
+    const lowRatio = lowStockCount / totalTrackedItems;
+    const expRatio = expiredCount / (batches.length || 1);
+    healthScore = Math.max(0, Math.min(100, Math.round(100 - (outRatio * 45) - (lowRatio * 25) - (expRatio * 30))));
+  }
 
-  // Pending transfers
+  // Movements & status
+  const todayMovements = ledger.filter(l => l.created_at >= todayStart).length;
   const pendingTransfers = transfers.filter(t => ['Pending', 'In Transit'].includes(t.status)).length;
-
-  // Pending counts
   const pendingCounts = counts.filter(c => ['Draft', 'Counting', 'Pending Approval'].includes(c.status)).length;
 
-  // Reorder alerts
   const reorderAlertCount = reorderRules.filter(r => {
     if (!r.is_active) return false;
-    const prod = products.find(p => p.id === r.product_id);
+    const prod = activeProducts.find(p => p.id === r.product_id);
     return prod && prod.stock < r.min_quantity;
   }).length;
 
-  // Fast/Slow moving (last 30 days)
   const thirtyDaysAgo = now - 30 * dayMs;
-  const salesLedger = ledger30.filter(l => l.movement_type === 'SALE' && l.created_at >= thirtyDaysAgo);
+  const salesLedger = ledger.filter(l => l.movement_type === 'SALE' && l.created_at >= thirtyDaysAgo);
   const soldProductIds = new Set(salesLedger.map(l => l.product_id));
   const fastMovingCount = soldProductIds.size;
-  const slowMovingCount = products.filter(p => p.stock > 0 && !soldProductIds.has(p.id)).length;
+  const slowMovingCount = activeProducts.filter(p => p.stock > 0 && !soldProductIds.has(p.id)).length;
 
   return {
-    totalProducts: products.length,
+    totalProducts: activeProducts.length,
     totalVariants: variants.length,
-    totalStockValue,
+    totalStockItems: activeProducts.length,
+    totalUnitsInStock,
+    inventoryBuyingValue,
+    inventorySellingValue,
+    potentialGrossProfit,
+    averageMarginPercent,
     lowStockCount,
     outOfStockCount,
     overstockCount,
     expiringThisMonth,
     expiredCount,
+    inventoryHealthScore: healthScore,
     todayMovements,
     pendingTransfers,
     pendingCounts,
@@ -876,4 +939,441 @@ export async function decreaseInventoryForSale(
     notes,
     created_at: customTimestamp
   });
+}
+
+// ─── Branch-Level Summary Breakdown ─────────────────────────────────────────
+export interface BranchValuationSummary {
+  branchId: string;
+  branchName: string;
+  isHeadquarters: boolean;
+  buyingValue: number;
+  sellingValue: number;
+  potentialProfit: number;
+  marginPercent: number;
+  itemCount: number;
+  totalUnits: number;
+}
+
+export async function getBranchValuationSummary(tenantId: string): Promise<{
+  branches: BranchValuationSummary[];
+  tenantTotals: {
+    buyingValue: number;
+    sellingValue: number;
+    potentialProfit: number;
+    marginPercent: number;
+    itemCount: number;
+    totalUnits: number;
+  };
+}> {
+  const [branches, products, variants, balances] = await Promise.all([
+    db.branches.where('tenant_id').equals(tenantId).toArray(),
+    db.products.where('tenant_id').equals(tenantId).toArray(),
+    db.productVariants.where('tenant_id').equals(tenantId).toArray(),
+    db.stockBalance.where('tenant_id').equals(tenantId).toArray(),
+  ]);
+
+  const activeProducts = products.filter(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive');
+
+  const branchList = branches.length > 0 ? branches : [{ id: 'branch-default', name: 'HQ Main Store', is_headquarters: true, tenant_id: tenantId }];
+
+  const branchSummaries: BranchValuationSummary[] = branchList.map(b => {
+    let buyingVal = 0;
+    let sellingVal = 0;
+    let totalUnits = 0;
+    let itemCount = 0;
+
+    for (const p of activeProducts) {
+      if (p.branch_id === b.id || (!p.branch_id && b.is_headquarters)) {
+        itemCount++;
+        if (!p.hasVariants) {
+          const qty = Math.max(0, p.stock || 0);
+          totalUnits += qty;
+
+          const bal = balances.find(s => s.branch_id === b.id && s.product_id === p.id);
+          const cost = bal ? bal.average_cost : (p.buyingPrice || (p as any).costPrice || 0);
+          const price = p.sellingPrice || p.price || 0;
+
+          buyingVal += qty * cost;
+          sellingVal += qty * price;
+        }
+      }
+    }
+
+    for (const v of variants) {
+      const parent = activeProducts.find(p => p.id === v.productId);
+      if (!parent) continue;
+      if (v.branch_id === b.id || (!v.branch_id && b.is_headquarters)) {
+        const qty = Math.max(0, v.stock || 0);
+        totalUnits += qty;
+
+        const bal = balances.find(s => s.branch_id === b.id && s.product_id === parent.id && s.variant_id === v.id);
+        const cost = bal ? bal.average_cost : (v.buyingPrice ?? parent.buyingPrice ?? 0);
+        const price = v.sellingPrice || parent.sellingPrice || parent.price || 0;
+
+        buyingVal += qty * cost;
+        sellingVal += qty * price;
+      }
+    }
+
+    buyingVal = Math.round(buyingVal * 100) / 100;
+    sellingVal = Math.round(sellingVal * 100) / 100;
+    const profit = Math.round((sellingVal - buyingVal) * 100) / 100;
+    const margin = sellingVal > 0 ? Math.round((profit / sellingVal) * 1000) / 10 : 0;
+
+    return {
+      branchId: b.id,
+      branchName: b.name || 'Branch',
+      isHeadquarters: !!(b.is_headquarters || (b as any).is_default),
+      buyingValue: buyingVal,
+      sellingValue: sellingVal,
+      potentialProfit: profit,
+      marginPercent: margin,
+      itemCount,
+      totalUnits,
+    };
+  });
+
+  const tenantBuying = branchSummaries.reduce((sum, b) => sum + b.buyingValue, 0);
+  const tenantSelling = branchSummaries.reduce((sum, b) => sum + b.sellingValue, 0);
+  const tenantProfit = Math.round((tenantSelling - tenantBuying) * 100) / 100;
+  const tenantMargin = tenantSelling > 0 ? Math.round((tenantProfit / tenantSelling) * 1000) / 10 : 0;
+  const tenantUnits = branchSummaries.reduce((sum, b) => sum + b.totalUnits, 0);
+  const tenantItems = activeProducts.length;
+
+  return {
+    branches: branchSummaries,
+    tenantTotals: {
+      buyingValue: tenantBuying,
+      sellingValue: tenantSelling,
+      potentialProfit: tenantProfit,
+      marginPercent: tenantMargin,
+      itemCount: tenantItems,
+      totalUnits: tenantUnits,
+    }
+  };
+}
+
+// ─── Product-Level Metrics Calculator ──────────────────────────────────────
+export interface ProductValuationMetric {
+  productId: string;
+  variantId?: string;
+  name: string;
+  category: string;
+  sku: string;
+  barcode?: string;
+  currentQuantity: number;
+  averageCostPrice: number;
+  lastPurchaseCost: number;
+  sellingPrice: number;
+  wholesalePrice: number;
+  vipPrice: number;
+  onlinePrice: number;
+  buyingValue: number;
+  sellingValue: number;
+  expectedProfit: number;
+  profitPercent: number;
+  stockStatus: 'Out of Stock' | 'Low Stock' | 'Overstock' | 'In Stock';
+  lastMovementDate: number | null;
+  lastMovementType: string | null;
+  stockAgeDays: number;
+}
+
+export async function getProductValuationMetrics(
+  tenantId: string,
+  _branchId?: string
+): Promise<ProductValuationMetric[]> {
+  const [products, variants, balances, ledger, reorderRules] = await Promise.all([
+    db.products.where('tenant_id').equals(tenantId).toArray(),
+    db.productVariants.where('tenant_id').equals(tenantId).toArray(),
+    db.stockBalance.where('tenant_id').equals(tenantId).toArray(),
+    db.stockLedger.where('tenant_id').equals(tenantId).toArray(),
+    db.reorderRules.where('tenant_id').equals(tenantId).toArray(),
+  ]);
+
+  const activeProducts = products.filter(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive');
+  const now = nowMs();
+  const metrics: ProductValuationMetric[] = [];
+
+  for (const p of activeProducts) {
+    if (!p.hasVariants) {
+      const qty = Math.max(0, p.stock || 0);
+
+      const bal = balances.find(b => b.product_id === p.id && (!b.variant_id || b.variant_id === 'no-variant'));
+      let avgCost = bal ? bal.average_cost : (p.buyingPrice || (p as any).costPrice || 0);
+      if (avgCost <= 0 && p.sellingPrice > 0) {
+        avgCost = Math.round(p.sellingPrice * 0.70 * 100) / 100;
+      }
+
+      // Last purchase cost from ledger
+      const prodLedger = ledger.filter(l => l.product_id === p.id).sort((a, b) => b.created_at - a.created_at);
+      const lastPurchase = prodLedger.find(l => ['PURCHASE_RECEIVE', 'OPENING_STOCK'].includes(l.movement_type));
+      const lastPurchaseCost = lastPurchase ? lastPurchase.unit_cost : avgCost;
+
+      const sellingPrice = p.sellingPrice || p.price || 0;
+      const wholesalePrice = p.wholesalePrice || sellingPrice * 0.85;
+      const vipPrice = p.vipPrice || sellingPrice * 0.90;
+      const onlinePrice = p.onlinePrice || sellingPrice;
+
+      const buyingValue = Math.round(qty * avgCost * 100) / 100;
+      const sellingValue = Math.round(qty * sellingPrice * 100) / 100;
+      const expectedProfit = Math.round((sellingValue - buyingValue) * 100) / 100;
+      const profitPercent = sellingValue > 0 ? Math.round((expectedProfit / sellingValue) * 1000) / 10 : 0;
+
+      // Status
+      const rule = reorderRules.find(r => r.product_id === p.id && !r.variant_id);
+      const min = rule?.min_quantity ?? p.reorderLevel ?? 10;
+      const max = rule?.max_quantity ?? 1000;
+      let stockStatus: ProductValuationMetric['stockStatus'] = 'In Stock';
+      if (qty <= 0) stockStatus = 'Out of Stock';
+      else if (qty < min) stockStatus = 'Low Stock';
+      else if (qty > max) stockStatus = 'Overstock';
+
+      // Last Movement & Age
+      const lastMov = prodLedger[0] || null;
+      const createdAt = (p as any).createdAt || (p as any).created_at || now;
+      const stockAgeDays = Math.max(0, Math.floor((now - (lastPurchase ? lastPurchase.created_at : createdAt)) / 86_400_000));
+
+      metrics.push({
+        productId: p.id,
+        name: p.name,
+        category: p.category || 'General',
+        sku: p.sku || p.id.slice(-8).toUpperCase(),
+        barcode: p.barcode,
+        currentQuantity: qty,
+        averageCostPrice: Math.round(avgCost * 100) / 100,
+        lastPurchaseCost: Math.round(lastPurchaseCost * 100) / 100,
+        sellingPrice,
+        wholesalePrice: Math.round(wholesalePrice * 100) / 100,
+        vipPrice: Math.round(vipPrice * 100) / 100,
+        onlinePrice: Math.round(onlinePrice * 100) / 100,
+        buyingValue,
+        sellingValue,
+        expectedProfit,
+        profitPercent,
+        stockStatus,
+        lastMovementDate: lastMov ? lastMov.created_at : null,
+        lastMovementType: lastMov ? lastMov.movement_type : null,
+        stockAgeDays,
+      });
+    } else {
+      // Product variants
+      const prodVariants = variants.filter(v => v.productId === p.id);
+      for (const v of prodVariants) {
+        const qty = Math.max(0, v.stock || 0);
+
+        const bal = balances.find(b => b.product_id === p.id && b.variant_id === v.id);
+        let avgCost = bal ? bal.average_cost : (v.buyingPrice ?? p.buyingPrice ?? (p as any).costPrice ?? 0);
+        if (avgCost <= 0 && (v.sellingPrice || p.sellingPrice)) {
+          avgCost = Math.round(((v.sellingPrice || p.sellingPrice || 0) * 0.70) * 100) / 100;
+        }
+
+        const prodLedger = ledger.filter(l => l.product_id === p.id && l.variant_id === v.id).sort((a, b) => b.created_at - a.created_at);
+        const lastPurchase = prodLedger.find(l => ['PURCHASE_RECEIVE', 'OPENING_STOCK'].includes(l.movement_type));
+        const lastPurchaseCost = lastPurchase ? lastPurchase.unit_cost : avgCost;
+
+        const sellingPrice = v.sellingPrice || p.sellingPrice || p.price || 0;
+        const wholesalePrice = v.wholesalePrice || p.wholesalePrice || sellingPrice * 0.85;
+        const vipPrice = v.vipPrice || p.vipPrice || sellingPrice * 0.90;
+        const onlinePrice = v.onlinePrice || p.onlinePrice || sellingPrice;
+
+        const buyingValue = Math.round(qty * avgCost * 100) / 100;
+        const sellingValue = Math.round(qty * sellingPrice * 100) / 100;
+        const expectedProfit = Math.round((sellingValue - buyingValue) * 100) / 100;
+        const profitPercent = sellingValue > 0 ? Math.round((expectedProfit / sellingValue) * 1000) / 10 : 0;
+
+        const rule = reorderRules.find(r => r.variant_id === v.id);
+        const min = rule?.min_quantity ?? v.reorderLevel ?? 5;
+        const max = rule?.max_quantity ?? 1000;
+        let stockStatus: ProductValuationMetric['stockStatus'] = 'In Stock';
+        if (qty <= 0) stockStatus = 'Out of Stock';
+        else if (qty < min) stockStatus = 'Low Stock';
+        else if (qty > max) stockStatus = 'Overstock';
+
+        const lastMov = prodLedger[0] || null;
+        const createdAt = v.createdAt || now;
+        const stockAgeDays = Math.max(0, Math.floor((now - (lastPurchase ? lastPurchase.created_at : createdAt)) / 86_400_000));
+
+        const attrLabel = Object.values(v.attributes || {}).join(' / ');
+
+        metrics.push({
+          productId: p.id,
+          variantId: v.id,
+          name: `${p.name} (${attrLabel})`,
+          category: p.category || 'General',
+          sku: v.sku || `SKU-${v.id.slice(-6).toUpperCase()}`,
+          barcode: v.barcode || p.barcode,
+          currentQuantity: qty,
+          averageCostPrice: Math.round(avgCost * 100) / 100,
+          lastPurchaseCost: Math.round(lastPurchaseCost * 100) / 100,
+          sellingPrice,
+          wholesalePrice: Math.round(wholesalePrice * 100) / 100,
+          vipPrice: Math.round(vipPrice * 100) / 100,
+          onlinePrice: Math.round(onlinePrice * 100) / 100,
+          buyingValue,
+          sellingValue,
+          expectedProfit,
+          profitPercent,
+          stockStatus,
+          lastMovementDate: lastMov ? lastMov.created_at : null,
+          lastMovementType: lastMov ? lastMov.movement_type : null,
+          stockAgeDays,
+        });
+      }
+    }
+  }
+
+  return metrics;
+}
+
+// ─── Historical Inventory Valuation ────────────────────────────────────────
+export interface HistoricalValuationSnapshot {
+  snapshotDate: string;
+  snapshotTimestamp: number;
+  totalItems: number;
+  totalQuantity: number;
+  buyingValue: number;
+  sellingValue: number;
+  potentialProfit: number;
+  marginPercent: number;
+  items: Array<{
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitCost: number;
+    unitPrice: number;
+    buyingValue: number;
+    sellingValue: number;
+    profit: number;
+  }>;
+}
+
+export async function getHistoricalValuation(
+  tenantId: string,
+  _branchId: string,
+  targetTimestamp: number,
+  priceTier: 'retail' | 'wholesale' | 'vip' | 'online' = 'retail'
+): Promise<HistoricalValuationSnapshot> {
+  const [products, variants, ledger] = await Promise.all([
+    db.products.where('tenant_id').equals(tenantId).toArray(),
+    db.productVariants.where('tenant_id').equals(tenantId).toArray(),
+    db.stockLedger.where('tenant_id').equals(tenantId).toArray(),
+  ]);
+
+  const activeProducts = products.filter(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive');
+
+  // Filter ledger entries up to targetTimestamp
+  const pastLedger = ledger.filter(l => l.created_at <= targetTimestamp).sort((a, b) => a.created_at - b.created_at);
+
+  const stockStateMap = new Map<string, { qty: number; wac: number }>();
+
+  // Reconstruct stock balances and WAC up to targetTimestamp
+  for (const entry of pastLedger) {
+    const key = entry.variant_id ? `${entry.product_id}:${entry.variant_id}` : entry.product_id;
+    const current = stockStateMap.get(key) || { qty: 0, wac: entry.unit_cost || 0 };
+
+    const isIncoming = entry.quantity_change > 0;
+    const newQty = current.qty + entry.quantity_change;
+
+    let newWac = current.wac;
+    if (isIncoming && entry.unit_cost > 0) {
+      if (newQty > 0) {
+        newWac = ((current.qty * current.wac) + (entry.quantity_change * entry.unit_cost)) / newQty;
+      } else {
+        newWac = entry.unit_cost;
+      }
+    }
+    stockStateMap.set(key, { qty: Math.max(0, newQty), wac: newWac });
+  }
+
+  const items: HistoricalValuationSnapshot['items'] = [];
+  let totalQty = 0;
+  let totalBuyingVal = 0;
+  let totalSellingVal = 0;
+
+  for (const p of activeProducts) {
+    if (!p.hasVariants) {
+      const state = stockStateMap.get(p.id) || {
+        qty: Math.max(0, p.stock || 0),
+        wac: p.buyingPrice || (p as any).costPrice || 0
+      };
+      if (state.qty <= 0 && pastLedger.length > 0) continue;
+
+      let unitPrice = p.sellingPrice || p.price || 0;
+      if (priceTier === 'wholesale') unitPrice = p.wholesalePrice || unitPrice * 0.85;
+      else if (priceTier === 'vip') unitPrice = p.vipPrice || unitPrice * 0.90;
+      else if (priceTier === 'online') unitPrice = p.onlinePrice || unitPrice;
+
+      const buyingVal = Math.round(state.qty * state.wac * 100) / 100;
+      const sellingVal = Math.round(state.qty * unitPrice * 100) / 100;
+      const profit = Math.round((sellingVal - buyingVal) * 100) / 100;
+
+      totalQty += state.qty;
+      totalBuyingVal += buyingVal;
+      totalSellingVal += sellingVal;
+
+      items.push({
+        productId: p.id,
+        productName: p.name,
+        quantity: state.qty,
+        unitCost: Math.round(state.wac * 100) / 100,
+        unitPrice: Math.round(unitPrice * 100) / 100,
+        buyingValue: buyingVal,
+        sellingValue: sellingVal,
+        profit,
+      });
+    } else {
+      const prodVariants = variants.filter(v => v.productId === p.id);
+      for (const v of prodVariants) {
+        const key = `${p.id}:${v.id}`;
+        const state = stockStateMap.get(key) || {
+          qty: Math.max(0, v.stock || 0),
+          wac: v.buyingPrice ?? p.buyingPrice ?? 0
+        };
+        if (state.qty <= 0 && pastLedger.length > 0) continue;
+
+        let unitPrice = v.sellingPrice || p.sellingPrice || p.price || 0;
+        if (priceTier === 'wholesale') unitPrice = v.wholesalePrice || p.wholesalePrice || unitPrice * 0.85;
+        else if (priceTier === 'vip') unitPrice = v.vipPrice || p.vipPrice || unitPrice * 0.90;
+        else if (priceTier === 'online') unitPrice = v.onlinePrice || p.onlinePrice || unitPrice;
+
+        const buyingVal = Math.round(state.qty * state.wac * 100) / 100;
+        const sellingVal = Math.round(state.qty * unitPrice * 100) / 100;
+        const profit = Math.round((sellingVal - buyingVal) * 100) / 100;
+
+        totalQty += state.qty;
+        totalBuyingVal += buyingVal;
+        totalSellingVal += sellingVal;
+
+        const attr = Object.values(v.attributes || {}).join(' / ');
+
+        items.push({
+          productId: p.id,
+          productName: `${p.name} (${attr})`,
+          quantity: state.qty,
+          unitCost: Math.round(state.wac * 100) / 100,
+          unitPrice: Math.round(unitPrice * 100) / 100,
+          buyingValue: buyingVal,
+          sellingValue: sellingVal,
+          profit,
+        });
+      }
+    }
+  }
+
+  totalBuyingVal = Math.round(totalBuyingVal * 100) / 100;
+  totalSellingVal = Math.round(totalSellingVal * 100) / 100;
+  const potentialProfit = Math.round((totalSellingVal - totalBuyingVal) * 100) / 100;
+  const marginPercent = totalSellingVal > 0 ? Math.round((potentialProfit / totalSellingVal) * 1000) / 10 : 0;
+
+  return {
+    snapshotDate: new Date(targetTimestamp).toLocaleDateString('en-TZ', { day: '2-digit', month: 'short', year: 'numeric' }),
+    snapshotTimestamp: targetTimestamp,
+    totalItems: items.length,
+    totalQuantity: totalQty,
+    buyingValue: totalBuyingVal,
+    sellingValue: totalSellingVal,
+    potentialProfit,
+    marginPercent,
+    items,
+  };
 }

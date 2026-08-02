@@ -57,6 +57,7 @@ export const tenantProvisioningService = {
       SACCO:       { id: 'ind-sacco',      name: 'SACCO',      features: ['savings', 'loans', 'shares'] },
       Garage:      { id: 'ind-garage',     name: 'Garage',     features: ['pos', 'jobcards', 'parts'] },
       BusinessConsultant: { id: 'ind-consulting', name: 'BusinessConsultant', features: ['client_management', 'project_management', 'contracts', 'invoicing', 'assessments', 'strategy', 'ai_consultant'] },
+      TechnicalCompany: { id: 'ind-technical', name: 'TechnicalCompany', features: ['project_management', 'field_service', 'technical_services', 'assets', 'workforce', 'scheduling', 'fleet', 'ai_insights'] },
     };
     const industry = industryMap[businessType] || { id: 'ind-retail', name: 'Retail', features: ['inventory', 'pos', 'customers'] };
 
@@ -78,7 +79,9 @@ export const tenantProvisioningService = {
       db.userSecurity,
       db.auditLogs,
       db.industries,
-      db.tenantIndustries
+      db.tenantIndustries,
+      db.tenantSubscriptions,
+      db.subscriptionPlans
     ], async () => {
       
       // 1. Core System: Tenant Profile (Immutable Identifiers)
@@ -96,6 +99,7 @@ export const tenantProvisioningService = {
           tenant_uuid: tenantId,
           business_code: businessCode,
           human_tenant_id: humanId,
+          tenant_code: humanId,
           name: companyName,
           slug: companyName.toLowerCase().replace(/\s+/g, '-'),
           status: additionalMetadata.status || 'Active',
@@ -298,11 +302,11 @@ export const tenantProvisioningService = {
       const permissions = await db.permissions.toArray();
       const rolePermissionMappings: Record<string, string[]> = {
         tenant_owner: ['*'],
-        business_administrator: ['sales.create', 'sales.view', 'inventory.product.create', 'inventory.stock.adjust', 'inventory.stock.transfer', 'reports.view', 'reports.branch', 'purchase.create', 'supplier.manage', 'expense.manage', 'settings.manage'],
-        branch_manager: ['sales.create', 'sales.view', 'inventory.stock.adjust', 'inventory.stock.transfer', 'reports.branch', 'purchase.create', 'supplier.manage', 'expense.manage'],
-        cashier: ['sales.create', 'payment.manage'],
-        inventory_officer: ['inventory.product.create', 'inventory.stock.adjust', 'inventory.stock.transfer', 'purchase.create', 'supplier.manage'],
-        accountant: ['reports.view', 'reports.branch', 'financial_reports.view', 'expense.manage', 'payment.manage']
+        business_administrator: ['sales.create', 'sales.refund', 'sales.void', 'discount.override', 'inventory.product.create', 'inventory.product.edit', 'inventory.category.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'purchase.create', 'purchase.approve', 'supplier.manage', 'customer.view', 'customer.create', 'expense.manage', 'expense.approve', 'banking.manage', 'taxes.manage', 'reports.view', 'reports.branch', 'reports.sales.view', 'reports.inventory.view', 'users.manage', 'roles.assign', 'branches.manage', 'settings.manage', 'audit.logs.view'],
+        branch_manager: ['sales.create', 'sales.refund', 'sales.void', 'inventory.product.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'inventory.stock.count', 'purchase.create', 'supplier.manage', 'customer.create', 'customer.view', 'expense.manage', 'reports.branch', 'users.manage', 'audit.logs.view'],
+        accountant: ['expense.manage', 'expense.create', 'expense.approve', 'payment.manage', 'financial_reports.view', 'banking.manage', 'taxes.manage', 'reports.view', 'reports.branch', 'inventory.stock.view', 'customer.view', 'supplier.manage', 'audit.logs.view'],
+        inventory_officer: ['inventory.product.create', 'inventory.product.edit', 'inventory.category.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'inventory.stock.count', 'inventory.stock.wastage', 'inventory.barcode.print', 'purchase.create', 'purchase.approve', 'supplier.manage', 'reports.inventory.view', 'audit.logs.view'],
+        cashier: ['sales.create', 'payment.manage', 'pos.shift.manage', 'customer.create', 'customer.view', 'inventory.stock.view']
       };
 
       for (const r of defaultRoles) {
@@ -347,6 +351,7 @@ export const tenantProvisioningService = {
           branch_id: branchId,
           pin_hash: ownerPin,
           role: 'Tenant Owner',
+          user_code: 'USR-OWNER',
           created_at: NOW,
           updated_at: NOW,
           registration_source: 'SUPER_ADMIN_CPANEL',

@@ -1,10 +1,10 @@
 {
   "short_name": "DukaPos",
-  "name": "DukaPos SaaS Platform",
-  "description": "Multi-Tenant, Multi-Branch & Offline-First POS SaaS System",
+  "name": "DukaPos Business Operating System",
+  "description": "The complete Business Operating System for retail, restaurants, pharmacies, SACCOs and more.",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/9721/9721016.png",
+      "src": "/dukapos-logo.png",
       "type": "image/png",
       "sizes": "512x512",
       "purpose": "any maskable"

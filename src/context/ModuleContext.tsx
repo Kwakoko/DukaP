@@ -32,7 +32,8 @@ export type IndustryModule =
   | 'Hotel'
   | 'Poultry'
   | 'Bar'
-  | 'BusinessConsultant';
+  | 'BusinessConsultant'
+  | 'TechnicalCompany';
 
 export interface NestedSidebarItem {
   name: string;
@@ -606,6 +607,36 @@ export const MODULE_MANIFESTS: Record<IndustryModule, ModuleManifest> = {
       'ClientSatisfactionScore', 'ProjectCompletion', 'TasksDueToday', 'RecentActivities', 'AIConsultantInsights'
     ],
     description: 'Automatic client portals, proposals, contracts, project deliverables, timesheets, and AI business analysis.'
+  },
+  TechnicalCompany: {
+    name: 'Technical & Engineering Company',
+    icon: 'Wrench',
+    sidebar: [
+      { name: 'Dashboard', subItems: ['Business Overview', 'Revenue Analytics', 'Active Projects', 'Pending Jobs', 'Team Productivity', 'KPI Dashboard'] },
+      { name: 'Customers', subItems: ['Customer Directory', 'Corporate Clients', 'Individual Clients', 'Customer Contracts', 'Service History', 'Customer Communication'] },
+      { name: 'Sales & Quotations', subItems: ['Quotations', 'Estimates', 'Proforma Invoices', 'Sales Orders', 'Contracts', 'Invoices', 'Payments', 'Credit Notes'] },
+      { name: 'Projects', subItems: ['Project List', 'Active Projects', 'Completed Projects', 'Milestones', 'Tasks', 'Project Calendar', 'Resource Allocation', 'Budget Tracking', 'Project Documents'] },
+      { name: 'Field Service', subItems: ['Service Requests', 'Work Orders', 'Site Visits', 'Maintenance Jobs', 'Installation Jobs', 'Emergency Calls', 'Technician Schedule', 'Job Completion Reports'] },
+      { name: 'Technical Services', subItems: ['Repairs', 'Installations', 'Preventive Maintenance', 'Equipment Inspection', 'Testing & Commissioning', 'Calibration', 'Troubleshooting', 'Service Checklists'] },
+      { name: 'Assets & Equipment', subItems: ['Company Equipment', 'Customer Equipment', 'Asset Register', 'Equipment Maintenance', 'Warranty Tracking', 'Serial Numbers', 'Asset History'] },
+      { name: 'Inventory', subItems: ['Products', 'Spare Parts', 'Consumables', 'Stock Movement', 'Purchase Orders', 'Suppliers', 'Goods Received', 'Stock Transfers', 'Stock Adjustment'] },
+      { name: 'Procurement', subItems: ['Supplier Management', 'RFQs', 'Purchase Requests', 'Purchase Orders', 'Supplier Payments', 'Supplier Performance'] },
+      { name: 'Workforce', subItems: ['Employees', 'Technicians', 'Engineers', 'Teams', 'Attendance', 'Timesheets', 'Leave Management', 'Payroll Integration'] },
+      { name: 'Scheduling', subItems: ['Daily Schedule', 'Weekly Planner', 'Technician Assignment', 'Route Planning', 'Calendar', 'Job Queue'] },
+      { name: 'Fleet Management', subItems: ['Company Vehicles', 'Driver Assignment', 'Fuel Usage', 'Vehicle Maintenance', 'GPS Tracking', 'Travel Logs'] },
+      { name: 'Finance', subItems: ['Income', 'Expenses', 'Project Costing', 'Profit Analysis', 'Cash Flow', 'Accounts Receivable', 'Accounts Payable', 'General Ledger'] },
+      { name: 'Documents', subItems: ['Contracts', 'Technical Drawings', 'Blueprints', 'Site Photos', 'Certificates', 'Compliance Documents', 'File Manager'] },
+      { name: 'Reports', subItems: ['Sales Report', 'Project Report', 'Technician Performance', 'Equipment Report', 'Inventory Report', 'Financial Report', 'Customer Report', 'Job Completion Report', 'Profitability Report'] },
+      { name: 'AI Insights', subItems: ['Revenue Forecast', 'Predictive Maintenance', 'Inventory Forecast', 'Customer Insights', 'Technician Performance', 'Project Risk Analysis', 'Smart Recommendations', 'AI Assistant'] },
+      { name: 'Notifications', subItems: ['Service Reminders', 'Warranty Expiry', 'Low Stock Alerts', 'Project Alerts', 'Customer Messages', 'System Notifications'] },
+      { name: 'Settings', subItems: ['Business Profile', 'Branches', 'Tax Settings', 'Departments', 'Service Categories', 'Job Types', 'User Roles', 'Workflow Automation', 'Integrations', 'Feature Flags'] },
+      { name: 'Administration', subItems: ['Audit Logs', 'Activity Logs', 'User Management', 'Permissions', 'Backup & Restore', 'API Access', 'System Health', 'Developer Options'] }
+    ],
+    widgets: [
+      'Revenue', 'Active Projects', "Today's Jobs", 'Technician Availability',
+      'Outstanding Quotations', 'Inventory Status', 'Equipment Health', 'AI Insights'
+    ],
+    description: 'Project management, field service work orders, equipment tracking, technician scheduling, and AI predictive maintenance.'
   }
 };
 

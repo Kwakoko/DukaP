@@ -6,7 +6,8 @@ import { SuperAdminService } from '../../services/superAdminService';
 import type { Tenant, DbUser } from '../../db/dexie';
 import { useAuth } from '../../context/AuthContext';
 import { tenantProvisioningService } from '../../services/tenantProvisioningService';
-import { tenantDemoService } from '../../services/tenantDemoService';
+
+import { tenantIdentifierService } from '../../services/tenantIdentifierService';
 import { useModule, MODULE_MANIFESTS, type IndustryModule } from '../../context/ModuleContext';
 import { Button, Input, Badge, Card, CardHeader, CardTitle, CardDescription } from '../UI/custom-ui';
 import { TenantVisualFlowView } from './TenantVisualFlowView';
@@ -34,7 +35,7 @@ interface TenantFormState {
   status: 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'CANCELLED' | 'SUSPENDED';
   trialEndDate: string;
   renewalDate: string;
-  demoMode: boolean;
+
 }
 
 const emptyForm: TenantFormState = {
@@ -49,7 +50,6 @@ const emptyForm: TenantFormState = {
   status: 'TRIAL',
   trialEndDate: '',
   renewalDate: '',
-  demoMode: true,
 };
 
 function getBadgeVariant(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -361,10 +361,6 @@ export const TenantManagement: React.FC = () => {
           { plan: form.planName as any, status: form.status === 'TRIAL' ? 'Trial' : 'Active', industry: form.businessType, branchName: form.branchName || 'Main HQ Branch' }
         );
 
-        if (form.demoMode) {
-          await tenantDemoService.seedDemoData(tenantId, branchId, form.businessType);
-        }
-
         alert(`✅ Tenant "${form.businessName}" (${form.businessType}) committed to central production database and onboarded!`);
       } else if (panelMode === 'edit' && selectedTenant) {
         await db.tenants.update(selectedTenant.id, {
@@ -660,10 +656,6 @@ export const TenantManagement: React.FC = () => {
                       <option value="SUSPENDED">SUSPENDED</option>
                     </select>
                   </div>
-                  <div className="md:col-span-2 flex items-center gap-2 pt-2">
-                    <input type="checkbox" id="demoModeCheck" checked={form.demoMode} onChange={e => setForm(p => ({ ...p, demoMode: e.target.checked }))} className="rounded border-slate-300" />
-                    <label htmlFor="demoModeCheck" className="font-bold text-slate-700 dark:text-slate-300 cursor-pointer">Seed Complete Demo Data (Products, Suppliers, Customers & Stock)</label>
-                  </div>
                 </>
               )}
 
@@ -905,7 +897,7 @@ export const TenantManagement: React.FC = () => {
                               <button onClick={() => setDetailTenantId(t.id)} className="font-bold text-slate-800 dark:text-slate-200 hover:text-primary transition text-left">
                                 {t.name}
                               </button>
-                              <p className="text-[10px] font-mono text-slate-400">{t.tenant_code || t.id}</p>
+                              <p className="text-[10px] font-mono text-slate-400">{tenantIdentifierService.getReadableTenantId(t)}</p>
                             </div>
                           </div>
                         </td>
@@ -1015,7 +1007,7 @@ export const TenantManagement: React.FC = () => {
                           {t.name}
                         </h4>
                         <p className="text-[11px] font-mono text-slate-400 mt-0.5 font-bold">
-                          Code: {t.tenant_code || (t as any).tenantCode || 'N/A'}
+                          Code: {tenantIdentifierService.getReadableTenantId(t)}
                         </p>
                       </div>
                     </div>
@@ -1547,7 +1539,7 @@ function TenantDetailsView({ tenant, onBack, onImpersonate, onForceLogout }: {
             <Badge variant={getBadgeVariant(tenant.status)}>{tenant.status}</Badge>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Tenant Code: <span className="font-mono bg-slate-100 dark:bg-darkbg px-2 py-0.5 rounded text-slate-700 dark:text-slate-300">{tenant.tenant_code || tenant.id}</span>
+            Tenant Code: <span className="font-mono bg-slate-100 dark:bg-darkbg px-2 py-0.5 rounded text-slate-700 dark:text-slate-300">{tenantIdentifierService.getReadableTenantId(tenant)}</span>
             {' · '}Email: <span className="font-mono text-slate-600 dark:text-slate-300">{tenant.email}</span>
           </p>
         </div>

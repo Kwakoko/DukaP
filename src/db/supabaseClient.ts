@@ -28,16 +28,17 @@ function getAuthContext() {
       }
     } catch (e) {}
   }
-  // Fallback if not logged in (e.g. system seed running)
+  // No valid session — return empty strings so RLS/header checks reject the request
+  // rather than silently scoping data to the wrong tenant.
   return {
-    tenant_id: 'tenant-101',
-    user_id: 'usr-owner',
-    user_name: 'Juma Ally'
+    tenant_id: '',
+    user_id: 'usr-system',
+    user_name: 'System',
   };
 }
 
 export interface SupabaseQueryBuilder {
-  action: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE';
+  action: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'UPSERT';
   insertData: any;
   updateData: any;
   filters: Record<string, any>;
@@ -45,6 +46,7 @@ export interface SupabaseQueryBuilder {
   insert(data: any | any[]): this;
   update(data: any): this;
   delete(): this;
+  upsert(data: any | any[], options?: any): this;
   eq(column: string, value: any): this;
   match(filterMap: Record<string, any>): this;
   then<TResult1 = any, TResult2 = never>(
@@ -63,7 +65,7 @@ export const supabase: SupabaseClient = {
     // NOTE: auth is resolved lazily inside execute() so that any setMockAuthOverride()
     // call made BEFORE awaiting the query is picked up correctly.
     const queryBuilder: SupabaseQueryBuilder = {
-      action: 'SELECT' as 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE',
+      action: 'SELECT' as 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'UPSERT',
       insertData: null as any,
       updateData: null as any,
       filters: {} as Record<string, any>,
@@ -87,6 +89,12 @@ export const supabase: SupabaseClient = {
 
       delete() {
         this.action = 'DELETE';
+        return this;
+      },
+
+      upsert(data: any | any[], _options?: any) {
+        this.action = 'INSERT';
+        this.insertData = data;
         return this;
       },
 
@@ -459,7 +467,7 @@ export const supabase: SupabaseClient = {
           console.error(`[PostgreSQL/Supabase Error] Code: 42501. Message: ${err.message}`);
           
           await logCloudTransaction({
-            operation: this.action,
+            operation: (this.action === 'UPSERT' ? 'INSERT' : this.action) as 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'BEGIN' | 'COMMIT',
             table_name: displayTableName,
             status: 'FAILED',
             error_message: err.message,

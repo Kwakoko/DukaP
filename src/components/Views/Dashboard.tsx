@@ -21,21 +21,40 @@ export const Dashboard: React.FC = () => {
   // --- Live Queries from IndexedDB ---
   const products = useLiveQuery(() => 
     db.products.where('tenant_id').equals(currentTenant.id)
-      .and(p => p.branch_id === currentBranch.id && p.module === activeModule)
+      .and(p => {
+        if (p.deletedAt || (p as any).deleted_at || p.status === 'Inactive') return false;
+        const pMod = (p.module || 'Retail').toLowerCase();
+        const aMod = (activeModule || 'Retail').toLowerCase();
+        const matchMod = pMod === aMod || pMod === 'all' || !p.module;
+        const pBranch = p.branch_id || (p as any).branchId;
+        const matchBranch = !pBranch || pBranch === currentBranch.id || pBranch === 'all' || pBranch.includes('hq') || pBranch === 'branch-dar-hq' || pBranch === currentBranch.id;
+        return matchMod && matchBranch;
+      })
       .toArray()
-  ) || [];
+  , [currentTenant.id, currentBranch.id, activeModule]) || [];
 
   const productVariants = useLiveQuery(() =>
     db.productVariants.where('tenant_id').equals(currentTenant.id)
-      .and(v => v.branch_id === currentBranch.id)
+      .and(v => {
+        if (v.status === 'Inactive') return false;
+        const vBranch = v.branch_id || (v as any).branchId;
+        return !vBranch || vBranch === currentBranch.id || vBranch === 'all' || vBranch.includes('hq') || vBranch === 'branch-dar-hq' || vBranch === currentBranch.id;
+      })
       .toArray()
-  ) || [];
+  , [currentTenant.id, currentBranch.id]) || [];
 
   const orders = useLiveQuery(() => 
     db.orders.where('tenant_id').equals(currentTenant.id)
-      .and(o => o.branch_id === currentBranch.id && o.module === activeModule)
+      .and(o => {
+        const oMod = (o.module || 'Retail').toLowerCase();
+        const aMod = (activeModule || 'Retail').toLowerCase();
+        const matchMod = oMod === aMod || oMod === 'all' || !o.module;
+        const oBranch = o.branch_id || (o as any).branchId;
+        const matchBranch = !oBranch || oBranch === currentBranch.id || oBranch === 'all' || oBranch.includes('hq') || oBranch === 'branch-dar-hq' || oBranch === currentBranch.id;
+        return matchMod && matchBranch;
+      })
       .toArray()
-  ) || [];
+  , [currentTenant.id, currentBranch.id, activeModule]) || [];
 
   const customers = useLiveQuery(() => {
     const typeMap: Record<string, string> = {
@@ -495,10 +514,10 @@ export const Dashboard: React.FC = () => {
             </Card>
           </div>
 
-          {/* Row 3: Live Sales list & AI Insights */}
-          <div className="grid gap-6 lg:grid-cols-3">
+          {/* Row 3: Live Sales list */}
+          <div className="grid gap-6">
             {/* Recent Orders from IndexedDB */}
-            <Card className="lg:col-span-2">
+            <Card className="w-full">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle>Recent Orders & Activity</CardTitle>
@@ -553,43 +572,6 @@ export const Dashboard: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
-              </CardContent>
-            </Card>
-
-            {/* AI Recommendations Panel */}
-            <Card className="bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 text-white border-0">
-              <CardHeader className="border-0 pb-0">
-                <div className="flex items-center space-x-2 text-primary dark:text-primary-dark">
-                  <Sparkles className="h-5 w-5 text-indigo-400" />
-                  <CardTitle className="text-white">DukaPos AI Insights</CardTitle>
-                </div>
-                <CardDescription className="text-slate-400">Continuous business evaluation models</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4 pt-4">
-                <div className="rounded-xl bg-white/5 p-4 border border-white/10 hover:bg-white/10 transition duration-200">
-                  <h4 className="text-xs font-bold text-indigo-300">Sales Forecast Alert</h4>
-                  <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
-                    {activeModule === 'Retail' && 'Weekend forecast suggests a 14% spike in Groceries. Increase stock of White Sugar and Premium Grains immediately to prevent stockout.'}
-                    {activeModule === 'Restaurant' && 'Based on Friday data, Classic Beef Burger and Iced Latte will see high demand. Pre-prep 20% more burger ingredients by 11:00 AM.'}
-                    {activeModule === 'Pharmacy' && 'Amoxicillin Syrup stock is down to 8 items, with sales velocity increasing. Automatically drafting purchase order for 20 units.'}
-                    {activeModule === 'SACCO' && 'Members deposits have grown 12.5% this week. Emergency loan demands are projected to rise. Keep lending liquidity above 25%.'}
-                    {activeModule === 'BusinessConsultant' && 'Strategic recommendation: OKR progress reports are due. Client Health index shows 4 accounts require active follow-ups to maintain retention rates.'}
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-white/5 p-4 border border-white/10 hover:bg-white/10 transition duration-200">
-                  <h4 className="text-xs font-bold text-emerald-400">Offline Integrity Check</h4>
-                  <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
-                    All local transactions are verified against cryptographic signatures. System sync buffers are ready. Risk score: <span className="font-bold text-emerald-400">0.02 (Optimal)</span>.
-                  </p>
-                </div>
-
-                <button 
-                  onClick={() => setActiveTab('Settings')}
-                  className="flex w-full items-center justify-center space-x-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 py-2.5 text-xs font-bold text-white shadow transition active:scale-95"
-                >
-                  <span>View Full AI Audit Reports</span>
-                </button>
               </CardContent>
             </Card>
           </div>

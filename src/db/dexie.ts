@@ -21,6 +21,11 @@ export interface Product {
   attributes?: string[]; // Configurable attributes list, e.g. ['Size', 'Color']
   reorderLevel?: number; // Optional custom reorder level trigger
 
+  // Multiple Selling Price Tiers
+  wholesalePrice?: number;
+  vipPrice?: number;
+  onlinePrice?: number;
+
   // Production-grade CamelCase & synchronization fields
   tenantId?: string;
   branchId?: string;
@@ -61,6 +66,9 @@ export interface ProductVariant {
   barcode?: string;
   buyingPrice?: number; // Override buying price (optional)
   sellingPrice?: number; // Override selling price (optional)
+  wholesalePrice?: number; // Override wholesale price (optional)
+  vipPrice?: number; // Override VIP price (optional)
+  onlinePrice?: number; // Override online price (optional)
   stock: number;
   reservedStock: number;
   reorderLevel: number;
@@ -141,13 +149,45 @@ export interface Order {
   origin?: 'DEMO' | 'PRODUCTION' | 'IMPORTED' | 'MIGRATED';
 }
 
+export type SyncOperation =
+  | 'CREATE'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'RESTORE'
+  | 'STOCK_IN'
+  | 'STOCK_OUT'
+  | 'TRANSFER'
+  | 'PAYMENT'
+  | 'REFUND'
+  | 'RETURN'
+  | 'PURCHASE'
+  | 'EXPENSE'
+  | 'ATTACHMENT';
+
+export type SyncStatus = 'Pending' | 'Syncing' | 'Completed' | 'Failed' | 'Conflict' | 'Cancelled' | 'Processing';
+
 export interface SyncItem {
   id?: number;
-  actionType: 'INSERT' | 'UPDATE' | 'DELETE';
-  entityName: 'products' | 'customers' | 'orders' | 'productVariants';
+  tenant_id?: string;
+  branch_id?: string;
+  entity?: string;
+  entity_id?: string;
+  operation?: SyncOperation;
   payload: any;
-  timestamp: number;
-  status: 'Pending' | 'Failed' | 'Processing';
+  status: SyncStatus;
+  retry_count?: number;
+  priority?: 1 | 2 | 3 | 4;
+  created_at?: number;
+  last_attempt?: number | null;
+  error?: string | null;
+  device_id?: string;
+  user_id?: string;
+  sync_token?: string;
+
+  // Backwards compatibility properties
+  actionType?: 'INSERT' | 'UPDATE' | 'DELETE' | string;
+  entityName?: string;
+  timestamp?: number;
 }
 
 export interface Tenant {
@@ -364,6 +404,7 @@ export interface DbUser {
   // Assignment
   branch_id?: string;             // Auto-set to HQ branch on provisioning
   role?: string;                  // Friendly role label (e.g. 'Tenant Owner')
+  user_code?: string;             // Human-readable User Code (e.g. USR-OWNER, USR-CSH-1001)
 }
 
 export interface TenantUser {
@@ -490,6 +531,14 @@ export interface StockLedgerEntry {
   created_at: number;
   synced: boolean;
   origin?: 'DEMO' | 'PRODUCTION' | 'IMPORTED' | 'MIGRATED';
+  
+  // Event Sourcing & Sync fields
+  idempotency_key?: string;
+  event_version?: number;
+  sync_status?: 'PENDING' | 'SYNCED' | 'FAILED';
+  retry_count?: number;
+  last_error?: string;
+  synced_at?: number;
 }
 
 export interface ProductBranchStock {
@@ -1310,6 +1359,222 @@ export interface Brand {
   updated_at?: number;
 }
 
+// ─── Cash Drawer Module Tables (v28) ──────────────────────────────────────────
+export interface CashDrawerEntity {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  terminal_id: string;
+  name: string;
+  drawer_code: string;
+  type: 'DEDICATED_CASHIER' | 'DEDICATED_TERMINAL' | 'SHARED';
+  status: 'OPEN' | 'CLOSED' | 'LOCKED' | 'EMERGENCY_LOCKED';
+  assigned_cashier_id?: string;
+  assigned_cashier_name?: string;
+  current_balance: number;
+  currency: string;
+  max_cash_limit: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CashDrawerSession {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  terminal_id: string;
+  cashier_id: string;
+  cashier_name: string;
+  shift_type: 'Morning' | 'Afternoon' | 'Night';
+  status: 'OPEN' | 'COUNTING' | 'RECONCILED' | 'CLOSED' | 'LOCKED';
+  opening_float: number;
+  opening_time: number;
+  opening_counted_by: string;
+  closing_time?: number;
+  closing_counted_by?: string;
+  manager_approved_by?: string;
+  notes?: string;
+  created_at: number;
+}
+
+export interface CashDrawerEvent {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  session_id?: string;
+  event_type: 'DRAWER_OPENED' | 'DRAWER_CLOSED' | 'FORCED_OPEN' | 'MANUAL_OPEN' | 'PRINTER_TRIGGER_OPEN' | 'KEY_OPEN' | 'NO_SALE_OPEN' | 'HARDWARE_ERROR' | 'COUNT_STARTED' | 'COUNT_COMPLETED' | 'LOCK_ENGAGED' | 'UNLOCKED';
+  user_id: string;
+  user_name: string;
+  reason?: string;
+  hardware_type?: 'USB' | 'RJ11' | 'BLUETOOTH' | 'ETHERNET' | 'MANUAL';
+  timestamp: number;
+  metadata?: Record<string, any>;
+}
+
+export interface CashTransaction {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  session_id: string;
+  type: 'CASH_SALE' | 'CASH_REFUND' | 'CHANGE_GIVEN' | 'CASH_RECEIVED' | 'CASH_DEPOSIT' | 'CASH_WITHDRAWAL' | 'CASH_IN' | 'CASH_OUT' | 'PETTY_CASH' | 'SUPPLIER_PAYMENT' | 'EXPENSE_PAYMENT' | 'BANK_DEPOSIT' | 'SAFE_TRANSFER' | 'BRANCH_TRANSFER';
+  amount: number;
+  running_balance: number;
+  user_id: string;
+  user_name: string;
+  terminal_id: string;
+  timestamp: number;
+  reason?: string;
+  notes?: string;
+  reference_number?: string;
+  approved_by?: string;
+}
+
+export interface CashCount {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  session_id: string;
+  count_type: 'OPENING' | 'BLIND_CLOSING' | 'MID_SHIFT' | 'MANAGER_AUDIT';
+  counted_by: string;
+  manager_witness?: string;
+  total_amount: number;
+  is_blind: boolean;
+  timestamp: number;
+}
+
+export interface CashDenomination {
+  id: string;
+  count_id: string;
+  denomination_value: number; // 10000, 5000, 2000, 1000, 500, 200, 100, 50
+  count_quantity: number;
+  total_value: number;
+}
+
+export interface CashReconciliation {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  session_id: string;
+  drawer_id: string;
+  opening_float: number;
+  total_cash_sales: number;
+  total_cash_in: number;
+  total_refunds: number;
+  total_expenses: number;
+  total_cash_out: number;
+  total_deposits: number;
+  expected_cash: number;
+  actual_counted_cash: number;
+  variance_amount: number; // actual - expected
+  variance_status: 'BALANCED' | 'SHORT' | 'OVER';
+  tolerance_threshold: number;
+  tolerance_status: 'ACCEPTED' | 'REQUIRES_APPROVAL' | 'REJECTED';
+  manager_approved: boolean;
+  approved_by?: string;
+  timestamp: number;
+}
+
+export interface CashVariance {
+  id: string;
+  reconciliation_id: string;
+  tenant_id: string;
+  branch_id: string;
+  cashier_id: string;
+  amount: number;
+  status: 'ACCEPTED' | 'PENDING_APPROVAL' | 'APPROVED' | 'DISPUTED';
+  reason?: string;
+  manager_action?: string;
+  timestamp: number;
+}
+
+export interface CashTransfer {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  from_type: 'DRAWER' | 'BRANCH_SAFE' | 'BANK';
+  from_id: string;
+  to_type: 'DRAWER' | 'BRANCH_SAFE' | 'BANK';
+  to_id: string;
+  amount: number;
+  deposit_number?: string;
+  user_id: string;
+  user_name: string;
+  witness_name?: string;
+  timestamp: number;
+  status: 'COMPLETED' | 'PENDING' | 'CANCELLED';
+}
+
+export interface BankDeposit {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  safe_id?: string;
+  bank_name: string;
+  account_number: string;
+  deposit_slip_number: string;
+  amount: number;
+  deposited_by: string;
+  witness?: string;
+  timestamp: number;
+  status: 'DEPOSITED' | 'CONFIRMED' | 'REJECTED';
+}
+
+export interface CashExpense {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  session_id: string;
+  category: string;
+  description: string;
+  amount: number;
+  recipient: string;
+  approved_by: string;
+  timestamp: number;
+}
+
+export interface DrawerAssignment {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  cashier_id: string;
+  terminal_id: string;
+  is_active: boolean;
+  assigned_at: number;
+  unassigned_at?: number;
+}
+
+export interface DrawerPermission {
+  id: string;
+  tenant_id: string;
+  role: string;
+  can_open_manual: boolean;
+  can_override_variance: boolean;
+  can_lock_emergency: boolean;
+  can_reopen_session: boolean;
+  max_cash_limit: number;
+}
+
+export interface DrawerAuditLog {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  drawer_id: string;
+  session_id?: string;
+  user_id: string;
+  user_name: string;
+  action: string;
+  digital_signature: string;
+  ip_address?: string;
+  device_info?: string;
+  timestamp: number;
+}
+
 class DukaPosDatabase extends Dexie {
   products!: Table<Product>;
   productVariants!: Table<ProductVariant>;
@@ -1399,6 +1664,22 @@ class DukaPosDatabase extends Dexie {
   categories!: Table<Category>;
   brands!: Table<Brand>;
   securityIncidents!: Table<SecurityIncident>;
+
+  // ── Cash Drawer Module Tables (v28) ───────────────────────────────────────
+  cashDrawers!: Table<CashDrawerEntity>;
+  cashDrawerSessions!: Table<CashDrawerSession>;
+  cashDrawerEvents!: Table<CashDrawerEvent>;
+  cashTransactions!: Table<CashTransaction>;
+  cashCounts!: Table<CashCount>;
+  cashDenominations!: Table<CashDenomination>;
+  cashReconciliations!: Table<CashReconciliation>;
+  cashVariances!: Table<CashVariance>;
+  cashTransfers!: Table<CashTransfer>;
+  bankDeposits!: Table<BankDeposit>;
+  cashExpenses!: Table<CashExpense>;
+  drawerAssignments!: Table<DrawerAssignment>;
+  drawerPermissions!: Table<DrawerPermission>;
+  drawerAuditLogs!: Table<DrawerAuditLog>;
 
   constructor() {
     super('DukaPosDatabase');
@@ -2048,6 +2329,34 @@ class DukaPosDatabase extends Dexie {
       brands: 'id, tenant_id, name'
     });
 
+    // Version 28: Cash Drawer Module Schema
+    this.version(28).stores({
+      cashDrawers: 'id, tenant_id, branch_id, terminal_id, status, assigned_cashier_id',
+      cashDrawerSessions: 'id, tenant_id, branch_id, drawer_id, cashier_id, status, opening_time',
+      cashDrawerEvents: 'id, tenant_id, branch_id, drawer_id, session_id, event_type, timestamp',
+      cashTransactions: 'id, tenant_id, branch_id, drawer_id, session_id, type, user_id, timestamp',
+      cashCounts: 'id, tenant_id, branch_id, drawer_id, session_id, count_type, timestamp',
+      cashDenominations: 'id, count_id, denomination_value',
+      cashReconciliations: 'id, tenant_id, branch_id, session_id, drawer_id, variance_status, timestamp',
+      cashVariances: 'id, reconciliation_id, tenant_id, branch_id, cashier_id, status, timestamp',
+      cashTransfers: 'id, tenant_id, branch_id, from_id, to_id, status, timestamp',
+      bankDeposits: 'id, tenant_id, branch_id, safe_id, deposit_slip_number, status, timestamp',
+      cashExpenses: 'id, tenant_id, branch_id, drawer_id, session_id, category, timestamp',
+      drawerAssignments: 'id, tenant_id, branch_id, drawer_id, cashier_id, is_active',
+      drawerPermissions: 'id, tenant_id, role',
+      drawerAuditLogs: 'id, tenant_id, branch_id, drawer_id, session_id, user_id, timestamp'
+    });
+
+    // Version 29: Event-Driven Stock Ledger Sync Engine Schema
+    this.version(29).stores({
+      stockLedger: 'id, tenant_id, branch_id, product_id, variant_id, movement_type, created_at, origin, idempotency_key, [tenant_id+branch_id+sync_status], event_version'
+    });
+
+    // Version 30: Production-Grade Event-Driven Persistent Sync Queue Schema
+    this.version(30).stores({
+      syncQueue: '++id, tenant_id, branch_id, entity, entity_id, operation, status, priority, created_at, last_attempt, sync_token, device_id, user_id, actionType, entityName, timestamp'
+    });
+
     // Add hooks to dynamically set 'origin' based on tenant ID naming convention
     const tablesWithOrigin = [
       'products', 'productVariants', 'customers', 'orders',
@@ -2083,35 +2392,124 @@ export const db = new DukaPosDatabase();
  * Implements Fix #1 from the Root Cause Matrix:
  *   "UI state updated locally but failed to write variants alongside the parent."
  */
+export function normalizeVariantAttributes(attrs: Record<string, string> | undefined | null): string {
+  if (!attrs || typeof attrs !== 'object') return '';
+  const parts: string[] = [];
+  for (const [, v] of Object.entries(attrs)) {
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      parts.push(String(v).trim().toLowerCase());
+    }
+  }
+  return parts.sort().join('|');
+}
+
+// ─── Deep Write Pipeline ──────────────────────────────────────────────────────
+/**
+ * Atomically persists a parent product AND all its variants in a single
+ * Dexie transaction. If any variant write fails the entire operation is
+ * rolled back, preventing orphaned parent records.
+ *
+ * Implements Fix #1 from the Root Cause Matrix:
+ *   "UI state updated locally but failed to write variants alongside the parent."
+ */
 export async function saveProductAndVariants(
   product: Product,
   variants: ProductVariant[]
 ): Promise<void> {
   return db.transaction('rw', db.products, db.productVariants, db.syncQueue, async () => {
-    // 1. Write parent product atomically (mark unsynced)
-    await db.products.put({
-      ...product,
-      syncStatus: product.syncStatus ?? 'PENDING',
-    });
+    let finalProduct = { ...product };
 
-    // 2. Write each variant explicitly (NOT nested in parent JSON blob)
-    //    Each variant row is an independent inventory item with its own FK.
-    for (const variant of variants) {
+    // Deduplicate incoming variants list before saving & enforce strict SKU generation
+    const uniqueVariants: ProductVariant[] = [];
+    const seenSigs = new Set<string>();
+    const seenSkus = new Set<string>();
+
+    const parentShort = (finalProduct.name || 'PROD').replace(/\s+/g, '').slice(0, 4).toUpperCase();
+    const parentSku = finalProduct.sku || parentShort;
+
+    for (let idx = 0; idx < variants.length; idx++) {
+      const v = variants[idx];
+      const sig = normalizeVariantAttributes(v.attributes) || `variant-${idx}`;
+
+      // Mandatory SKU enforcement
+      let vSku = (v.sku || '').trim();
+      if (!vSku) {
+        const attrSuffix = Object.values(v.attributes || {}).map(val => String(val).replace(/\s+/g, '').toUpperCase().slice(0, 4)).join('-') || `${idx + 1}`;
+        vSku = `${parentSku}-${attrSuffix}`;
+      }
+
+      if (seenSigs.has(sig)) {
+        console.warn(`[saveProductAndVariants] Duplicate attribute signature '${sig}' ignored for product ${finalProduct.id}`);
+        continue;
+      }
+      if (seenSkus.has(vSku.toLowerCase())) {
+        console.warn(`[saveProductAndVariants] Duplicate SKU '${vSku}' ignored for product ${finalProduct.id}`);
+        continue;
+      }
+
+      seenSigs.add(sig);
+      seenSkus.add(vSku.toLowerCase());
+
+      uniqueVariants.push({
+        ...v,
+        sku: vSku,
+      });
+    }
+
+    if (finalProduct.hasVariants || uniqueVariants.length > 0) {
+      const activeVariants = uniqueVariants.filter(v => (v.status as any) !== 'Inactive');
+      const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+      const reorderLevel = finalProduct.reorderLevel ?? 10;
+      const stockStatus =
+        totalStock === 0
+          ? 'OUT_OF_STOCK'
+          : totalStock <= reorderLevel
+          ? 'LOW_STOCK'
+          : 'IN_STOCK';
+
+      finalProduct = {
+        ...finalProduct,
+        hasVariants: true,
+        stock: totalStock,
+        syncStatus: finalProduct.syncStatus ?? 'PENDING',
+      };
+      (finalProduct as any).availableQty = totalStock;
+      (finalProduct as any).inStock = totalStock > 0;
+      (finalProduct as any).stockStatus = stockStatus;
+    } else {
+      finalProduct.syncStatus = finalProduct.syncStatus ?? 'PENDING';
+    }
+
+    // 1. Write parent product atomically
+    await db.products.put(finalProduct);
+
+    // 2. Remove existing variants in DB for this product that are no longer retained
+    const existingInDb = await db.productVariants.where('productId').equals(finalProduct.id).toArray();
+    for (const ev of existingInDb) {
+      const evSig = normalizeVariantAttributes(ev.attributes);
+      const isRetained = uniqueVariants.some(uv => uv.id === ev.id || normalizeVariantAttributes(uv.attributes) === evSig || (uv.sku && uv.sku.toLowerCase() === ev.sku.toLowerCase()));
+      if (!isRetained) {
+        await db.productVariants.delete(ev.id);
+      }
+    }
+
+    // 3. Write each unique variant explicitly
+    for (const variant of uniqueVariants) {
       await db.productVariants.put({
         ...variant,
-        productId: product.id,   // enforce FK binding
-        tenant_id: variant.tenant_id || product.tenant_id,
-        branch_id: variant.branch_id || product.branch_id,
+        productId: finalProduct.id,   // enforce FK binding
+        tenant_id: variant.tenant_id || finalProduct.tenant_id,
+        branch_id: variant.branch_id || finalProduct.branch_id,
         isSynced: 0,
         syncStatus: 'PENDING',
       });
     }
 
-    // 3. Queue the product insert — variants are queued as children below
+    // 4. Queue the product insert — variants are queued as children below
     await db.syncQueue.add({
       actionType: 'INSERT',
       entityName: 'products',
-      payload: { ...product, variants: variants.map(v => ({ ...v, productId: product.id })) },
+      payload: { ...finalProduct, variants: uniqueVariants.map(v => ({ ...v, productId: finalProduct.id })) },
       timestamp: Date.now(),
       status: 'Pending',
     });
@@ -2201,58 +2599,183 @@ export async function applyIdMappings(
   }
 }
 
-// Recalculates Parent Product stock and price based on its child variants
-export async function recalculateProductStock(productId: string) {
-  const product = await db.products.get(productId);
-  if (!product) return;
+// Automatic Parent–Variant Stock Synchronization Service
+export async function syncParentStock(parentProductId: string): Promise<void> {
+  if (!parentProductId) return;
+  const parent = await db.products.get(parentProductId);
+  if (!parent) return;
 
-  if (product.hasVariants) {
-    const variants = await db.productVariants.where('productId').equals(productId).toArray();
-    const totalStock = variants.reduce((sum, v) => sum + v.stock, 0);
-    
-    // Default to first active variant's overridden price or the parent's selling price
-    const activeVariants = variants.filter(v => v.status === 'Active');
-    const activePrice = activeVariants.length > 0
-      ? (activeVariants[0].sellingPrice || product.sellingPrice)
-      : product.sellingPrice;
+  const variants = await db.productVariants
+    .where('productId')
+    .equals(parentProductId)
+    .toArray();
 
-    const updatedProd = {
-      ...product,
+  const activeVariants = variants.filter(v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt);
+
+  if (parent.hasVariants || variants.length > 0) {
+    // 1. Calculate Aggregate Stock across active variants
+    const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+    const reorderLevel = parent.reorderLevel ?? 10;
+    const stockStatus =
+      totalStock === 0
+        ? 'OUT_OF_STOCK'
+        : totalStock <= reorderLevel
+        ? 'LOW_STOCK'
+        : 'IN_STOCK';
+
+    // 2. Price Range & Effective Selling Price Calculations
+    const validPrices = activeVariants
+      .map(v => v.sellingPrice ?? (v as any).price)
+      .filter((p): p is number => typeof p === 'number' && p > 0);
+
+    const minPrice = validPrices.length > 0 ? Math.min(...validPrices) : (parent.sellingPrice || parent.price || 0);
+    const maxPrice = validPrices.length > 0 ? Math.max(...validPrices) : minPrice;
+    const priceRange = minPrice !== maxPrice ? `${minPrice.toLocaleString()} - ${maxPrice.toLocaleString()}` : undefined;
+
+    // 3. Earliest Expiry Date (FEFO - First Expired, First Out)
+    const validExpiries = activeVariants
+      .map(v => (v as any).expiryDate)
+      .filter((d): d is string => typeof d === 'string' && d.length > 0)
+      .sort();
+    const earliestExpiry = validExpiries[0] || parent.expiryDate;
+
+    // 4. Update Parent Product Container
+    const hasVariantsFlag = activeVariants.length > 0;
+    const updatedProd: Product = {
+      ...parent,
+      hasVariants: hasVariantsFlag,
       stock: totalStock,
-      price: activePrice,
-      sellingPrice: activePrice,
-      syncStatus: 'PENDING' as const
+      price: minPrice,
+      sellingPrice: minPrice,
+      expiryDate: earliestExpiry,
+      updatedAt: Date.now(),
+      syncStatus: 'PENDING' as const,
     };
+
+    (updatedProd as any).minPrice = minPrice;
+    (updatedProd as any).maxPrice = maxPrice;
+    (updatedProd as any).priceRange = priceRange;
+    (updatedProd as any).availableQty = totalStock;
+    (updatedProd as any).inStock = totalStock > 0;
+    (updatedProd as any).stockStatus = stockStatus;
+
     await db.products.put(updatedProd);
 
-    // Queue update for the parent product so cloud gets the new aggregate stock
+    // 5. Synchronize Branch-Level Stock Balance Table (db.stockBalance)
+    try {
+      const allVariantBalances = await db.stockBalance
+        .where('product_id')
+        .equals(parentProductId)
+        .toArray();
+
+      const branchTotals: Record<string, number> = {};
+      for (const sb of allVariantBalances) {
+        if (sb.variant_id && sb.variant_id !== 'no-variant') {
+          const bId = sb.branch_id || 'branch-101';
+          branchTotals[bId] = (branchTotals[bId] || 0) + (sb.current_quantity || 0);
+        }
+      }
+
+      for (const [bId, bQty] of Object.entries(branchTotals)) {
+        const parentSb = await db.stockBalance
+          .where('[branch_id+product_id+variant_id]')
+          .equals([bId, parentProductId, 'no-variant'])
+          .first();
+
+        if (parentSb) {
+          await db.stockBalance.put({
+            ...parentSb,
+            current_quantity: bQty,
+            stock_value: bQty * (parent.buyingPrice || 0),
+            updated_at: Date.now(),
+          });
+        }
+      }
+    } catch (_) {}
+
+    // 6. Queue Cloud Sync Payload
     const { mapProductToCloud } = await import('../services/productService');
     await db.syncQueue.add({
       actionType: 'UPDATE',
       entityName: 'products',
       payload: mapProductToCloud(updatedProd),
       timestamp: Date.now(),
-      status: 'Pending'
+      status: 'Pending',
     });
   }
 }
 
-// Module-level lock to prevent concurrent database seeding collisions
+// Recalculates Parent Product stock and price based on its child variants (alias)
+export async function recalculateProductStock(productId: string): Promise<void> {
+  return syncParentStock(productId);
+}
+
+/**
+ * Batch synchronization helper for multiple parent products affected by stock movements.
+ * Guarantees all distinct parent IDs are recalculated.
+ */
+export async function syncMultipleParentStocks(parentProductIds: Iterable<string>): Promise<void> {
+  const uniqueParentIds = Array.from(new Set(parentProductIds)).filter(Boolean);
+  for (const parentId of uniqueParentIds) {
+    await syncParentStock(parentId);
+  }
+}
+
+/**
+ * Global Audit & Reconciliation service for Parent-Variant Stock Balances.
+ * Sweeps the database to ensure every parent product's stock balance matches
+ * the exact sum of its active variants, purging soft-deleted/orphan discrepancies.
+ */
+export async function reconcileAllParentProductStocks(): Promise<{
+  reconciledCount: number;
+  fixedDiscrepancies: number;
+}> {
+  const products = await db.products.toArray();
+  let reconciledCount = 0;
+  let fixedDiscrepancies = 0;
+
+  for (const p of products) {
+    const childVariants = await db.productVariants
+      .where('productId')
+      .equals(p.id)
+      .toArray();
+
+    if (p.hasVariants || childVariants.length > 0) {
+      reconciledCount++;
+      const activeVars = childVariants.filter(
+        v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt && !(v as any).deleted_at
+      );
+      const computedTotal = activeVars.reduce((sum, v) => sum + (v.stock || 0), 0);
+
+      if (p.stock !== computedTotal || (p.hasVariants && activeVars.length === 0)) {
+        fixedDiscrepancies++;
+        await syncParentStock(p.id);
+      }
+    }
+  }
+
+  return { reconciledCount, fixedDiscrepancies };
+}
+
+// Module-level lock to prevent concurrent initialization collisions
 let isSeedingInProgress = false;
 
-// Initial database seeding function covering all 27 industry modules in Tanzanian Shillings (Tsh.)
-export async function seedDatabase() {
+// ─── PRODUCTION DATABASE INITIALIZATION ─────────────────────────────────────
+// Seeds only system-level reference data (RBAC roles, permissions, subscription
+// plans, industries, and the platform super admin). NO tenant or demo data.
+// Called once on app startup. Safe to call multiple times — fully idempotent.
+export async function initProductionDatabase() {
   if (isSeedingInProgress) return;
   isSeedingInProgress = true;
 
-  try {
-    if (typeof window !== 'undefined' && localStorage.getItem('DUKAPOS_PRODUCTION_LOCKED') === 'true') {
-      console.log('[DukaPos] Production System Locked — Skipping all demo seeders.');
-      isSeedingInProgress = false;
-      return;
-    }
+  // Apply production lock immediately and unconditionally
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('DUKAPOS_PRODUCTION_LOCKED', 'true');
+  }
 
-    const tenantCount = await db.tenants.count();
+  try {
+
+
     const rolesCount = await db.roles.count();
 
     // ── Incremental RBAC Seed ────────────────────────────────────────────────
@@ -2263,23 +2786,59 @@ export async function seedDatabase() {
 
       // Seed Permissions
       const seedPermissions: Permission[] = [
-        { id: 'perm-sales-create', module: 'Sales', resource: 'sale', action: 'create', slug: 'sales.create', description: 'Create new POS invoices & orders' },
-        { id: 'perm-sales-refund', module: 'Sales', resource: 'sale', action: 'refund', slug: 'sales.refund', description: 'Process customer product returns & refunds' },
-        { id: 'perm-sales-void', module: 'Sales', resource: 'sale', action: 'void', slug: 'sales.void', description: 'Void or cancel active/past transactions' },
-        { id: 'perm-inv-create', module: 'Inventory', resource: 'product', action: 'create', slug: 'inventory.product.create', description: 'Create and update core products and variants' },
-        { id: 'perm-inv-adjust', module: 'Inventory', resource: 'stock', action: 'adjust', slug: 'inventory.stock.adjust', description: 'Authorize stock level additions/deductions' },
+        // POS & Sales
+        { id: 'perm-sales-create', module: 'POS & Sales', resource: 'sale', action: 'create', slug: 'sales.create', description: 'Create new POS invoices & orders' },
+        { id: 'perm-sales-refund', module: 'POS & Sales', resource: 'sale', action: 'refund', slug: 'sales.refund', description: 'Process customer product returns & refunds' },
+        { id: 'perm-sales-void', module: 'POS & Sales', resource: 'sale', action: 'void', slug: 'sales.void', description: 'Void or cancel active/past transactions' },
+        { id: 'perm-disc-override', module: 'POS & Sales', resource: 'discount', action: 'override', slug: 'discount.override', description: 'Override automated pricing or discount limits' },
+        { id: 'perm-pos-shift', module: 'POS & Sales', resource: 'shift', action: 'manage', slug: 'pos.shift.manage', description: 'Open, reconcile, and close POS cash shifts' },
+
+        // Products & Categories
+        { id: 'perm-prod-create', module: 'Products', resource: 'product', action: 'create', slug: 'inventory.product.create', description: 'Create new core products and variants' },
+        { id: 'perm-prod-edit', module: 'Products', resource: 'product', action: 'edit', slug: 'inventory.product.edit', description: 'Modify existing product details and pricing' },
+        { id: 'perm-prod-delete', module: 'Products', resource: 'product', action: 'delete', slug: 'inventory.product.delete', description: 'Remove or archive products' },
+        { id: 'perm-cat-manage', module: 'Categories', resource: 'category', action: 'manage', slug: 'inventory.category.create', description: 'Create, organize, and edit product categories' },
+
+        // Inventory & Stock
+        { id: 'perm-inv-view', module: 'Inventory', resource: 'stock', action: 'view', slug: 'inventory.stock.view', description: 'View stock balances and product quantities' },
+        { id: 'perm-inv-receive', module: 'Inventory', resource: 'stock', action: 'receive', slug: 'inventory.stock.receive', description: 'Receive new stock deliveries into inventory' },
         { id: 'perm-inv-transfer', module: 'Inventory', resource: 'stock', action: 'transfer', slug: 'inventory.stock.transfer', description: 'Initiate stock movement between branches' },
+        { id: 'perm-inv-adjust', module: 'Inventory', resource: 'stock', action: 'adjust', slug: 'inventory.stock.adjust', description: 'Authorize stock level additions/deductions' },
+        { id: 'perm-inv-count', module: 'Inventory', resource: 'stock', action: 'count', slug: 'inventory.stock.count', description: 'Perform physical stock audits and counts' },
+        { id: 'perm-inv-wastage', module: 'Inventory', resource: 'stock', action: 'wastage', slug: 'inventory.stock.wastage', description: 'Log damaged, expired, or spoiled inventory' },
+        { id: 'perm-inv-barcode', module: 'Inventory', resource: 'barcode', action: 'print', slug: 'inventory.barcode.print', description: 'Generate and print SKU barcode labels' },
+
+        // Purchasing & Suppliers
         { id: 'perm-pur-create', module: 'Purchasing', resource: 'purchase', action: 'create', slug: 'purchase.create', description: 'Initiate supplier purchase orders' },
-        { id: 'perm-pur-manage', module: 'Purchasing', resource: 'supplier', action: 'manage', slug: 'supplier.manage', description: 'Manage supplier ledgers & details' },
-        { id: 'perm-fin-expense', module: 'Finance', resource: 'expense', action: 'manage', slug: 'expense.manage', description: 'Log operational costs and permits' },
+        { id: 'perm-pur-approve', module: 'Purchasing', resource: 'purchase', action: 'approve', slug: 'purchase.approve', description: 'Approve and release purchase orders' },
+        { id: 'perm-pur-manage', module: 'Suppliers', resource: 'supplier', action: 'manage', slug: 'supplier.manage', description: 'Manage supplier ledgers & contract details' },
+
+        // Customers
+        { id: 'perm-cust-view', module: 'Customers', resource: 'customer', action: 'view', slug: 'customer.view', description: 'Access customer list and contact details' },
+        { id: 'perm-cust-manage', module: 'Customers', resource: 'customer', action: 'manage', slug: 'customer.create', description: 'Register and update customer accounts' },
+
+        // Finance, Expenses & Taxes
+        { id: 'perm-fin-expense', module: 'Finance', resource: 'expense', action: 'manage', slug: 'expense.manage', description: 'Log operational costs, permits, and bills' },
+        { id: 'perm-fin-approve', module: 'Finance', resource: 'expense', action: 'approve', slug: 'expense.approve', description: 'Authorize and approve company expenses' },
         { id: 'perm-fin-payment', module: 'Finance', resource: 'payment', action: 'manage', slug: 'payment.manage', description: 'Record general payments & accounts' },
-        { id: 'perm-fin-reports', module: 'Finance', resource: 'financial_reports', action: 'view', slug: 'financial_reports.view', description: 'Access profit/loss and ledger data' },
-        { id: 'perm-rep-view', module: 'Reports', resource: 'reports', action: 'view', slug: 'reports.view', description: 'Access global analytics and forecasts' },
+        { id: 'perm-fin-banking', module: 'Finance', resource: 'banking', action: 'manage', slug: 'banking.manage', description: 'Manage bank accounts and cash channels' },
+        { id: 'perm-fin-taxes', module: 'Finance', resource: 'taxes', action: 'manage', slug: 'taxes.manage', description: 'Configure VAT rules and tax structures' },
+        { id: 'perm-fin-reports', module: 'Finance', resource: 'financial_reports', action: 'view', slug: 'financial_reports.view', description: 'Access profit/loss, balance sheet, and ledgers' },
+
+        // Reports
+        { id: 'perm-rep-view', module: 'Reports', resource: 'reports', action: 'view', slug: 'reports.view', description: 'Access global analytics and business forecasts' },
         { id: 'perm-rep-branch', module: 'Reports', resource: 'reports', action: 'branch', slug: 'reports.branch', description: 'Access single-branch localized sales reports' },
+        { id: 'perm-rep-inv', module: 'Reports', resource: 'reports', action: 'inventory', slug: 'reports.inventory.view', description: 'View stock velocity, low stock, and shrinkage reports' },
+        { id: 'perm-rep-sales', module: 'Reports', resource: 'reports', action: 'sales', slug: 'reports.sales.view', description: 'View turnover, margins, and sales channel reports' },
+
+        // Access & Organization
         { id: 'perm-set-users', module: 'Access', resource: 'users', action: 'manage', slug: 'users.manage', description: 'Invite, suspend, and configure system users' },
         { id: 'perm-set-roles', module: 'Access', resource: 'roles', action: 'manage', slug: 'roles.manage', description: 'Build and customize tenant role capability maps' },
         { id: 'perm-set-branches', module: 'Access', resource: 'branches', action: 'manage', slug: 'branches.manage', description: 'Add and configure business locations' },
-        { id: 'perm-set-config', module: 'Access', resource: 'settings', action: 'manage', slug: 'settings.manage', description: 'Modify SaaS configurations and printer routing' },
+        { id: 'perm-set-config', module: 'Access', resource: 'settings', action: 'manage', slug: 'settings.manage', description: 'Modify SaaS configurations and operational rules' },
+        { id: 'perm-audit-logs', module: 'Access', resource: 'audit', action: 'view', slug: 'audit.logs.view', description: 'Inspect security audit trails and system logs' },
+
+        // Platform & Subscription
         { id: 'perm-plat-tenants', module: 'Platform', resource: 'tenant', action: 'manage', slug: 'tenant.manage', description: 'Manage platform business workspaces' },
         { id: 'perm-plat-billing', module: 'Platform', resource: 'billing', action: 'manage', slug: 'billing.manage', description: 'Oversee subscriber invoicing and cycles' },
         { id: 'perm-plat-subs', module: 'Platform', resource: 'subscription', action: 'manage', slug: 'subscription.manage', description: 'Update plan levels and offline grace rules' },
@@ -2290,40 +2849,29 @@ export async function seedDatabase() {
 
       // Seed System Roles
       const systemRoles: Role[] = [
-        { id: 'role-owner', tenant_id: null, name: 'Tenant Owner', slug: 'tenant_owner', description: 'Full tenant control and licensing access.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
-        { id: 'role-admin', tenant_id: null, name: 'Business Administrator', slug: 'business_administrator', description: 'Enterprise setting management and reports.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
-        { id: 'role-manager', tenant_id: null, name: 'Branch Manager', slug: 'branch_manager', description: 'Oversee daily branch activities, stock, and staff.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
-        { id: 'role-cashier', tenant_id: null, name: 'Cashier', slug: 'cashier', description: 'Log transactions, process invoices, print receipts.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
-        { id: 'role-inventory', tenant_id: null, name: 'Inventory Officer', slug: 'inventory_officer', description: 'Adjust inventory counts and manage suppliers.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
-        { id: 'role-accountant', tenant_id: null, name: 'Accountant', slug: 'accountant', description: 'Verify expenses and pull financial reports.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-owner', tenant_id: null, name: 'Tenant Owner', slug: 'tenant_owner', description: 'Owns the business with complete, unrestricted workspace control.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-admin', tenant_id: null, name: 'Business Administrator', slug: 'business_administrator', description: 'Runs day-to-day operations, staff, inventory, and reporting.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-manager', tenant_id: null, name: 'Branch Manager', slug: 'branch_manager', description: 'Manages branch staff, daily sales, stock, and local reports.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-accountant', tenant_id: null, name: 'Accountant', slug: 'accountant', description: 'Financial control, expenses, taxes, P&L, and balance sheet.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-inventory', tenant_id: null, name: 'Inventory Officer', slug: 'inventory_officer', description: 'Stock receiving, transfers, purchase orders, counts, and barcode printing.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
+        { id: 'role-cashier', tenant_id: null, name: 'Cashier', slug: 'cashier', description: 'Processes POS customer sales, receipts, and shift reconciliation.', is_system_role: true, is_custom: false, created_at: NOW_RBAC },
       ];
       await db.roles.bulkPut(systemRoles);
 
       // Seed Role Permissions
+      const adminPermIds = ['perm-sales-create', 'perm-sales-refund', 'perm-sales-void', 'perm-disc-override', 'perm-prod-create', 'perm-prod-edit', 'perm-cat-manage', 'perm-inv-view', 'perm-inv-receive', 'perm-inv-transfer', 'perm-inv-adjust', 'perm-pur-create', 'perm-pur-approve', 'perm-pur-manage', 'perm-cust-view', 'perm-cust-manage', 'perm-fin-expense', 'perm-fin-approve', 'perm-fin-banking', 'perm-fin-taxes', 'perm-rep-view', 'perm-rep-branch', 'perm-rep-inv', 'perm-rep-sales', 'perm-set-users', 'perm-set-roles', 'perm-set-branches', 'perm-set-config', 'perm-audit-logs'];
+      const mgrPermIds   = ['perm-sales-create', 'perm-sales-refund', 'perm-sales-void', 'perm-prod-create', 'perm-inv-view', 'perm-inv-receive', 'perm-inv-transfer', 'perm-inv-adjust', 'perm-inv-count', 'perm-pur-create', 'perm-pur-manage', 'perm-cust-view', 'perm-cust-manage', 'perm-fin-expense', 'perm-rep-branch', 'perm-set-users', 'perm-audit-logs'];
+      const accPermIds   = ['perm-fin-expense', 'perm-fin-approve', 'perm-fin-payment', 'perm-fin-banking', 'perm-fin-taxes', 'perm-fin-reports', 'perm-rep-view', 'perm-rep-branch', 'perm-inv-view', 'perm-cust-view', 'perm-pur-manage', 'perm-audit-logs'];
+      const invPermIds   = ['perm-prod-create', 'perm-prod-edit', 'perm-cat-manage', 'perm-inv-view', 'perm-inv-receive', 'perm-inv-transfer', 'perm-inv-adjust', 'perm-inv-count', 'perm-inv-wastage', 'perm-inv-barcode', 'perm-pur-create', 'perm-pur-approve', 'perm-pur-manage', 'perm-rep-inv', 'perm-audit-logs'];
+      const cshPermIds   = ['perm-sales-create', 'perm-fin-payment', 'perm-pos-shift', 'perm-cust-view', 'perm-cust-manage', 'perm-inv-view'];
+
       const seedRolePermissions: RolePermission[] = [
         ...seedPermissions.filter(p => p.module !== 'Platform').map(p => ({ id: `rp-owner-${p.id}`, role_id: 'role-owner', permission_id: p.id })),
-        { id: 'rp-admin-users', role_id: 'role-admin', permission_id: 'perm-set-users' },
-        { id: 'rp-admin-roles', role_id: 'role-admin', permission_id: 'perm-set-roles' },
-        { id: 'rp-admin-branches', role_id: 'role-admin', permission_id: 'perm-set-branches' },
-        { id: 'rp-admin-config', role_id: 'role-admin', permission_id: 'perm-set-config' },
-        { id: 'rp-admin-reports', role_id: 'role-admin', permission_id: 'perm-rep-view' },
-        { id: 'rp-mgr-sales', role_id: 'role-manager', permission_id: 'perm-sales-create' },
-        { id: 'rp-mgr-refund', role_id: 'role-manager', permission_id: 'perm-sales-refund' },
-        { id: 'rp-mgr-void', role_id: 'role-manager', permission_id: 'perm-sales-void' },
-        { id: 'rp-mgr-inv', role_id: 'role-manager', permission_id: 'perm-inv-create' },
-        { id: 'rp-mgr-adjust', role_id: 'role-manager', permission_id: 'perm-inv-adjust' },
-        { id: 'rp-mgr-pur', role_id: 'role-manager', permission_id: 'perm-pur-create' },
-        { id: 'rp-mgr-rep', role_id: 'role-manager', permission_id: 'perm-rep-branch' },
-        { id: 'rp-csh-sales', role_id: 'role-cashier', permission_id: 'perm-sales-create' },
-        { id: 'rp-csh-pay', role_id: 'role-cashier', permission_id: 'perm-fin-payment' },
-        { id: 'rp-inv-create', role_id: 'role-inventory', permission_id: 'perm-inv-create' },
-        { id: 'rp-inv-adjust', role_id: 'role-inventory', permission_id: 'perm-inv-adjust' },
-        { id: 'rp-inv-trans', role_id: 'role-inventory', permission_id: 'perm-inv-transfer' },
-        { id: 'rp-inv-pur', role_id: 'role-inventory', permission_id: 'perm-pur-create' },
-        { id: 'rp-inv-sup', role_id: 'role-inventory', permission_id: 'perm-pur-manage' },
-        { id: 'rp-acc-exp', role_id: 'role-accountant', permission_id: 'perm-fin-expense' },
-        { id: 'rp-acc-pay', role_id: 'role-accountant', permission_id: 'perm-fin-payment' },
-        { id: 'rp-acc-rep', role_id: 'role-accountant', permission_id: 'perm-fin-reports' },
+        ...adminPermIds.map(pid => ({ id: `rp-admin-${pid}`, role_id: 'role-admin', permission_id: pid })),
+        ...mgrPermIds.map(pid => ({ id: `rp-mgr-${pid}`, role_id: 'role-manager', permission_id: pid })),
+        ...accPermIds.map(pid => ({ id: `rp-acc-${pid}`, role_id: 'role-accountant', permission_id: pid })),
+        ...invPermIds.map(pid => ({ id: `rp-inv-${pid}`, role_id: 'role-inventory', permission_id: pid })),
+        ...cshPermIds.map(pid => ({ id: `rp-csh-${pid}`, role_id: 'role-cashier', permission_id: pid })),
       ];
       await db.rolePermissions.bulkPut(seedRolePermissions);
 
@@ -2336,201 +2884,9 @@ export async function seedDatabase() {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // ── Incremental Purchasing Seed ──────────────────────────────────────────
-    const supplierCount = await db.suppliers.count();
-    if (supplierCount === 0) {
-      const NOW_PUR = Date.now();
-      const DAY_PUR = 86400000;
-
-      await db.suppliers.bulkPut([
-        {
-          id: 'sup-001',
-          supplier_code: 'SUP-001',
-          name: 'Tanzania Wholesale Distributors Ltd',
-          trading_name: 'TWD Wholesale',
-          category: 'General',
-          tin_number: '112-233-445',
-          vrn_number: '40012345-H',
-          phone: '+255 754 100 200',
-          whatsapp: '+255 754 100 200',
-          email: 'orders@twd.co.tz',
-          country: 'Tanzania',
-          region: 'Dar es Salaam',
-          city: 'Dar es Salaam',
-          address: 'Kariakoo, Dar es Salaam',
-          preferred_currency: 'TZS',
-          payment_terms_days: 30,
-          credit_limit: 5000000,
-          current_balance: 450000,
-          mpesa_number: '150150',
-          status: 'Active',
-          tenant_id: 'tenant-101',
-          branch_id: 'branch-dar-hq',
-          created_at: NOW_PUR - 180 * DAY_PUR,
-          updated_at: NOW_PUR - 180 * DAY_PUR
-        },
-        {
-          id: 'sup-002',
-          supplier_code: 'SUP-002',
-          name: 'Medipharm East Africa',
-          trading_name: 'Medipharm',
-          category: 'Pharmaceuticals',
-          tin_number: '556-677-889',
-          vrn_number: undefined,
-          phone: '+255 783 500 600',
-          whatsapp: undefined,
-          email: 'supply@medipharm.tz',
-          country: 'Tanzania',
-          region: 'Dar es Salaam',
-          city: 'Dar es Salaam',
-          address: 'Upanga, Dar es Salaam',
-          preferred_currency: 'TZS',
-          payment_terms_days: 0,
-          credit_limit: 0,
-          current_balance: 0,
-          tigopesa_number: '0783500600',
-          status: 'Active',
-          tenant_id: 'tenant-101',
-          branch_id: 'branch-dar-hq',
-          created_at: NOW_PUR - 120 * DAY_PUR,
-          updated_at: NOW_PUR - 120 * DAY_PUR
-        },
-        {
-          id: 'sup-003',
-          supplier_code: 'SUP-003',
-          name: 'Arusha Tech Supplies Co.',
-          trading_name: 'Arusha Tech',
-          category: 'Electronics',
-          tin_number: '998-877-661',
-          vrn_number: '50098765-K',
-          phone: '+255 689 300 400',
-          whatsapp: '+255 689 300 400',
-          email: 'sales@arutech.co.tz',
-          country: 'Tanzania',
-          region: 'Arusha',
-          city: 'Arusha',
-          address: 'Sokoine Road, Arusha',
-          preferred_currency: 'TZS',
-          payment_terms_days: 14,
-          credit_limit: 3000000,
-          current_balance: 1200000,
-          bank_account: 'NMB - 0150123456789',
-          status: 'Active',
-          tenant_id: 'tenant-101',
-          branch_id: 'branch-arusha-depot',
-          created_at: NOW_PUR - 90 * DAY_PUR,
-          updated_at: NOW_PUR - 90 * DAY_PUR
-        },
-        {
-          id: 'sup-004',
-          supplier_code: 'SUP-004',
-          name: 'Kilimo Fresh Produce Ltd',
-          trading_name: 'Kilimo Fresh',
-          category: 'Agriculture',
-          tin_number: '123-456-789',
-          vrn_number: undefined,
-          phone: '+255 712 888 999',
-          whatsapp: undefined,
-          email: 'info@kilimofresh.tz',
-          country: 'Tanzania',
-          region: 'Pwani',
-          city: 'Kibaha',
-          address: 'Kibaha, Pwani',
-          preferred_currency: 'TZS',
-          payment_terms_days: 0,
-          credit_limit: 1000000,
-          current_balance: 80000,
-          airtel_money_number: '0712888999',
-          status: 'Active',
-          tenant_id: 'tenant-101',
-          branch_id: 'branch-dar-hq',
-          created_at: NOW_PUR - 60 * DAY_PUR,
-          updated_at: NOW_PUR - 60 * DAY_PUR
-        },
-        {
-          id: 'sup-005',
-          supplier_code: 'SUP-005',
-          name: 'SautiPrint Graphics & Packaging',
-          trading_name: 'SautiPrint',
-          category: 'Packaging',
-          tin_number: '655-222-333',
-          vrn_number: undefined,
-          phone: '+255 655 222 333',
-          whatsapp: undefined,
-          email: 'hello@sautiprint.tz',
-          country: 'Tanzania',
-          region: 'Dar es Salaam',
-          city: 'Dar es Salaam',
-          address: 'Changombe, Dar es Salaam',
-          preferred_currency: 'TZS',
-          payment_terms_days: 7,
-          credit_limit: 500000,
-          current_balance: 0,
-          status: 'Inactive',
-          tenant_id: 'tenant-101',
-          branch_id: 'branch-dar-hq',
-          created_at: NOW_PUR - 200 * DAY_PUR,
-          updated_at: NOW_PUR - 200 * DAY_PUR
-        }
-      ]);
-
-      await db.supplierContacts.bulkPut([
-        { id: 'sc-001', supplier_id: 'sup-001', tenant_id: 'tenant-101', name: 'Hamisi Mwangi', position: 'Sales Manager', phone: '+255 754 100 200', email: 'hamisi@twd.co.tz', is_primary: true, created_at: NOW_PUR - 180 * DAY_PUR },
-        { id: 'sc-002', supplier_id: 'sup-002', tenant_id: 'tenant-101', name: 'Dr. Salma Rashid', position: 'Director of Accounts', phone: '+255 783 500 600', email: 'salma@medipharm.tz', is_primary: true, created_at: NOW_PUR - 120 * DAY_PUR },
-        { id: 'sc-003', supplier_id: 'sup-003', tenant_id: 'tenant-101', name: 'Joseph Kimaro', position: 'Operations Officer', phone: '+255 689 300 400', email: 'joseph@arutech.co.tz', is_primary: true, created_at: NOW_PUR - 90 * DAY_PUR }
-      ]);
-
-      await db.purchaseOrders.bulkPut([]);
-      await db.goodsReceipts.bulkPut([]);
-      await db.supplierInvoices.bulkPut([]);
-      await db.supplierLedger.bulkPut([]);
-      await db.supplierPayments.bulkPut([]);
-
-      await db.warehouses.bulkPut([
-        { id: 'wh-001', name: 'Dar es Salaam Main Warehouse', code: 'WH-DAR-01', location: 'Ubungo Industrial Area, Dar es Salaam', manager_name: 'Francis Mbeki', phone: '+255 756 400 500', capacity_sqm: 2500, tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', status: 'Active', created_at: NOW_PUR - 365 * DAY_PUR },
-        { id: 'wh-002', name: 'Arusha Depot Store', code: 'WH-ARU-01', location: 'Industrial Area, Arusha', manager_name: 'Peter Lema', phone: '+255 689 700 800', capacity_sqm: 800, tenant_id: 'tenant-101', branch_id: 'branch-arusha-depot', status: 'Active', created_at: NOW_PUR - 200 * DAY_PUR },
-      ]);
-
-      console.log('[DukaPos] SRM Upgraded Seed Data applied successfully.');
-    }
     // ────────────────────────────────────────────────────────────────────────
 
-    // ── Incremental Control Plane Seed (runs even if tenants already exist) ─
-    const backupsCount2 = await db.backups.count();
-    if (backupsCount2 === 0) {
-      const NOW_CP = Date.now();
-      const DAY_CP = 86400000;
-      await db.backups.bulkPut([
-        { id: 'bkp-001', tenant_id: 'tenant-101', type: 'DAILY',   status: 'COMPLETED', size_mb: 1240,  encrypted: true,  checksum: 'sha256:a3f2b1c8d4e9f0a1b2c3d4e5f6a7b8c9', created_at: NOW_CP - 1 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-002', tenant_id: 'tenant-102', type: 'DAILY',   status: 'COMPLETED', size_mb:  380,  encrypted: true,  checksum: 'sha256:b4e3c2d1f0a9b8c7d6e5f4a3b2c1d0e9', created_at: NOW_CP - 1 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-003', tenant_id: 'tenant-101', type: 'WEEKLY',  status: 'COMPLETED', size_mb: 8600,  encrypted: true,  checksum: 'sha256:c5f4d3e2a1b0c9d8e7f6a5b4c3d2e1f0', created_at: NOW_CP - 7 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-004', tenant_id: 'tenant-103', type: 'DAILY',   status: 'FAILED',    size_mb:    0,  encrypted: false, checksum: 'sha256:error-checksum-00000000000000',    created_at: NOW_CP - 2 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-005', tenant_id: 'tenant-106', type: 'HOURLY',  status: 'COMPLETED', size_mb:  215,  encrypted: true,  checksum: 'sha256:d6a5b4c3e2f1a0b9c8d7e6f5a4b3c2d1', created_at: NOW_CP - 2 * 3600 * 1000, created_by: 'system-scheduler' },
-        { id: 'bkp-006', tenant_id: 'tenant-101', type: 'MONTHLY', status: 'COMPLETED', size_mb: 31000, encrypted: true,  checksum: 'sha256:e7b6c5d4f3a2b1c0d9e8f7a6b5c4d3e2', created_at: NOW_CP - 30 * DAY_CP, created_by: 'system-scheduler' },
-        { id: 'bkp-007', tenant_id: 'tenant-104', type: 'MANUAL',  status: 'COMPLETED', size_mb:  560,  encrypted: true,  checksum: 'sha256:f8c7d6e5a4b3c2d1e0f9a8b7c6d5e4f3', created_at: NOW_CP - 3 * DAY_CP,  created_by: 'usr-superadmin' },
-        { id: 'bkp-008', tenant_id: 'tenant-102', type: 'WEEKLY',  status: 'COMPLETED', size_mb: 2800,  encrypted: true,  checksum: 'sha256:a9d8e7f6b5c4d3e2f1a0b9c8d7e6f5a4', created_at: NOW_CP - 7 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-009', tenant_id: 'tenant-105', type: 'DAILY',   status: 'COMPLETED', size_mb:   92,  encrypted: true,  checksum: 'sha256:b0e9f8a7c6d5e4f3a2b1c0d9e8f7a6b5', created_at: NOW_CP - 1 * DAY_CP,  created_by: 'system-scheduler' },
-        { id: 'bkp-010', tenant_id: 'tenant-101', type: 'DAILY',   status: 'COMPLETED', size_mb: 1290,  encrypted: true,  checksum: 'sha256:c1f0a9b8d7e6f5a4b3c2d1e0f9a8b7c6', created_at: NOW_CP - 2 * DAY_CP,  created_by: 'system-scheduler' },
-      ]);
-      await db.notifications.bulkPut([
-        { id: 'notif-001', tenant_id: null, channel: 'EMAIL',    subject: 'Platform Maintenance Scheduled — July 28, 2026',       message: 'DukaPos SaaS will undergo a planned maintenance window from 02:00–04:00 EAT on July 28. All services will be temporarily unavailable.',           target_scope: 'ALL',    status: 'SENT', sent_at: NOW_CP - 3 * DAY_CP },
-        { id: 'notif-002', tenant_id: null, channel: 'SMS',      subject: 'Payment Reminder: Invoice DKP-2026-000212',             message: 'Your DukaPos subscription invoice of Tsh. 69,600 is due in 15 days. Pay via M-PESA to 150150.',                                               target_scope: 'SINGLE', target_filter: 'tenant-101', status: 'SENT', sent_at: NOW_CP - 1 * DAY_CP },
-        { id: 'notif-003', tenant_id: null, channel: 'IN_APP',   subject: 'New Feature: AI Churn Prediction Dashboard Live',       message: 'Enterprise tenants now have access to the AI-powered churn prediction engine under Super Admin > AI Operations.',                            target_scope: 'PLAN',   target_filter: 'Enterprise',   status: 'SENT', sent_at: NOW_CP - 5 * DAY_CP },
-        { id: 'notif-004', tenant_id: null, channel: 'WHATSAPP', subject: 'Upgrade Offer: Move to Enterprise — 30% Off',           message: 'You are approaching your user seat limit. Upgrade to Enterprise this month and get 30% off the first 3 months. Reply YES to claim.',       target_scope: 'PLAN',   target_filter: 'Professional', status: 'SENT', sent_at: NOW_CP - 7 * DAY_CP },
-        { id: 'notif-005', tenant_id: null, channel: 'EMAIL',    subject: 'Security Alert: Multiple Failed Login Attempts Detected', message: 'We detected 5 failed login attempts on tenant Dodoma Plaza Retailers. Account temporarily locked. Review Security Center.',                target_scope: 'SINGLE', target_filter: 'tenant-103',   status: 'SENT', sent_at: NOW_CP - 12 * 3600 * 1000 },
-        { id: 'notif-006', tenant_id: null, channel: 'PUSH',     subject: 'Database Backup Completed — All Tenants',               message: 'Nightly automated encrypted backups for all 6 active tenants completed successfully. Zero failures recorded.',                              target_scope: 'ALL',    status: 'SENT', sent_at: NOW_CP - 8 * 3600 * 1000 },
-      ]);
-      await db.securityIncidents.bulkPut([
-        { id: 'si-001', tenant_id: 'tenant-103', type: 'FAILED_LOGIN',        severity: 'HIGH',     status: 'OPEN',          details: '5 consecutive failed login attempts from IP 196.13.47.23 within 3 minutes. Account temporarily locked.', ip_address: '196.13.47.23',  user_agent: 'Mozilla/5.0 (Android)',              created_at: NOW_CP - 12 * 3600 * 1000 },
-        { id: 'si-002', tenant_id: 'tenant-101', type: 'SUSPICIOUS_LOCATION', severity: 'MEDIUM',   status: 'INVESTIGATING', details: 'Login detected from London, UK (IP 82.132.45.100). Tenant registered in Dar es Salaam, Tanzania.',      ip_address: '82.132.45.100', user_agent: 'Chrome/126 Safari/537.36',           created_at: NOW_CP - 2 * DAY_CP },
-        { id: 'si-003', tenant_id: 'tenant-102', type: 'CONCURRENT_SESSIONS', severity: 'MEDIUM',   status: 'RESOLVED',      details: 'User usr-grace opened 3 simultaneous sessions from different devices. Session limit = 2.',              ip_address: '41.73.45.101',  user_agent: 'Firefox/127',                        created_at: NOW_CP - 5 * DAY_CP },
-        { id: 'si-004', tenant_id: 'tenant-106', type: 'API_ABUSE',           severity: 'CRITICAL', status: 'OPEN',          details: 'API key made 1,240 requests in 60 seconds. Rate limit exceeded 12x.',                                   ip_address: '154.72.190.55', user_agent: 'Python-urllib/3.12',                 created_at: NOW_CP - 6 * 3600 * 1000 },
-        { id: 'si-005', tenant_id: 'tenant-104', type: 'TOKEN_ABUSE',         severity: 'HIGH',     status: 'DISMISSED',     details: 'Refresh token reuse detected. Same token presented from 2 IPs within 30 seconds.',                      ip_address: '197.250.4.99',  user_agent: 'OkHttp/4.12',                        created_at: NOW_CP - 3 * DAY_CP },
-        { id: 'si-006', tenant_id: 'tenant-101', type: 'RATE_LIMIT',          severity: 'LOW',      status: 'RESOLVED',      details: 'Bulk product import script exceeded 200 API calls/min for 5 minutes. Throttled automatically.',         ip_address: '197.250.4.15',  user_agent: 'DukaPos-Import-Script/v2.4',         created_at: NOW_CP - 8 * DAY_CP },
-        { id: 'si-007', tenant_id: 'tenant-105', type: 'LOCKED_ACCOUNT',      severity: 'MEDIUM',   status: 'OPEN',          details: 'Account locked after 10 PIN failures on mobile POS app. Manual unlock required.',                       ip_address: '154.67.29.210', user_agent: 'DukaPos-Mobile/v3.1 Android',        created_at: NOW_CP - 1 * DAY_CP },
-      ]);
-      console.log('[DukaPos] Control Plane incremental seed applied (backups, notifications, security incidents).');
-    }
+    // ── Incremental Control Plane Seed — REMOVED (production environment) ───
     // ────────────────────────────────────────────────────────────────────────
 
     // ── Incremental Subscription Plans Seed ─────────────────────────────────
@@ -2613,854 +2969,141 @@ export async function seedDatabase() {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    if (localStorage.getItem('DUKAPOS_PRODUCTION_LOCKED') === 'true' || tenantCount > 0) {
-      isSeedingInProgress = false;
-      return;
-    }
-
-    console.log('Clearing database for fresh production initialization...');
-    await db.products.clear();
-    await db.productVariants.clear();
-    await db.customers.clear();
-    await db.orders.clear();
-    await db.tenants.clear();
-    await db.branches.clear();
-    await db.industries.clear();
-    await db.tenantIndustries.clear();
-    await db.users.clear();
-    await db.userBranchRoles.clear();
-    await db.stockLedger.clear();
-    await db.stockBalance.clear();
-    await db.tenantModules.clear();
-    await db.tenantSettings.clear();
-    await db.featureFlags.clear();
-    await db.auditLogs.clear();
-
-    const NOW = Date.now();
-    const DAY = 86400000;
-
-    await db.industries.bulkPut([
-      { id: 'ind-retail', name: 'Retail', schema_preset: { features: ['inventory', 'pos', 'customers'] } },
-      { id: 'ind-pharmacy', name: 'Pharmacy', schema_preset: { features: ['inventory', 'pos', 'customers', 'expiry_check'] } },
-      { id: 'ind-restaurant', name: 'Restaurant', schema_preset: { features: ['pos', 'tables', 'kitchen'] } },
-      { id: 'ind-sacco', name: 'SACCO', schema_preset: { features: ['savings', 'loans', 'shares'] } },
-      { id: 'ind-bar', name: 'Bar', schema_preset: { features: ['counter_pos', 'open_tabs', 'pour_tracking', 'excise_duty', 'empty_bottles', 'happy_hour'] } },
-      { id: 'ind-consulting', name: 'BusinessConsultant', schema_preset: { features: ['client_management', 'project_management', 'contracts', 'invoicing', 'assessments', 'strategy', 'ai_consultant'] } }
-    ]);
-
-    await db.tenantIndustries.bulkPut([
-      { tenant_id: 'tenant-101', industry_id: 'ind-retail' },
-      { tenant_id: 'tenant-101', industry_id: 'ind-pharmacy' },
-      { tenant_id: 'tenant-101', industry_id: 'ind-restaurant' },
-      { tenant_id: 'tenant-102', industry_id: 'ind-pharmacy' },
-      { tenant_id: 'tenant-106', industry_id: 'ind-bar' }
-    ]);
-
-    await db.branches.bulkPut([
-      { id: 'branch-dar-hq', tenant_id: 'tenant-101', name: 'Dar es Salaam HQ Branch', location: 'Posta, Dar es Salaam', is_headquarters: true },
-      { id: 'branch-arusha-depot', tenant_id: 'tenant-101', name: 'Arusha Retail Branch', location: 'Njiro, Arusha', is_headquarters: false },
-      { id: 'branch-london-office', tenant_id: 'tenant-101', name: 'London Restaurant Branch', location: 'London, UK', is_headquarters: false },
-      { id: 'branch-pharm-main', tenant_id: 'tenant-102', name: 'Pharmacy Main Branch', location: 'Arusha Town', is_headquarters: true },
-      { id: 'branch-bongo-main', tenant_id: 'tenant-106', name: 'Bongo Lounge — Msasani', location: 'Slipway Road, Msasani, Dar es Salaam', is_headquarters: true }
-    ]);
-
-    await db.users.bulkPut([
-      { id: 'usr-superadmin', email: 'admin@dukapos.com', password_hash: 'admin123', is_super_admin: true, name: 'System Platform Owner', phone: '+255799999999' },
-      { id: 'usr-owner', email: 'owner@dukapos.com', password_hash: 'owner123', is_super_admin: false, name: 'Juma Ally', phone: '+255712345678' },
-      { id: 'usr-cashier', email: 'cashier@dukapos.com', password_hash: 'cashier123', is_super_admin: false, name: 'Amani Tumaini', phone: '+255711223344' },
-      { id: 'usr-grace', email: 'grace@dukapos.com', password_hash: 'grace123', is_super_admin: false, name: 'Grace Mboya', phone: '+255755443322' }
-    ]);
-
-    await db.userBranchRoles.bulkPut([
-      { id: 'ubr-1', user_id: 'usr-owner', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', industry_id: 'ind-retail', role_id: 'Business Owner' },
-      { id: 'ubr-2', user_id: 'usr-owner', tenant_id: 'tenant-101', branch_id: 'branch-arusha-depot', industry_id: 'ind-pharmacy', role_id: 'Branch Manager' },
-      { id: 'ubr-3', user_id: 'usr-owner', tenant_id: 'tenant-101', branch_id: 'branch-london-office', industry_id: 'ind-restaurant', role_id: 'Business Owner' },
-      { id: 'ubr-4', user_id: 'usr-cashier', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', industry_id: 'ind-retail', role_id: 'Cashier' },
-      { id: 'ubr-5', user_id: 'usr-grace', tenant_id: 'tenant-102', branch_id: 'branch-pharm-main', industry_id: 'ind-pharmacy', role_id: 'Business Owner' },
-      { id: 'ubr-6', user_id: 'usr-owner', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', industry_id: 'ind-bar', role_id: 'Business Owner' },
-      { id: 'ubr-7', user_id: 'usr-cashier', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', industry_id: 'ind-bar', role_id: 'Cashier' }
-    ]);
-
-    // Seed Tenant Modules (module activation per tenant)
-    await db.tenantModules.bulkPut([
-      // Acme — Retail + Pharmacy + Restaurant active
-      { id: 'tm-101-retail', tenant_id: 'tenant-101', module_key: 'Retail', enabled: true, configuration: { pos: true, inventory: true, customers: true, variants: true }, installed_at: NOW - 120 * DAY },
-      { id: 'tm-101-pharm', tenant_id: 'tenant-101', module_key: 'Pharmacy', enabled: true, configuration: { expiry_check: true, prescriptions: false }, installed_at: NOW - 100 * DAY },
-      { id: 'tm-101-rest', tenant_id: 'tenant-101', module_key: 'Restaurant', enabled: true, configuration: { tables: true, kitchen_display: true }, installed_at: NOW - 80 * DAY },
-      { id: 'tm-101-work', tenant_id: 'tenant-101', module_key: 'Workforce', enabled: false, configuration: {}, installed_at: NOW - 50 * DAY },
-      // Arusha Chemist
-      { id: 'tm-102-pharm', tenant_id: 'tenant-102', module_key: 'Pharmacy', enabled: true, configuration: { expiry_check: true, prescriptions: true }, installed_at: NOW - 90 * DAY },
-      // Mwanza Hotel
-      { id: 'tm-104-hotel', tenant_id: 'tenant-104', module_key: 'Hotel', enabled: true, configuration: { reservations: true, housekeeping: true }, installed_at: NOW - 10 * DAY },
-      // Bongo Lounge
-      { id: 'tm-106-bar', tenant_id: 'tenant-106', module_key: 'Bar', enabled: true, configuration: { open_tabs: true, counter_pos: true, pour_tracking: true, happy_hour: true, excise_duty: true }, installed_at: NOW - 45 * DAY }
-    ]);
-
-    // Seed Tenant Settings
-    await db.tenantSettings.bulkPut([
-      { id: 'ts-101-curr', tenant_id: 'tenant-101', setting_key: 'currency', setting_value: 'TZS' },
-      { id: 'ts-101-tax', tenant_id: 'tenant-101', setting_key: 'tax_enabled', setting_value: true },
-      { id: 'ts-101-tz', tenant_id: 'tenant-101', setting_key: 'timezone', setting_value: 'Africa/Dar_es_Salaam' },
-      { id: 'ts-101-rcpt', tenant_id: 'tenant-101', setting_key: 'receipt_footer', setting_value: 'Thank you for shopping with Acme!' },
-      { id: 'ts-102-curr', tenant_id: 'tenant-102', setting_key: 'currency', setting_value: 'TZS' },
-      { id: 'ts-102-tax', tenant_id: 'tenant-102', setting_key: 'tax_enabled', setting_value: false },
-      { id: 'ts-104-curr', tenant_id: 'tenant-104', setting_key: 'currency', setting_value: 'TZS' },
-      { id: 'ts-106-curr', tenant_id: 'tenant-106', setting_key: 'currency', setting_value: 'TZS' },
-      { id: 'ts-106-tax', tenant_id: 'tenant-106', setting_key: 'tax_enabled', setting_value: true },
-      { id: 'ts-106-tz', tenant_id: 'tenant-106', setting_key: 'timezone', setting_value: 'Africa/Dar_es_Salaam' }
-    ]);
-
-    // Seed Feature Flags per tenant
-    await db.featureFlags.bulkPut([
-      // Acme Enterprise — all features
-      { id: 'ff-101-mb', tenant_id: 'tenant-101', feature_key: 'multi_branch', enabled: true },
-      { id: 'ff-101-ai', tenant_id: 'tenant-101', feature_key: 'ai_assistant', enabled: true },
-      { id: 'ff-101-ar', tenant_id: 'tenant-101', feature_key: 'advanced_reports', enabled: true },
-      { id: 'ff-101-acc', tenant_id: 'tenant-101', feature_key: 'accounting', enabled: true },
-      { id: 'ff-101-api', tenant_id: 'tenant-101', feature_key: 'api_access', enabled: true },
-      // Arusha Chemist Professional
-      { id: 'ff-102-mb', tenant_id: 'tenant-102', feature_key: 'multi_branch', enabled: true },
-      { id: 'ff-102-ai', tenant_id: 'tenant-102', feature_key: 'ai_assistant', enabled: false },
-      { id: 'ff-102-ar', tenant_id: 'tenant-102', feature_key: 'advanced_reports', enabled: true },
-      { id: 'ff-102-acc', tenant_id: 'tenant-102', feature_key: 'accounting', enabled: false },
-      { id: 'ff-102-api', tenant_id: 'tenant-102', feature_key: 'api_access', enabled: false },
-      // Dodoma Basic
-      { id: 'ff-103-mb', tenant_id: 'tenant-103', feature_key: 'multi_branch', enabled: false },
-      { id: 'ff-103-ai', tenant_id: 'tenant-103', feature_key: 'ai_assistant', enabled: false },
-      { id: 'ff-103-ar', tenant_id: 'tenant-103', feature_key: 'advanced_reports', enabled: false },
-      // Mwanza Hotel Trial
-      { id: 'ff-104-mb', tenant_id: 'tenant-104', feature_key: 'multi_branch', enabled: false },
-      { id: 'ff-104-ai', tenant_id: 'tenant-104', feature_key: 'ai_assistant', enabled: true },
-      { id: 'ff-104-ar', tenant_id: 'tenant-104', feature_key: 'advanced_reports', enabled: false },
-      // Bongo Liqueur Lounge — Bar & Nightclub (Professional Plan)
-      { id: 'ff-106-mb', tenant_id: 'tenant-106', feature_key: 'multi_branch', enabled: true },
-      { id: 'ff-106-ai', tenant_id: 'tenant-106', feature_key: 'ai_assistant', enabled: false },
-      { id: 'ff-106-ar', tenant_id: 'tenant-106', feature_key: 'advanced_reports', enabled: true },
-      { id: 'ff-106-pt', tenant_id: 'tenant-106', feature_key: 'pour_tracking', enabled: true },
-      { id: 'ff-106-ex', tenant_id: 'tenant-106', feature_key: 'excise_duty', enabled: true },
-      { id: 'ff-106-hh', tenant_id: 'tenant-106', feature_key: 'happy_hour', enabled: true },
-    ]);
-
-    // Seed Audit Logs
-    await db.auditLogs.bulkPut([
-      { id: 'al-001', tenant_id: 'tenant-101', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TENANT_CREATED', entity: 'tenant', entity_id: 'tenant-101', created_at: NOW - 120 * DAY },
-      { id: 'al-002', tenant_id: 'tenant-101', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'PLAN_UPGRADED', entity: 'tenant', entity_id: 'tenant-101', metadata: { from: 'Professional', to: 'Enterprise' }, created_at: NOW - 80 * DAY },
-      { id: 'al-003', tenant_id: 'tenant-101', user_id: 'usr-owner', user_name: 'Juma Ally', action: 'BRANCH_CREATED', entity: 'branch', entity_id: 'branch-arusha-depot', created_at: NOW - 70 * DAY },
-      { id: 'al-004', tenant_id: 'tenant-101', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'MODULE_ENABLED', entity: 'module', entity_id: 'Restaurant', created_at: NOW - 50 * DAY },
-      { id: 'al-005', tenant_id: 'tenant-102', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TENANT_CREATED', entity: 'tenant', entity_id: 'tenant-102', created_at: NOW - 90 * DAY },
-      { id: 'al-006', tenant_id: 'tenant-103', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TENANT_SUSPENDED', entity: 'tenant', entity_id: 'tenant-103', metadata: { reason: 'Non-payment' }, created_at: NOW - 30 * DAY },
-      { id: 'al-007', tenant_id: 'tenant-104', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TENANT_CREATED', entity: 'tenant', entity_id: 'tenant-104', created_at: NOW - 10 * DAY },
-      { id: 'al-008', tenant_id: 'tenant-104', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TRIAL_STARTED', entity: 'tenant', entity_id: 'tenant-104', created_at: NOW - 10 * DAY },
-      { id: 'al-009', tenant_id: 'tenant-101', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'IMPERSONATION_START', entity: 'tenant', entity_id: 'tenant-101', metadata: { duration: '12min' }, created_at: NOW - 5 * DAY },
-      { id: 'al-010', tenant_id: 'tenant-105', user_id: 'usr-superadmin', user_name: 'System Platform Owner', action: 'TENANT_REGISTERED', entity: 'tenant', entity_id: 'tenant-105', created_at: NOW - 2 * DAY },
-    ]);
-
-    const tenant_id = 'tenant-101';
-    const branch_id = 'branch-dar-hq';
-
-    // Seed Products/Services with stock=0 initially (ledger will populate it)
-    const seedProducts: Product[] = [];
-    await db.products.bulkPut(seedProducts);
-
-    // Seed child variants for product ret-1 (Premium Rice 5kg) with stock=0 initially
-    const seedVariants: ProductVariant[] = [];
-    await db.productVariants.bulkPut(seedVariants);
-
-    // Seed Customers
-    const seedCustomers: Customer[] = [
-      { id: 'cust-1', name: 'Sarah Joseph', phone: '+255711998877', email: 'sarah@gmail.com', loyaltyPoints: 340, outstandingBalance: 0, creditLimit: 500000, tenant_id, branch_id, type: 'Customer' },
-      { id: 'cust-2', name: 'David Mlaki', phone: '+255755443322', email: 'david@mlaki.co.tz', loyaltyPoints: 120, outstandingBalance: 45000, creditLimit: 300000, tenant_id, branch_id, type: 'Customer' },
-      { id: 'cust-3', name: 'Mwajuma Shabani', phone: '+255788112233', email: 'mwajuma@vicoba.or.tz', loyaltyPoints: 850, outstandingBalance: 1250000, creditLimit: 2000000, tenant_id, branch_id, type: 'Customer' }
-    ];
-
-    await db.customers.bulkPut(seedCustomers);
-
-    // Seed Orders
-    const seedOrders: Order[] = [];
-    await db.orders.bulkPut(seedOrders);
-
-    // Seeding completed
-
-    // 7. Seed Subscription Plans
-    const plans: SubscriptionPlan[] = [
-      {
-        id: 'plan-trial',
-        name: 'Free Trial',
-        code: 'TRIAL',
-        description: '14-day full platform access trial for new business evaluation.',
-        price: 0,
-        currency: 'TZS',
-        billing_cycle: 'monthly',
-        max_users: 2,
-        max_branches: 1,
-        max_products: 100,
-        max_storage_mb: 100,
-        is_trial: true,
-        is_active: true,
-        created_at: Date.now() - 60 * 24 * 60 * 60 * 1000,
-        updated_at: Date.now()
-      },
-      {
-        id: 'plan-starter',
-        name: 'Starter Plan',
-        code: 'STARTER',
-        description: 'For small single-shop businesses looking to start digitization.',
-        price: 12000,
-        currency: 'TZS',
-        billing_cycle: 'monthly',
-        max_users: 3,
-        max_branches: 1,
-        max_products: 1000,
-        max_storage_mb: 500,
-        is_trial: false,
-        is_active: true,
-        created_at: Date.now() - 60 * 24 * 60 * 60 * 1000,
-        updated_at: Date.now()
-      },
-      {
-        id: 'plan-business',
-        name: 'Business Plan',
-        code: 'BUSINESS',
-        description: 'Perfect for retail stores with multiple branches and staff teams.',
-        price: 16000,
-        currency: 'TZS',
-        billing_cycle: 'monthly',
-        max_users: 10,
-        max_branches: 5,
-        max_products: 50000,
-        max_storage_mb: 2000,
-        is_trial: false,
-        is_active: true,
-        created_at: Date.now() - 60 * 24 * 60 * 60 * 1000,
-        updated_at: Date.now()
-      },
-      {
-        id: 'plan-enterprise',
-        name: 'Enterprise Plan',
-        code: 'ENTERPRISE',
-        description: 'Custom setups, infinite scale, and offline micro-service sync.',
-        price: 30000,
-        currency: 'TZS',
-        billing_cycle: 'monthly',
-        max_users: 9999,
-        max_branches: 9999,
-        max_products: 999999,
-        max_storage_mb: 50000,
-        is_trial: false,
-        is_active: true,
-        created_at: Date.now() - 60 * 24 * 60 * 60 * 1000,
-        updated_at: Date.now()
-      }
-    ];
-    await db.subscriptionPlans.bulkPut(plans);
-
-    // 8. Seed Tenant Subscription
-    const defaultSub: TenantSubscription = {
-      id: 'sub-tenant-1',
-      tenant_id,
-      plan_id: 'plan-business',
-      status: 'ACTIVE',
-      start_date: Date.now() - 15 * 24 * 60 * 60 * 1000,
-      end_date: Date.now() + 15 * 24 * 60 * 60 * 1000,
-      auto_renew: true,
-      created_at: Date.now() - 15 * 24 * 60 * 60 * 1000,
-      updated_at: Date.now()
-    };
-    await db.tenantSubscriptions.put(defaultSub);
-
-    // 9. Seed Invoices & Payments
-    const seedInvoices: Invoice[] = [
-      {
-        id: 'inv-1',
-        tenant_id,
-        invoice_number: 'DKP-2026-000145',
-        amount: 60000,
-        tax: 9600,
-        total: 69600,
-        status: 'PAID',
-        due_date: Date.now() - 15 * 24 * 60 * 60 * 1000,
-        created_at: Date.now() - 15 * 24 * 60 * 60 * 1000
-      },
-      {
-        id: 'inv-2',
-        tenant_id,
-        invoice_number: 'DKP-2026-000212',
-        amount: 60000,
-        tax: 9600,
-        total: 69600,
-        status: 'UNPAID',
-        due_date: Date.now() + 15 * 24 * 60 * 60 * 1000,
-        created_at: Date.now()
-      }
-    ];
-    await db.invoices.bulkPut(seedInvoices);
-
-    const seedPayments: Payment[] = [
-      {
-        id: 'pay-1',
-        tenant_id,
-        subscription_id: 'sub-tenant-1',
-        provider: 'M-PESA',
-        transaction_reference: 'MPESA-TXN-9812A',
-        amount: 69600,
-        currency: 'TZS',
-        status: 'COMPLETED',
-        paid_at: Date.now() - 15 * 24 * 60 * 60 * 1000
-      }
-    ];
-    await db.payments.bulkPut(seedPayments);
-
-    // 10. Seed Feature Registry (all system capabilities)
-    const seedFeatures: Feature[] = [
-      { id: 'feat-pos-basic', code: 'POS_BASIC', name: 'Point of Sale (Basic)', module: 'POS', description: 'Basic sales, receipts, and payment processing.', created_at: NOW },
-      { id: 'feat-pos-offline', code: 'POS_OFFLINE', name: 'Offline POS Mode', module: 'POS', description: 'Full POS operation without internet connection.', created_at: NOW },
-      { id: 'feat-inventory', code: 'INVENTORY', name: 'Inventory Management', module: 'Inventory', description: 'Product catalog, stock levels, and adjustments.', created_at: NOW },
-      { id: 'feat-variants', code: 'PRODUCT_VARIANTS', name: 'Product Variants', module: 'Inventory', description: 'Variant-first product architecture (size, color, etc.).', created_at: NOW },
-      { id: 'feat-customers', code: 'CUSTOMERS', name: 'Customer Management', module: 'Customers', description: 'Customer profiles, loyalty points, and credit tracking.', created_at: NOW },
-      { id: 'feat-reports-basic', code: 'REPORTS_BASIC', name: 'Basic Reports', module: 'Reports', description: 'Daily sales, profit and inventory summaries.', created_at: NOW },
-      { id: 'feat-reports-adv', code: 'ADVANCED_REPORTS', name: 'Advanced Analytics', module: 'Reports', description: 'Trend charts, export, and variant analytics.', created_at: NOW },
-      { id: 'feat-multi-branch', code: 'MULTI_BRANCH', name: 'Multi-Branch Management', module: 'Operations', description: 'Operate multiple branches with stock transfers.', created_at: NOW },
-      { id: 'feat-accounting', code: 'ACCOUNTING', name: 'Accounting Module', module: 'Finance', description: 'P&L, expense tracking, and chart of accounts.', created_at: NOW },
-      { id: 'feat-ai', code: 'AI_ASSISTANT', name: 'AI Business Assistant', module: 'AI', description: 'AI-powered insights, forecasting, and recommendations.', created_at: NOW },
-      { id: 'feat-api', code: 'API_ACCESS', name: 'API Access', module: 'Integration', description: 'REST API access for third-party integrations.', created_at: NOW },
-      { id: 'feat-custom-modules', code: 'CUSTOM_MODULES', name: 'Custom Module Builder', module: 'Platform', description: 'Build and install custom industry modules.', created_at: NOW },
-      { id: 'feat-sync', code: 'CLOUD_SYNC', name: 'Cloud Sync & Backup', module: 'Platform', description: 'Automatic real-time cloud synchronization.', created_at: NOW },
-      { id: 'feat-multi-user', code: 'MULTI_USER', name: 'Multi-User Access', module: 'Access', description: 'Multiple user accounts with role-based permissions.', created_at: NOW },
-    ];
-    await db.features.bulkPut(seedFeatures);
-
-    // 11. Seed Plan-Feature Entitlements
-    const seedPlanFeatures: PlanFeature[] = [
-      // Starter Plan features
-      { id: 'pf-s-pos', plan_id: 'plan-starter', feature_id: 'feat-pos-basic', enabled: true, created_at: NOW },
-      { id: 'pf-s-offline', plan_id: 'plan-starter', feature_id: 'feat-pos-offline', enabled: true, created_at: NOW },
-      { id: 'pf-s-inv', plan_id: 'plan-starter', feature_id: 'feat-inventory', enabled: true, max_products: 1000, created_at: NOW },
-      { id: 'pf-s-var', plan_id: 'plan-starter', feature_id: 'feat-variants', enabled: true, created_at: NOW },
-      { id: 'pf-s-cust', plan_id: 'plan-starter', feature_id: 'feat-customers', enabled: true, created_at: NOW },
-      { id: 'pf-s-rep', plan_id: 'plan-starter', feature_id: 'feat-reports-basic', enabled: true, created_at: NOW },
-      { id: 'pf-s-repAdv', plan_id: 'plan-starter', feature_id: 'feat-reports-adv', enabled: false, created_at: NOW },
-      { id: 'pf-s-mb', plan_id: 'plan-starter', feature_id: 'feat-multi-branch', enabled: false, max_branches: 1, created_at: NOW },
-      { id: 'pf-s-acc', plan_id: 'plan-starter', feature_id: 'feat-accounting', enabled: false, created_at: NOW },
-      { id: 'pf-s-ai', plan_id: 'plan-starter', feature_id: 'feat-ai', enabled: false, created_at: NOW },
-      { id: 'pf-s-api', plan_id: 'plan-starter', feature_id: 'feat-api', enabled: false, created_at: NOW },
-      { id: 'pf-s-sync', plan_id: 'plan-starter', feature_id: 'feat-sync', enabled: true, created_at: NOW },
-      { id: 'pf-s-mu', plan_id: 'plan-starter', feature_id: 'feat-multi-user', enabled: true, max_users: 3, created_at: NOW },
-      // Business Plan features
-      { id: 'pf-b-pos', plan_id: 'plan-business', feature_id: 'feat-pos-basic', enabled: true, created_at: NOW },
-      { id: 'pf-b-offline', plan_id: 'plan-business', feature_id: 'feat-pos-offline', enabled: true, created_at: NOW },
-      { id: 'pf-b-inv', plan_id: 'plan-business', feature_id: 'feat-inventory', enabled: true, max_products: 50000, created_at: NOW },
-      { id: 'pf-b-var', plan_id: 'plan-business', feature_id: 'feat-variants', enabled: true, created_at: NOW },
-      { id: 'pf-b-cust', plan_id: 'plan-business', feature_id: 'feat-customers', enabled: true, created_at: NOW },
-      { id: 'pf-b-rep', plan_id: 'plan-business', feature_id: 'feat-reports-basic', enabled: true, created_at: NOW },
-      { id: 'pf-b-repAdv', plan_id: 'plan-business', feature_id: 'feat-reports-adv', enabled: true, created_at: NOW },
-      { id: 'pf-b-mb', plan_id: 'plan-business', feature_id: 'feat-multi-branch', enabled: true, max_branches: 5, created_at: NOW },
-      { id: 'pf-b-acc', plan_id: 'plan-business', feature_id: 'feat-accounting', enabled: true, created_at: NOW },
-      { id: 'pf-b-ai', plan_id: 'plan-business', feature_id: 'feat-ai', enabled: false, created_at: NOW },
-      { id: 'pf-b-api', plan_id: 'plan-business', feature_id: 'feat-api', enabled: false, created_at: NOW },
-      { id: 'pf-b-sync', plan_id: 'plan-business', feature_id: 'feat-sync', enabled: true, created_at: NOW },
-      { id: 'pf-b-mu', plan_id: 'plan-business', feature_id: 'feat-multi-user', enabled: true, max_users: 10, created_at: NOW },
-      // Enterprise Plan features (all enabled, unlimited)
-      { id: 'pf-e-pos', plan_id: 'plan-enterprise', feature_id: 'feat-pos-basic', enabled: true, created_at: NOW },
-      { id: 'pf-e-offline', plan_id: 'plan-enterprise', feature_id: 'feat-pos-offline', enabled: true, created_at: NOW },
-      { id: 'pf-e-inv', plan_id: 'plan-enterprise', feature_id: 'feat-inventory', enabled: true, max_products: 999999, created_at: NOW },
-      { id: 'pf-e-var', plan_id: 'plan-enterprise', feature_id: 'feat-variants', enabled: true, created_at: NOW },
-      { id: 'pf-e-cust', plan_id: 'plan-enterprise', feature_id: 'feat-customers', enabled: true, created_at: NOW },
-      { id: 'pf-e-rep', plan_id: 'plan-enterprise', feature_id: 'feat-reports-basic', enabled: true, created_at: NOW },
-      { id: 'pf-e-repAdv', plan_id: 'plan-enterprise', feature_id: 'feat-reports-adv', enabled: true, created_at: NOW },
-      { id: 'pf-e-mb', plan_id: 'plan-enterprise', feature_id: 'feat-multi-branch', enabled: true, max_branches: 9999, created_at: NOW },
-      { id: 'pf-e-acc', plan_id: 'plan-enterprise', feature_id: 'feat-accounting', enabled: true, created_at: NOW },
-      { id: 'pf-e-ai', plan_id: 'plan-enterprise', feature_id: 'feat-ai', enabled: true, created_at: NOW },
-      { id: 'pf-e-api', plan_id: 'plan-enterprise', feature_id: 'feat-api', enabled: true, created_at: NOW },
-      { id: 'pf-e-cm', plan_id: 'plan-enterprise', feature_id: 'feat-custom-modules', enabled: true, created_at: NOW },
-      { id: 'pf-e-sync', plan_id: 'plan-enterprise', feature_id: 'feat-sync', enabled: true, created_at: NOW },
-      { id: 'pf-e-mu', plan_id: 'plan-enterprise', feature_id: 'feat-multi-user', enabled: true, max_users: 9999, created_at: NOW },
-    ];
-    await db.planFeatures.bulkPut(seedPlanFeatures);
-
-    // 12. Seed Subscription Usage (live metrics for tenant-101)
-    await db.subscriptionUsage.put({
-      id: 'usage-tenant-101',
-      tenant_id: 'tenant-101',
-      products_used: 16,    // seeded product count
-      users_used: 4,        // seeded user count
-      branches_used: 3,     // branches for tenant-101
-      storage_used_mb: 128,
-      updated_at: NOW
-    });
-
-    // 13. Seed Coupons
-    const seedCoupons: Coupon[] = [
-      {
-        id: 'coupon-1', code: 'DUKAPOS20', description: '20% off any monthly renewal',
-        discount_percent: 20, valid_from: NOW - 30 * DAY, valid_until: NOW + 180 * DAY,
-        max_uses: 0, times_used: 45, applicable_plans: [], is_active: true, created_at: NOW - 30 * DAY
-      },
-      {
-        id: 'coupon-2', code: 'KARIBU50', description: '50% welcome discount for first billing month',
-        discount_percent: 50, valid_from: NOW - 60 * DAY, valid_until: NOW + 90 * DAY,
-        max_uses: 100, times_used: 12, applicable_plans: ['STARTER', 'BUSINESS'], is_active: true, created_at: NOW - 60 * DAY
-      },
-      {
-        id: 'coupon-3', code: 'ENTERPRISE30', description: '30% off Enterprise plan (partner deal)',
-        discount_percent: 30, valid_from: NOW - 10 * DAY, valid_until: NOW + 60 * DAY,
-        max_uses: 10, times_used: 2, applicable_plans: ['ENTERPRISE'], is_active: true, created_at: NOW - 10 * DAY
-      },
-      {
-        id: 'coupon-4', code: 'EXPIRED10', description: '10% off — expired promo',
-        discount_percent: 10, valid_from: NOW - 120 * DAY, valid_until: NOW - 30 * DAY,
-        max_uses: 50, times_used: 50, applicable_plans: [], is_active: false, created_at: NOW - 120 * DAY
-      },
-    ];
-    await db.coupons.bulkPut(seedCoupons);
-
-    // 14. Seed Initial Subscription Events audit trail
-    const seedSubEvents: SubscriptionEvent[] = [
-      {
-        id: 'sev-1', tenant_id: 'tenant-101', event_type: 'TRIAL_STARTED',
-        old_value: { status: 'REGISTERED' }, new_value: { status: 'TRIAL', plan: 'STARTER' },
-        performed_by: 'System', created_at: NOW - 30 * DAY
-      },
-      {
-        id: 'sev-2', tenant_id: 'tenant-101', event_type: 'PLAN_UPGRADED',
-        old_value: { plan: 'STARTER', status: 'TRIAL' }, new_value: { plan: 'BUSINESS', status: 'ACTIVE' },
-        performed_by: 'Juma Ally', created_at: NOW - 15 * DAY
-      },
-      {
-        id: 'sev-3', tenant_id: 'tenant-101', event_type: 'PAYMENT_RECEIVED',
-        old_value: { invoice: 'DKP-2026-000145', status: 'UNPAID' },
-        new_value: { invoice: 'DKP-2026-000145', status: 'PAID', amount: 69600, provider: 'M-PESA' },
-        performed_by: 'Juma Ally', created_at: NOW - 15 * DAY
-      },
-      {
-        id: 'sev-4', tenant_id: 'tenant-101', event_type: 'COUPON_APPLIED',
-        old_value: { coupon: null }, new_value: { coupon: 'KARIBU50', discount: 50 },
-        performed_by: 'Juma Ally', created_at: NOW - 15 * DAY
-      },
-    ];
-    await db.subscriptionEvents.bulkPut(seedSubEvents);
-
-    // 15. Seed Permissions (dynamic & module-driven)
-    const seedPermissions: Permission[] = [
-      // Core module: Sales
-      { id: 'perm-sales-create', module: 'Sales', resource: 'sale', action: 'create', slug: 'sales.create', description: 'Create new POS invoices & orders' },
-      { id: 'perm-sales-refund', module: 'Sales', resource: 'sale', action: 'refund', slug: 'sales.refund', description: 'Process customer product returns & refunds' },
-      { id: 'perm-sales-void', module: 'Sales', resource: 'sale', action: 'void', slug: 'sales.void', description: 'Void or cancel active/past transactions' },
-      // Core module: Inventory
-      { id: 'perm-inv-create', module: 'Inventory', resource: 'product', action: 'create', slug: 'inventory.product.create', description: 'Create and update core products and variants' },
-      { id: 'perm-inv-adjust', module: 'Inventory', resource: 'stock', action: 'adjust', slug: 'inventory.stock.adjust', description: 'Authorize stock level additions/deductions' },
-      { id: 'perm-inv-transfer', module: 'Inventory', resource: 'stock', action: 'transfer', slug: 'inventory.stock.transfer', description: 'Initiate stock movement between branches' },
-      // Core module: Purchasing
-      { id: 'perm-pur-create', module: 'Purchasing', resource: 'purchase', action: 'create', slug: 'purchase.create', description: 'Initiate supplier purchase orders' },
-      { id: 'perm-pur-manage', module: 'Purchasing', resource: 'supplier', action: 'manage', slug: 'supplier.manage', description: 'Manage supplier ledgers & details' },
-      // Core module: Finance
-      { id: 'perm-fin-expense', module: 'Finance', resource: 'expense', action: 'manage', slug: 'expense.manage', description: 'Log operational costs and permits' },
-      { id: 'perm-fin-payment', module: 'Finance', resource: 'payment', action: 'manage', slug: 'payment.manage', description: 'Record general payments & accounts' },
-      { id: 'perm-fin-reports', module: 'Finance', resource: 'financial_reports', action: 'view', slug: 'financial_reports.view', description: 'Access profit/loss and ledger data' },
-      // Core module: Reports
-      { id: 'perm-rep-view', module: 'Reports', resource: 'reports', action: 'view', slug: 'reports.view', description: 'Access global analytics and forecasts' },
-      { id: 'perm-rep-branch', module: 'Reports', resource: 'reports', action: 'branch', slug: 'reports.branch', description: 'Access single-branch localized sales reports' },
-      // Core module: Settings & RBAC
-      { id: 'perm-set-users', module: 'Access', resource: 'users', action: 'manage', slug: 'users.manage', description: 'Invite, suspend, and configure system users' },
-      { id: 'perm-set-roles', module: 'Access', resource: 'roles', action: 'manage', slug: 'roles.manage', description: 'Build and customize tenant role capability maps' },
-      { id: 'perm-set-branches', module: 'Access', resource: 'branches', action: 'manage', slug: 'branches.manage', description: 'Add and configure business locations' },
-      { id: 'perm-set-config', module: 'Access', resource: 'settings', action: 'manage', slug: 'settings.manage', description: 'Modify SaaS configurations and printer routing' },
-      // Platform Administrator Scope (Super Admin only)
-      { id: 'perm-plat-tenants', module: 'Platform', resource: 'tenant', action: 'manage', slug: 'tenant.manage', description: 'Manage platform business workspaces' },
-      { id: 'perm-plat-billing', module: 'Platform', resource: 'billing', action: 'manage', slug: 'billing.manage', description: 'Oversee subscriber invoicing and cycles' },
-      { id: 'perm-plat-subs', module: 'Platform', resource: 'subscription', action: 'manage', slug: 'subscription.manage', description: 'Update plan levels and offline grace rules' },
-      { id: 'perm-plat-flags', module: 'Platform', resource: 'feature_flag', action: 'manage', slug: 'feature_flag.manage', description: 'Activate system features per subscriber' },
-      { id: 'perm-plat-logs', module: 'Platform', resource: 'system', action: 'logs.view', slug: 'system.logs.view', description: 'View system-level logs and diagnostics' },
-
-      // Business Profile Module
-      { id: 'perm-bp-view', module: 'BusinessProfile', resource: 'profile', action: 'view', slug: 'business_profile.view', description: 'View business profile details' },
-      { id: 'perm-bp-edit', module: 'BusinessProfile', resource: 'profile', action: 'edit', slug: 'business_profile.edit', description: 'Edit business profile details' },
-      { id: 'perm-bp-docs', module: 'BusinessProfile', resource: 'profile', action: 'upload_documents', slug: 'business_profile.upload_documents', description: 'Upload compliance documents' },
-      { id: 'perm-bp-brand', module: 'BusinessProfile', resource: 'profile', action: 'manage_branding', slug: 'business_profile.manage_branding', description: 'Manage logos and themes' },
-      { id: 'perm-bp-tax', module: 'BusinessProfile', resource: 'profile', action: 'configure_taxes', slug: 'business_profile.configure_taxes', description: 'Configure tax percentages and rules' },
-      { id: 'perm-bp-bank', module: 'BusinessProfile', resource: 'profile', action: 'configure_banking', slug: 'business_profile.configure_banking', description: 'Configure bank and mobile money accounts' },
-      { id: 'perm-bp-int', module: 'BusinessProfile', resource: 'profile', action: 'configure_integrations', slug: 'business_profile.configure_integrations', description: 'Configure third-party API settings' },
-      { id: 'perm-bp-branch', module: 'BusinessProfile', resource: 'profile', action: 'manage_branches', slug: 'business_profile.manage_branches', description: 'Configure branch details' },
-      { id: 'perm-bp-audit', module: 'BusinessProfile', resource: 'profile', action: 'view_audit_history', slug: 'business_profile.view_audit_history', description: 'View business configuration changes' },
-    ];
-    await db.permissions.bulkPut(seedPermissions);
-
-    // 16. Seed Roles (System roles)
-    const systemRoles: Role[] = [
-      { id: 'role-owner', tenant_id: null, name: 'Tenant Owner', slug: 'tenant_owner', description: 'Full tenant control and licensing access.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-admin', tenant_id: null, name: 'Business Administrator', slug: 'business_administrator', description: 'Enterprise setting management and reports.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-manager', tenant_id: null, name: 'Branch Manager', slug: 'branch_manager', description: 'Oversee daily branch activities, stock, and staff.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-cashier', tenant_id: null, name: 'Cashier', slug: 'cashier', description: 'Log transactions, process invoices, print receipts.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-inventory', tenant_id: null, name: 'Inventory Officer', slug: 'inventory_officer', description: 'Adjust inventory counts and manage suppliers.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-accountant', tenant_id: null, name: 'Accountant', slug: 'accountant', description: 'Verify expenses and pull financial reports.', is_system_role: true, is_custom: false, created_at: NOW },
-      { id: 'role-auditor', tenant_id: null, name: 'Read Only Auditor', slug: 'read_only_auditor', description: 'Read-only access to profiles, reports, and settings.', is_system_role: true, is_custom: false, created_at: NOW },
-    ];
-    await db.roles.bulkPut(systemRoles);
-
-    // 17. Seed Role Permissions (Links)
-    const seedRolePermissions: RolePermission[] = [
-      // Tenant Owner gets all non-platform permissions
-      ...seedPermissions
-        .filter(p => p.module !== 'Platform')
-        .map(p => ({
-          id: `rp-owner-${p.id}`,
-          role_id: 'role-owner',
-          permission_id: p.id
-        })),
-      // Business Administrator permissions
-      { id: 'rp-admin-users', role_id: 'role-admin', permission_id: 'perm-set-users' },
-      { id: 'rp-admin-roles', role_id: 'role-admin', permission_id: 'perm-set-roles' },
-      { id: 'rp-admin-branches', role_id: 'role-admin', permission_id: 'perm-set-branches' },
-      { id: 'rp-admin-config', role_id: 'role-admin', permission_id: 'perm-set-config' },
-      { id: 'rp-admin-reports', role_id: 'role-admin', permission_id: 'perm-rep-view' },
-      { id: 'rp-admin-bp-view', role_id: 'role-admin', permission_id: 'perm-bp-view' },
-      { id: 'rp-admin-bp-edit', role_id: 'role-admin', permission_id: 'perm-bp-edit' },
-      { id: 'rp-admin-bp-docs', role_id: 'role-admin', permission_id: 'perm-bp-docs' },
-      { id: 'rp-admin-bp-brand', role_id: 'role-admin', permission_id: 'perm-bp-brand' },
-      { id: 'rp-admin-bp-tax', role_id: 'role-admin', permission_id: 'perm-bp-tax' },
-      { id: 'rp-admin-bp-int', role_id: 'role-admin', permission_id: 'perm-bp-int' },
-      { id: 'rp-admin-bp-branch', role_id: 'role-admin', permission_id: 'perm-bp-branch' },
-      // Branch Manager permissions
-      { id: 'rp-mgr-sales', role_id: 'role-manager', permission_id: 'perm-sales-create' },
-      { id: 'rp-mgr-refund', role_id: 'role-manager', permission_id: 'perm-sales-refund' },
-      { id: 'rp-mgr-void', role_id: 'role-manager', permission_id: 'perm-sales-void' },
-      { id: 'rp-mgr-inv', role_id: 'role-manager', permission_id: 'perm-inv-create' },
-      { id: 'rp-mgr-adjust', role_id: 'role-manager', permission_id: 'perm-inv-adjust' },
-      { id: 'rp-mgr-pur', role_id: 'role-manager', permission_id: 'perm-pur-create' },
-      { id: 'rp-mgr-rep', role_id: 'role-manager', permission_id: 'perm-rep-branch' },
-      { id: 'rp-mgr-bp-view', role_id: 'role-manager', permission_id: 'perm-bp-view' },
-      { id: 'rp-mgr-bp-branch', role_id: 'role-manager', permission_id: 'perm-bp-branch' },
-      // Cashier permissions
-      { id: 'rp-csh-sales', role_id: 'role-cashier', permission_id: 'perm-sales-create' },
-      { id: 'rp-csh-pay', role_id: 'role-cashier', permission_id: 'perm-fin-payment' },
-      // Inventory Officer permissions
-      { id: 'rp-inv-create', role_id: 'role-inventory', permission_id: 'perm-inv-create' },
-      { id: 'rp-inv-adjust', role_id: 'role-inventory', permission_id: 'perm-inv-adjust' },
-      { id: 'rp-inv-trans', role_id: 'role-inventory', permission_id: 'perm-inv-transfer' },
-      { id: 'rp-inv-pur', role_id: 'role-inventory', permission_id: 'perm-pur-create' },
-      { id: 'rp-inv-sup', role_id: 'role-inventory', permission_id: 'perm-pur-manage' },
-      // Accountant permissions
-      { id: 'rp-acc-exp', role_id: 'role-accountant', permission_id: 'perm-fin-expense' },
-      { id: 'rp-acc-pay', role_id: 'role-accountant', permission_id: 'perm-fin-payment' },
-      { id: 'rp-acc-rep', role_id: 'role-accountant', permission_id: 'perm-fin-reports' },
-      { id: 'rp-acc-bp-view', role_id: 'role-accountant', permission_id: 'perm-bp-view' },
-      { id: 'rp-acc-bp-tax', role_id: 'role-accountant', permission_id: 'perm-bp-tax' },
-      { id: 'rp-acc-bp-bank', role_id: 'role-accountant', permission_id: 'perm-bp-bank' },
-      // Read Only Auditor permissions
-      { id: 'rp-aud-bp-view', role_id: 'role-auditor', permission_id: 'perm-bp-view' },
-      { id: 'rp-aud-rep-view', role_id: 'role-auditor', permission_id: 'perm-rep-view' },
-      { id: 'rp-aud-fin-rep', role_id: 'role-auditor', permission_id: 'perm-fin-reports' },
-    ];
-    await db.rolePermissions.bulkPut(seedRolePermissions);
-
-    // 18. Seed Tenant Users (Tenant Membership links)
-    const seedTenantUsers: TenantUser[] = [
-      { id: 'tu-owner', tenant_id: 'tenant-101', user_id: 'usr-owner', employee_code: 'EMP-001', job_title: 'Chief Owner', department: 'Executive', status: 'Active', joined_at: NOW - 120 * DAY },
-      { id: 'tu-cashier', tenant_id: 'tenant-101', user_id: 'usr-cashier', employee_code: 'EMP-002', job_title: 'Senior POS Cashier', department: 'POS Counter', status: 'Active', joined_at: NOW - 60 * DAY },
-      { id: 'tu-grace', tenant_id: 'tenant-102', user_id: 'usr-grace', employee_code: 'EMP-003', job_title: 'Arusha Pharmacist Owner', department: 'Management', status: 'Active', joined_at: NOW - 90 * DAY }
-    ];
-    await db.tenantUsers.bulkPut(seedTenantUsers);
-
-    // 19. Seed Employee details
-    const seedEmployees: Employee[] = [
-      { id: 'emp-owner', tenant_id: 'tenant-101', user_id: 'usr-owner', employee_number: 'EMP-001', employment_date: NOW - 120 * DAY, salary_type: 'Monthly', notes: 'Founder & Owner.' },
-      { id: 'emp-cashier', tenant_id: 'tenant-101', user_id: 'usr-cashier', employee_number: 'EMP-002', employment_date: NOW - 60 * DAY, salary_type: 'Hourly', notes: 'Daily cashier shifts.' },
-      { id: 'emp-grace', tenant_id: 'tenant-102', user_id: 'usr-grace', employee_number: 'EMP-003', employment_date: NOW - 90 * DAY, salary_type: 'Monthly', notes: 'Store owner pharmacist.' }
-    ];
-    await db.employees.bulkPut(seedEmployees);
-
-    // 20. Seed User Security Credentials (PIN hashes for offline POS check)
-    // We store standard plain PIN strings as mock hashes: "1234", "5555", "9999", "0000"
-    const seedUserSecurity: UserSecurity[] = [
-      { user_id: 'usr-owner', pin_hash: '1234', failed_attempts: 0, two_factor_enabled: false },
-      { user_id: 'usr-cashier', pin_hash: '5555', failed_attempts: 0, two_factor_enabled: false },
-      { user_id: 'usr-grace', pin_hash: '9999', failed_attempts: 0, two_factor_enabled: false },
-      { user_id: 'usr-superadmin', pin_hash: '0000', failed_attempts: 0, two_factor_enabled: false }
-    ];
-    await db.userSecurity.bulkPut(seedUserSecurity);
-
-    // 21. Seed Tenant User Branch Allocations
-    const seedTenantUserBranches: TenantUserBranch[] = [
-      { id: 'tub-1', tenant_id: 'tenant-101', user_id: 'usr-owner', branch_id: 'branch-dar-hq', role_id: 'role-owner', is_primary: true, assigned_at: NOW - 120 * DAY },
-      { id: 'tub-2', tenant_id: 'tenant-101', user_id: 'usr-owner', branch_id: 'branch-arusha-depot', role_id: 'role-manager', is_primary: false, assigned_at: NOW - 90 * DAY },
-      { id: 'tub-3', tenant_id: 'tenant-101', user_id: 'usr-cashier', branch_id: 'branch-dar-hq', role_id: 'role-cashier', is_primary: true, assigned_at: NOW - 60 * DAY },
-      { id: 'tub-4', tenant_id: 'tenant-102', user_id: 'usr-grace', branch_id: 'branch-pharm-main', role_id: 'role-owner', is_primary: true, assigned_at: NOW - 90 * DAY }
-    ];
-    await db.tenantUserBranches.bulkPut(seedTenantUserBranches);
-
-    // 22. Seed Security Audit Logs
-    const seedSecurityAuditLogs: SecurityAuditLog[] = [
-      { id: 'sal-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', user_id: 'usr-owner', action: 'user.login.success', ip_address: '197.250.4.15', device_info: 'Chrome / Windows POS Terminal', app_version: 'v1.4.2', created_at: NOW - 1 * DAY },
-      { id: 'sal-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', user_id: 'usr-cashier', action: 'user.login.success', ip_address: '197.250.4.16', device_info: 'Safari / iPad Mini', app_version: 'v1.4.2', created_at: NOW - 12 * 60 * 60 * 1000 },
-      { id: 'sal-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', user_id: 'usr-owner', action: 'role.created', ip_address: '197.250.4.15', payload: { role_name: 'Restaurant Supervisor' }, created_at: NOW - 6 * 60 * 60 * 1000 }
-    ];
-    await db.securityAuditLogs.bulkPut(seedSecurityAuditLogs);
-
-    // 23. Seed Bar Tables
-    const seedBarTables: TableEntity[] = [
-      { id: 'bt-1', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'Main Area', name: 'Table 1', capacity: 4, status: 'AVAILABLE' },
-      { id: 'bt-2', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'Main Area', name: 'Table 2', capacity: 4, status: 'AVAILABLE' },
-      { id: 'bt-3', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'Main Area', name: 'Table 3', capacity: 6, status: 'AVAILABLE' },
-      { id: 'bt-4', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'Bar Counter', name: 'Counter 1', capacity: 1, status: 'AVAILABLE' },
-      { id: 'bt-5', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'Bar Counter', name: 'Counter 2', capacity: 1, status: 'AVAILABLE' },
-      { id: 'bt-6', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'VIP Lounge', name: 'VIP Table 1', capacity: 8, status: 'AVAILABLE' },
-      { id: 'bt-7', tenant_id: 'tenant-106', branch_id: 'branch-bongo-main', zone_id: 'VIP Lounge', name: 'VIP Table 2', capacity: 10, status: 'AVAILABLE' }
-    ];
-    await db.barTables.bulkPut(seedBarTables);
-
-    // 24. Seed Expenses (spread over the past 6 months in Tanzania Shillings)
-    const expensesCount = await db.expenses.count();
-    if (expensesCount === 0) {
-      const seedExpenses: Expense[] = [
-        // Jan
-        { id: 'exp-jan-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 180 * DAY).toISOString().split('T')[0], created_at: NOW - 180 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Jan', paymentMethod: 'Bank' },
-        { id: 'exp-jan-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 240000, status: 'Paid', date: new Date(NOW - 175 * DAY).toISOString().split('T')[0], created_at: NOW - 175 * DAY, created_by: 'usr-owner', description: 'Tanesco electricity tokens', paymentMethod: 'M-Pesa' },
-        { id: 'exp-jan-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 800000, status: 'Paid', date: new Date(NOW - 170 * DAY).toISOString().split('T')[0], created_at: NOW - 170 * DAY, created_by: 'usr-owner', description: 'Jan staff salaries payout', paymentMethod: 'Bank' },
-        
-        // Feb
-        { id: 'exp-feb-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 150 * DAY).toISOString().split('T')[0], created_at: NOW - 150 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Feb', paymentMethod: 'Bank' },
-        { id: 'exp-feb-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 260000, status: 'Paid', date: new Date(NOW - 145 * DAY).toISOString().split('T')[0], created_at: NOW - 145 * DAY, created_by: 'usr-owner', description: 'Electricity and Dawasco water bills', paymentMethod: 'M-Pesa' },
-        { id: 'exp-feb-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 800000, status: 'Paid', date: new Date(NOW - 140 * DAY).toISOString().split('T')[0], created_at: NOW - 140 * DAY, created_by: 'usr-owner', description: 'Feb staff salaries payout', paymentMethod: 'Bank' },
-        
-        // Mar
-        { id: 'exp-mar-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 120 * DAY).toISOString().split('T')[0], created_at: NOW - 120 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Mar', paymentMethod: 'Bank' },
-        { id: 'exp-mar-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 230000, status: 'Paid', date: new Date(NOW - 115 * DAY).toISOString().split('T')[0], created_at: NOW - 115 * DAY, created_by: 'usr-owner', description: 'Internet fiber subscription and electricity', paymentMethod: 'Cash' },
-        { id: 'exp-mar-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 800000, status: 'Paid', date: new Date(NOW - 110 * DAY).toISOString().split('T')[0], created_at: NOW - 110 * DAY, created_by: 'usr-owner', description: 'Mar staff salaries payout', paymentMethod: 'Bank' },
-        
-        // Apr
-        { id: 'exp-apr-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 90 * DAY).toISOString().split('T')[0], created_at: NOW - 90 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Apr', paymentMethod: 'Bank' },
-        { id: 'exp-apr-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 280000, status: 'Paid', date: new Date(NOW - 85 * DAY).toISOString().split('T')[0], created_at: NOW - 85 * DAY, created_by: 'usr-owner', description: 'Tanesco electricity tokens', paymentMethod: 'M-Pesa' },
-        { id: 'exp-apr-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 850000, status: 'Paid', date: new Date(NOW - 80 * DAY).toISOString().split('T')[0], created_at: NOW - 80 * DAY, created_by: 'usr-owner', description: 'Apr staff salaries payout', paymentMethod: 'Bank' },
-
-        // May
-        { id: 'exp-may-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 60 * DAY).toISOString().split('T')[0], created_at: NOW - 60 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - May', paymentMethod: 'Bank' },
-        { id: 'exp-may-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 270000, status: 'Paid', date: new Date(NOW - 55 * DAY).toISOString().split('T')[0], created_at: NOW - 55 * DAY, created_by: 'usr-owner', description: 'Utilities & Halotel office internet bundle', paymentMethod: 'M-Pesa' },
-        { id: 'exp-may-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 850000, status: 'Paid', date: new Date(NOW - 50 * DAY).toISOString().split('T')[0], created_at: NOW - 50 * DAY, created_by: 'usr-owner', description: 'May staff salaries payout', paymentMethod: 'Bank' },
-
-        // Jun
-        { id: 'exp-jun-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 30 * DAY).toISOString().split('T')[0], created_at: NOW - 30 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Jun', paymentMethod: 'Bank' },
-        { id: 'exp-jun-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 290000, status: 'Paid', date: new Date(NOW - 25 * DAY).toISOString().split('T')[0], created_at: NOW - 25 * DAY, created_by: 'usr-owner', description: 'Dawasco water bill & office refreshments', paymentMethod: 'M-Pesa' },
-        { id: 'exp-jun-3', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Salaries', amount: 850000, status: 'Paid', date: new Date(NOW - 20 * DAY).toISOString().split('T')[0], created_at: NOW - 20 * DAY, created_by: 'usr-owner', description: 'Jun staff salaries payout', paymentMethod: 'Bank' },
-        { id: 'exp-jun-4', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Other', amount: 350000, status: 'Paid', date: new Date(NOW - 15 * DAY).toISOString().split('T')[0], created_at: NOW - 15 * DAY, created_by: 'usr-owner', description: 'Office air conditioner maintenance', paymentMethod: 'Cash' },
-
-        // Jul
-        { id: 'exp-jul-1', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Rent', amount: 1500000, status: 'Paid', date: new Date(NOW - 5 * DAY).toISOString().split('T')[0], created_at: NOW - 5 * DAY, created_by: 'usr-owner', description: 'Dar headquarters office rent - Jul', paymentMethod: 'Bank' },
-        { id: 'exp-jul-2', tenant_id: 'tenant-101', branch_id: 'branch-dar-hq', category: 'Utilities', amount: 320000, status: 'Paid', date: new Date(NOW - 4 * DAY).toISOString().split('T')[0], created_at: NOW - 4 * DAY, created_by: 'usr-owner', description: 'Tanesco electricity tokens - Jul', paymentMethod: 'M-Pesa' },
-      ];
-      await db.expenses.bulkPut(seedExpenses);
-    }
-
-    // 25. Seed Default Business Profiles
-    const bpCount = await db.businessProfiles.count();
-    if (bpCount === 0) {
-      const seedProfiles: BusinessProfile[] = [
-        {
-          id: 'bp-101',
-          tenantId: 'tenant-101',
-          businessName: 'Acme Conglomerate Ltd',
-          tradingName: 'Acme Retail & Diners',
-          registrationNumber: 'BRELA-1203984',
-          tin: '123456789',
-          vatNumber: 'VRN-998877A',
-          industry: 'Retail',
-          businessType: 'Limited Company',
-          description: 'A multi-branch retail and restaurant conglomerate in East Africa.',
-          logoUrl: 'https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=100&h=100&fit=crop&q=80',
-          coverImage: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&h=200&fit=crop&q=80',
-          phone: '+255 22 211 0000',
-          email: 'hq@acme.co.tz',
-          website: 'https://www.acme.co.tz',
-          country: 'Tanzania',
-          region: 'Dar es Salaam',
-          district: 'Ilala',
-          ward: 'Kivukoni',
-          street: 'Posta Street, building 14',
-          postalAddress: 'P.O. Box 9991, Dar es Salaam',
-          latitude: -6.8163,
-          longitude: 39.2903,
-          currency: 'TZS',
-          timezone: 'Africa/Dar_es_Salaam',
-          language: 'en',
-          dateFormat: 'DD/MM/YYYY',
-          receiptHeader: 'ACME CONGLOMERATE LTD\nDar es Salaam HQ Branch\nTIN: 123-456-789\nTel: +255 22 211 0000',
-          receiptFooter: 'Thank you for shopping at Acme!\nGoods once sold are not returnable.\nPowered by DukaPos POS',
-          defaultWarehouseId: 'wh-main',
-          taxEnabled: true,
-          vatRate: 18,
-          openingTime: '08:00',
-          closingTime: '22:00',
-          ownerId: 'usr-owner',
-          subscriptionId: 'sub-tenant-101',
-          status: 'Active',
-          createdAt: NOW - 120 * DAY,
-          updatedAt: NOW - 5 * DAY,
-          deletedAt: null,
-          
-          ownerName: 'Juma Ally',
-          ownerNationalId: '19900215-11102-00001-22',
-          ownerMobileNumber: '+255 754 111 222',
-          ownerEmail: 'juma.ally@acme.co.tz',
-          ownerPosition: 'Managing Director',
-          
-          themeColor: '#4f46e5',
-          secondaryColor: '#06b6d4',
-          bankName: 'CRDB Bank Plc',
-          bankAccountName: 'ACME CONGLOMERATE LTD',
-          bankAccountNumber: '0150243984900',
-          bankSwiftCode: 'CRDBTZTZ',
-          bankBranchName: 'Holland Branch',
-          
-          mpesaMerchantCode: '500122',
-          airtelMerchantCode: '778899',
-          tigoMerchantCode: '112233',
-          
-          compliancePrivacyPolicy: 'Standard Acme GDPR & Privacy Policy.',
-          complianceTerms: 'Customer terms and payment rules.',
-          
-          integrationPrinter: 'thermal-usb',
-          integrationBarcodeScanner: 'generic-usb',
-          
-          aiPrimaryIndustry: 'Retail',
-          aiBusinessSize: 'Medium',
-          aiEmployeesCount: 15,
-          aiBranchesCount: 2,
-          aiDailySales: 450000,
-          aiPeakHours: '16:00 - 20:00'
-        },
-        {
-          id: 'bp-102',
-          tenantId: 'tenant-102',
-          businessName: 'Arusha Chemist & Pharmacy',
-          tradingName: 'Arusha Chemist',
-          registrationNumber: 'PHARM-998812',
-          tin: '987654321',
-          vatNumber: 'VRN-112233B',
-          industry: 'Pharmacy',
-          businessType: 'Sole Proprietorship',
-          description: 'Trusted retail pharmacy providing prescription medicines and health services.',
-          logoUrl: 'https://images.unsplash.com/photo-1607619056574-7b8d3ee536b2?w=100&h=100&fit=crop&q=80',
-          coverImage: 'https://images.unsplash.com/photo-1586015555751-63bb77f4322a?w=800&h=200&fit=crop&q=80',
-          phone: '+255 784 999 888',
-          email: 'info@arushachemist.com',
-          website: 'https://www.arushachemist.com',
-          country: 'Tanzania',
-          region: 'Arusha',
-          district: 'Arusha City',
-          ward: 'Sombetini',
-          street: 'Sombetini Road',
-          postalAddress: 'P.O. Box 444, Arusha',
-          latitude: -3.3731,
-          longitude: 36.6853,
-          currency: 'TZS',
-          timezone: 'Africa/Dar_es_Salaam',
-          language: 'sw',
-          dateFormat: 'DD/MM/YYYY',
-          receiptHeader: 'ARUSHA CHEMIST & PHARMACY\nArusha Main Branch\nTIN: 987-654-321\nTel: +255 784 999 888',
-          receiptFooter: 'Keep healthy, thank you for visiting!\nNo returns on medication.\nPowered by DukaPos',
-          defaultWarehouseId: 'wh-pharm',
-          taxEnabled: false,
-          vatRate: 0,
-          openingTime: '07:30',
-          closingTime: '20:30',
-          ownerId: 'usr-grace',
-          subscriptionId: 'sub-tenant-102',
-          status: 'Active',
-          createdAt: NOW - 90 * DAY,
-          updatedAt: NOW - 10 * DAY,
-          deletedAt: null,
-          
-          ownerName: 'Grace Munisi',
-          ownerNationalId: '19870512-21104-00002-33',
-          ownerMobileNumber: '+255 784 999 888',
-          ownerEmail: 'grace@arushachemist.com',
-          ownerPosition: 'Chief Pharmacist / Owner',
-          
-          themeColor: '#10b981',
-          secondaryColor: '#3b82f6',
-          bankName: 'NMB Bank Plc',
-          bankAccountName: 'ARUSHA CHEMIST & PHARMACY',
-          bankAccountNumber: '2019847290199',
-          bankSwiftCode: 'NMBZTZTZ',
-          bankBranchName: 'Clock Tower Branch',
-          
-          mpesaMerchantCode: '889900',
-          
-          licensePharmacy: 'TFDA-ARU-9922',
-          licensePharmacyExpiry: NOW + 180 * DAY,
-          
-          aiPrimaryIndustry: 'Pharmacy',
-          aiBusinessSize: 'Small',
-          aiEmployeesCount: 3,
-          aiBranchesCount: 1,
-          aiDailySales: 180000,
-          aiPeakHours: '10:00 - 13:00'
-        }
-      ];
-      await db.businessProfiles.bulkPut(seedProfiles);
-    }
-
-    // ── Seed Backups, Notifications & Security Incidents ────────────────────
-    const backupsCount = await db.backups.count();
-    if (backupsCount === 0) {
-      await db.backups.bulkPut([
-        { id: 'bkp-001', tenant_id: 'tenant-101', type: 'DAILY',   status: 'COMPLETED', size_mb: 1240, encrypted: true, checksum: 'sha256:a3f2b1c8d4e9f0a1b2c3d4e5f6a7b8c9', created_at: NOW - 1 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-002', tenant_id: 'tenant-102', type: 'DAILY',   status: 'COMPLETED', size_mb:  380, encrypted: true, checksum: 'sha256:b4e3c2d1f0a9b8c7d6e5f4a3b2c1d0e9', created_at: NOW - 1 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-003', tenant_id: 'tenant-101', type: 'WEEKLY',  status: 'COMPLETED', size_mb: 8600, encrypted: true, checksum: 'sha256:c5f4d3e2a1b0c9d8e7f6a5b4c3d2e1f0', created_at: NOW - 7 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-004', tenant_id: 'tenant-103', type: 'DAILY',   status: 'FAILED',    size_mb:    0, encrypted: false, checksum: 'sha256:error-checksum-00000000000000', created_at: NOW - 2 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-005', tenant_id: 'tenant-106', type: 'HOURLY',  status: 'COMPLETED', size_mb:  215, encrypted: true, checksum: 'sha256:d6a5b4c3e2f1a0b9c8d7e6f5a4b3c2d1', created_at: NOW - 2 * 3600 * 1000, created_by: 'system-scheduler' },
-        { id: 'bkp-006', tenant_id: 'tenant-101', type: 'MONTHLY', status: 'COMPLETED', size_mb: 31000, encrypted: true, checksum: 'sha256:e7b6c5d4f3a2b1c0d9e8f7a6b5c4d3e2', created_at: NOW - 30 * DAY, created_by: 'system-scheduler' },
-        { id: 'bkp-007', tenant_id: 'tenant-104', type: 'MANUAL',  status: 'COMPLETED', size_mb:  560, encrypted: true, checksum: 'sha256:f8c7d6e5a4b3c2d1e0f9a8b7c6d5e4f3', created_at: NOW - 3 * DAY,  created_by: 'usr-superadmin' },
-        { id: 'bkp-008', tenant_id: 'tenant-102', type: 'WEEKLY',  status: 'COMPLETED', size_mb: 2800, encrypted: true, checksum: 'sha256:a9d8e7f6b5c4d3e2f1a0b9c8d7e6f5a4', created_at: NOW - 7 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-009', tenant_id: 'tenant-105', type: 'DAILY',   status: 'COMPLETED', size_mb:   92, encrypted: true, checksum: 'sha256:b0e9f8a7c6d5e4f3a2b1c0d9e8f7a6b5', created_at: NOW - 1 * DAY,  created_by: 'system-scheduler' },
-        { id: 'bkp-010', tenant_id: 'tenant-101', type: 'DAILY',   status: 'COMPLETED', size_mb: 1290, encrypted: true, checksum: 'sha256:c1f0a9b8d7e6f5a4b3c2d1e0f9a8b7c6', created_at: NOW - 2 * DAY,  created_by: 'system-scheduler' },
-      ]);
-
-      await db.notifications.bulkPut([
-        {
-          id: 'notif-001', tenant_id: null, channel: 'EMAIL', subject: 'Platform Maintenance Scheduled — July 28, 2026',
-          message: 'DukaPos SaaS will undergo a planned maintenance window from 02:00 – 04:00 EAT on July 28. All services will be temporarily unavailable. Please plan accordingly.',
-          target_scope: 'ALL', status: 'SENT', sent_at: NOW - 3 * DAY
-        },
-        {
-          id: 'notif-002', tenant_id: null, channel: 'SMS', subject: 'Payment Reminder: Invoice DKP-2026-000212',
-          message: 'Your DukaPos subscription invoice of Tsh. 69,600 is due in 15 days. Pay via M-PESA to 150150.',
-          target_scope: 'SINGLE', target_filter: 'tenant-101', status: 'SENT', sent_at: NOW - 1 * DAY
-        },
-        {
-          id: 'notif-003', tenant_id: null, channel: 'IN_APP', subject: 'New Feature: AI Churn Prediction Dashboard Live',
-          message: 'Enterprise tenants now have access to the AI-powered churn prediction engine under Super Admin > AI Operations.',
-          target_scope: 'PLAN', target_filter: 'Enterprise', status: 'SENT', sent_at: NOW - 5 * DAY
-        },
-        {
-          id: 'notif-004', tenant_id: null, channel: 'WHATSAPP', subject: 'Upgrade Offer: Move to Enterprise — 30% Off',
-          message: 'You are approaching your user seat limit. Upgrade to Enterprise this month and get 30% off the first 3 months. Reply YES to claim.',
-          target_scope: 'PLAN', target_filter: 'Professional', status: 'SENT', sent_at: NOW - 7 * DAY
-        },
-        {
-          id: 'notif-005', tenant_id: null, channel: 'EMAIL', subject: 'Security Alert: Multiple Failed Login Attempts Detected',
-          message: 'We detected 5 failed login attempts on tenant Dodoma Plaza Retailers. The account has been temporarily locked. Review Security Center for full details.',
-          target_scope: 'SINGLE', target_filter: 'tenant-103', status: 'SENT', sent_at: NOW - 12 * 3600 * 1000
-        },
-        {
-          id: 'notif-006', tenant_id: null, channel: 'PUSH', subject: 'Database Backup Completed — All Tenants',
-          message: 'Nightly automated encrypted backups for all 6 active tenants have completed successfully. Zero failures recorded.',
-          target_scope: 'ALL', status: 'SENT', sent_at: NOW - 8 * 3600 * 1000
-        },
-      ]);
-
-      await db.securityIncidents.bulkPut([
-        { id: 'si-001', tenant_id: 'tenant-103', type: 'FAILED_LOGIN',          severity: 'HIGH',     status: 'OPEN',          details: '5 consecutive failed login attempts from IP 196.13.47.23 within 3 minutes. Account temporarily locked.', ip_address: '196.13.47.23',  user_agent: 'Mozilla/5.0 (Android)', created_at: NOW - 12 * 3600 * 1000 },
-        { id: 'si-002', tenant_id: 'tenant-101', type: 'SUSPICIOUS_LOCATION',   severity: 'MEDIUM',   status: 'INVESTIGATING', details: 'Login detected from London, UK (IP 82.132.45.100). Tenant is registered in Dar es Salaam, Tanzania.', ip_address: '82.132.45.100',  user_agent: 'Chrome/126 Safari/537.36', created_at: NOW - 2 * DAY },
-        { id: 'si-003', tenant_id: 'tenant-102', type: 'CONCURRENT_SESSIONS',   severity: 'MEDIUM',   status: 'RESOLVED',      details: 'User usr-grace opened 3 simultaneous sessions from different devices. Session limit = 2.',            ip_address: '41.73.45.101',   user_agent: 'Firefox/127', created_at: NOW - 5 * DAY },
-        { id: 'si-004', tenant_id: 'tenant-106', type: 'API_ABUSE',             severity: 'CRITICAL', status: 'OPEN',          details: 'API key dk_live_1z2x3c4v5b6n7m8a9s0d1 made 1,240 requests in 60 seconds. Rate limit exceeded 12x.',  ip_address: '154.72.190.55',  user_agent: 'Python-urllib/3.12', created_at: NOW - 6 * 3600 * 1000 },
-        { id: 'si-005', tenant_id: 'tenant-104', type: 'TOKEN_ABUSE',           severity: 'HIGH',     status: 'DISMISSED',     details: 'Refresh token reuse detected. Same token presented from 2 geographically different IPs within 30 seconds.', ip_address: '197.250.4.99', user_agent: 'OkHttp/4.12', created_at: NOW - 3 * DAY },
-        { id: 'si-006', tenant_id: 'tenant-101', type: 'RATE_LIMIT',            severity: 'LOW',      status: 'RESOLVED',      details: 'Bulk product import script exceeded 200 API calls/min for 5 minutes. Throttled automatically.',       ip_address: '197.250.4.15',  user_agent: 'DukaPos-Import-Script/v2.4', created_at: NOW - 8 * DAY },
-        { id: 'si-007', tenant_id: 'tenant-105', type: 'LOCKED_ACCOUNT',        severity: 'MEDIUM',   status: 'OPEN',          details: 'Account usr-ephraim locked after 10 PIN failures on mobile POS app. Manual unlock required.',           ip_address: '154.67.29.210', user_agent: 'DukaPos-Mobile/v3.1 Android', created_at: NOW - 1 * DAY },
-      ]);
-
-      console.log('[DukaPos] Control Plane seed data applied (backups, notifications, security incidents).');
-    }
+    // ── Production Ready: No demo tenant/branch/user/product data seeded ────
+    // All tenant data is created at runtime via the provisioning wizard.
     // ────────────────────────────────────────────────────────────────────────
 
+    const usersCount = await db.users.count();
+    if (usersCount === 0) {
+      console.log('[DukaPos] First-time setup: seeding production baseline (no demo data)...');
+
+      // Clear all tables for a clean slate
+      await db.products.clear();
+      await db.productVariants.clear();
+      await db.customers.clear();
+      await db.orders.clear();
+      await db.tenants.clear();
+      await db.branches.clear();
+      await db.industries.clear();
+      await db.tenantIndustries.clear();
+      await db.users.clear();
+      await db.userBranchRoles.clear();
+      await db.stockLedger.clear();
+      await db.stockBalance.clear();
+      await db.tenantModules.clear();
+      await db.tenantSettings.clear();
+      await db.featureFlags.clear();
+      await db.auditLogs.clear();
+
+      // ── SYSTEM-LEVEL MASTER DATA ─────────────────────────────────────────────
+      // These are platform-wide reference records, NOT tenant-specific.
+
+      // 1. Seed industry master catalogue (used during onboarding)
+      await db.industries.bulkPut([
+        { id: 'ind-retail',      name: 'Retail',             schema_preset: { features: ['inventory', 'pos', 'customers'] } },
+        { id: 'ind-pharmacy',   name: 'Pharmacy',           schema_preset: { features: ['inventory', 'pos', 'customers', 'expiry_check'] } },
+        { id: 'ind-restaurant', name: 'Restaurant',         schema_preset: { features: ['pos', 'tables', 'kitchen'] } },
+        { id: 'ind-sacco',      name: 'SACCO',              schema_preset: { features: ['savings', 'loans', 'shares'] } },
+        { id: 'ind-bar',        name: 'Bar',                schema_preset: { features: ['counter_pos', 'open_tabs', 'pour_tracking', 'excise_duty', 'empty_bottles', 'happy_hour'] } },
+        { id: 'ind-hotel',      name: 'Hotel',              schema_preset: { features: ['reservations', 'housekeeping', 'pos', 'dining'] } },
+        { id: 'ind-garage',     name: 'Garage',             schema_preset: { features: ['inventory', 'services', 'pos', 'customers'] } },
+        { id: 'ind-consulting', name: 'BusinessConsultant', schema_preset: { features: ['client_management', 'project_management', 'contracts', 'invoicing'] } },
+        { id: 'ind-wholesale',  name: 'Wholesale',          schema_preset: { features: ['inventory', 'pos', 'customers', 'purchase_orders'] } },
+        { id: 'ind-salon',      name: 'Salon & Spa',        schema_preset: { features: ['services', 'appointments', 'pos', 'customers'] } }
+      ]);
+
+      // 2. Seed Super Admin platform user ONLY (no tenant users — those are created via onboarding)
+      await db.users.bulkPut([
+        {
+          id: 'usr-superadmin',
+          email: 'admin@dukapos.com',
+          password_hash: 'admin123',
+          is_super_admin: true,
+          name: 'System Platform Owner',
+          phone: '+255799999999',
+          tenant_id: 'tenant-admin-system'
+        }
+      ]);
+
+      // 3. Seed subscription plans (platform pricing — not tenant data)
+      await db.subscriptionPlans.bulkPut([
+        {
+          id: 'plan-trial',
+          name: 'Free Trial',
+          code: 'TRIAL',
+          description: '14-day full platform access trial for new business evaluation.',
+          price: 0,
+          currency: 'TZS',
+          billing_cycle: 'monthly',
+          max_users: 2,
+          max_branches: 1,
+          max_products: 100,
+          max_storage_mb: 100,
+          is_trial: true,
+          is_active: true,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        },
+        {
+          id: 'plan-starter',
+          name: 'Starter Plan',
+          code: 'STARTER',
+          description: 'For small single-shop businesses looking to start digitization.',
+          price: 12000,
+          currency: 'TZS',
+          billing_cycle: 'monthly',
+          max_users: 3,
+          max_branches: 1,
+          max_products: 1000,
+          max_storage_mb: 500,
+          is_trial: false,
+          is_active: true,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        },
+        {
+          id: 'plan-business',
+          name: 'Business Plan',
+          code: 'BUSINESS',
+          description: 'Perfect for retail stores with multiple branches and staff teams.',
+          price: 16000,
+          currency: 'TZS',
+          billing_cycle: 'monthly',
+          max_users: 10,
+          max_branches: 5,
+          max_products: 50000,
+          max_storage_mb: 2000,
+          is_trial: false,
+          is_active: true,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        },
+        {
+          id: 'plan-enterprise',
+          name: 'Enterprise Plan',
+          code: 'ENTERPRISE',
+          description: 'Custom setups, infinite scale, and offline micro-service sync.',
+          price: 30000,
+          currency: 'TZS',
+          billing_cycle: 'monthly',
+          max_users: 9999,
+          max_branches: 9999,
+          max_products: 999999,
+          max_storage_mb: 50000,
+          is_trial: false,
+          is_active: true,
+          created_at: Date.now(),
+          updated_at: Date.now()
+        }
+      ]);
+
+      console.log('[DukaPos] Production baseline seeded. No demo data injected.');
+    }
+
+    // == PRODUCTION READY: No demo data seeded. All tenant/user/operational data is created at runtime via provisioning. ==
+
+    // Reconcile and audit all parent product stock balances on database initialization
+    await reconcileAllParentProductStocks().catch(() => {});
   } catch (error) {
     console.error('Database seeding error: ', error);
   } finally {
@@ -3468,57 +3111,8 @@ export async function seedDatabase() {
   }
 }
 
-export async function clearDatabaseAndForceReseed() {
-  await db.products.clear();
-  await db.productVariants.clear();
-  await db.customers.clear();
-  await db.orders.clear();
-  await db.tenants.clear();
-  await db.businessProfiles.clear();
-  await db.branches.clear();
-  await db.industries.clear();
-  await db.tenantIndustries.clear();
-  await db.users.clear();
-  await db.userBranchRoles.clear();
-  await db.stockLedger.clear();
-  await db.stockBalance.clear();
-  await db.subscriptionPlans.clear();
-  await db.tenantSubscriptions.clear();
-  await db.invoices.clear();
-  await db.payments.clear();
-  await db.subscriptionEvents.clear();
-  await db.features.clear();
-  await db.planFeatures.clear();
-  await db.subscriptionUsage.clear();
-  await db.coupons.clear();
-  
-  // Clear new tables:
-  await db.tenantUsers.clear();
-  await db.employees.clear();
-  await db.roles.clear();
-  await db.permissions.clear();
-  await db.rolePermissions.clear();
-  await db.tenantUserBranches.clear();
-  await db.userSecurity.clear();
-  await db.securityAuditLogs.clear();
-
-  // Clear Version 14 tables:
-  await db.units.clear();
-  await db.productUnits.clear();
-  await db.recipes.clear();
-  await db.recipeItems.clear();
-  await db.wastageLogs.clear();
-  await db.tabs.clear();
-  await db.barTables.clear();
-  await db.pricingRules.clear();
-  await db.tips.clear();
-  await db.resetCommands.clear();
-  await db.expenses.clear();
-
-  // Reset seeding lock and force a fresh seed
-  isSeedingInProgress = false;
-  await seedDatabase();
-}
+// clearDatabaseAndForceReseed REMOVED — destructive reset operations are
+// not permitted in the production environment.
 
 export async function recordStockMovement(entryInput: Omit<StockLedgerEntry, 'id' | 'created_at' | 'synced' | 'quantity_before' | 'quantity_after'> & { created_at?: number }): Promise<StockLedgerEntry> {
   const id = `sl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -3550,6 +3144,10 @@ export async function recordStockMovement(entryInput: Omit<StockLedgerEntry, 'id
   
   const stock_value = quantity_after * average_cost;
 
+  const idempotency_key = (entryInput as any).idempotency_key || `idem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const sync_status = (entryInput as any).sync_status || 'PENDING';
+  const event_version = (entryInput as any).event_version || Date.now();
+
   // 3. Save Ledger Entry
   const ledgerEntry: StockLedgerEntry = {
     ...entryInput,
@@ -3557,7 +3155,11 @@ export async function recordStockMovement(entryInput: Omit<StockLedgerEntry, 'id
     quantity_before,
     quantity_after,
     created_at,
-    synced
+    synced,
+    idempotency_key,
+    event_version,
+    sync_status,
+    retry_count: 0
   };
 
   await db.stockLedger.put(ledgerEntry);
@@ -3593,22 +3195,29 @@ export async function recordStockMovement(entryInput: Omit<StockLedgerEntry, 'id
         status: 'Pending'
       });
       
-      await recalculateProductStock(entryInput.product_id);
+      const effectiveParentId = variant.productId || entryInput.product_id;
+      if (effectiveParentId) {
+        await syncParentStock(effectiveParentId);
+      }
     }
   } else {
     const product = await db.products.get(entryInput.product_id);
     if (product) {
-      const updatedProd = { ...product, stock: quantity_after, syncStatus: 'PENDING' as const };
-      await db.products.put(updatedProd);
+      if (product.hasVariants) {
+        await syncParentStock(entryInput.product_id);
+      } else {
+        const updatedProd = { ...product, stock: quantity_after, syncStatus: 'PENDING' as const };
+        await db.products.put(updatedProd);
 
-      const { mapProductToCloud } = await import('../services/productService');
-      await db.syncQueue.add({
-        actionType: 'UPDATE',
-        entityName: 'products',
-        payload: mapProductToCloud(updatedProd),
-        timestamp: Date.now(),
-        status: 'Pending'
-      });
+        const { mapProductToCloud } = await import('../services/productService');
+        await db.syncQueue.add({
+          actionType: 'UPDATE',
+          entityName: 'products',
+          payload: mapProductToCloud(updatedProd),
+          timestamp: Date.now(),
+          status: 'Pending'
+        });
+      }
     }
   }
 
@@ -3694,4 +3303,84 @@ export async function recalculateStockFromLedger(productId: string, branchId: st
   if (product && product.hasVariants) {
     await recalculateProductStock(productId);
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// DEVELOPER OPTIONS PURGE ROUTINES
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Developer Purge 1: Completely wipes all product catalog items, variants,
+ * stock balances, and stock ledger entries for the current tenant.
+ */
+export async function purgeAllProducts(tenantId?: string): Promise<void> {
+  console.info('[DeveloperPurge] Beginning purgeAllProducts for tenantId:', tenantId);
+  return db.transaction('rw', [db.products, db.productVariants, db.stockBalance, db.stockLedger], async () => {
+    if (tenantId) {
+      const products = await db.products.where('tenant_id').equals(tenantId).toArray();
+      const pIds = new Set(products.map(p => p.id));
+      
+      await db.products.where('tenant_id').equals(tenantId).delete();
+      await db.productVariants.where('tenant_id').equals(tenantId).delete();
+      await db.stockBalance.where('tenant_id').equals(tenantId).delete();
+      await db.stockLedger.where('tenant_id').equals(tenantId).delete();
+      
+      for (const pid of pIds) {
+        await db.productVariants.where('productId').equals(pid).delete();
+      }
+    } else {
+      await db.products.clear();
+      await db.productVariants.clear();
+      await db.stockBalance.clear();
+      await db.stockLedger.clear();
+    }
+    console.info('[DeveloperPurge] purgeAllProducts completed successfully.');
+  });
+}
+
+/**
+ * Developer Purge 2: Permanently deletes all point-of-sale receipt history,
+ * orders, and cashier shift logs for the current tenant.
+ */
+export async function purgeAllSales(tenantId?: string): Promise<void> {
+  console.info('[DeveloperPurge] Beginning purgeAllSales for tenantId:', tenantId);
+  const dbAny = db as any;
+  const tables = [db.orders];
+  if (dbAny.cashMovements) tables.push(dbAny.cashMovements);
+  if (dbAny.cashShifts) tables.push(dbAny.cashShifts);
+
+  return db.transaction('rw', tables, async () => {
+    if (tenantId) {
+      await db.orders.where('tenant_id').equals(tenantId).delete();
+      if (dbAny.cashMovements) await dbAny.cashMovements.where('tenant_id').equals(tenantId).delete();
+      if (dbAny.cashShifts) await dbAny.cashShifts.where('tenant_id').equals(tenantId).delete();
+    } else {
+      await db.orders.clear();
+      if (dbAny.cashMovements) await dbAny.cashMovements.clear();
+      if (dbAny.cashShifts) await dbAny.cashShifts.clear();
+    }
+    console.info('[DeveloperPurge] purgeAllSales completed successfully.');
+  });
+}
+
+/**
+ * Developer Purge 3: Clears customer directories, supplier records, attendance,
+ * and expense ledgers.
+ */
+export async function purgeAllDefaultsAndUsers(tenantId?: string): Promise<void> {
+  console.info('[DeveloperPurge] Beginning purgeAllDefaultsAndUsers for tenantId:', tenantId);
+  return db.transaction('rw', [db.customers, db.suppliers, db.expenses, db.auditLogs], async () => {
+    if (tenantId) {
+      await db.customers.where('tenant_id').equals(tenantId).delete();
+      await db.suppliers.where('tenant_id').equals(tenantId).delete();
+      await db.expenses.where('tenant_id').equals(tenantId).delete();
+      await db.auditLogs.where('tenant_id').equals(tenantId).delete();
+    } else {
+      await db.customers.clear();
+      await db.suppliers.clear();
+      await db.expenses.clear();
+      await db.auditLogs.clear();
+    }
+    console.info('[DeveloperPurge] purgeAllDefaultsAndUsers completed successfully.');
+  });
 }

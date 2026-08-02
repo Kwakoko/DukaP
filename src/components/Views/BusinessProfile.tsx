@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { db, type BusinessProfile as BPType } from '../../db/dexie';
+import { db, type BusinessProfile as BPType, type Branch } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button } from '../UI/custom-ui';
+import { tenantIdentifierService } from '../../services/tenantIdentifierService';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Dialog } from '../UI/custom-ui';
 import {
   Building, User, Shield, CreditCard, Sliders, FileText,
-  AlertTriangle, Eye, Upload, Map, Sparkles, RefreshCw, Check, Zap
+  AlertTriangle, Eye, Upload, Map, Sparkles, RefreshCw, Check, Zap, Plus, Edit, Trash2
 } from 'lucide-react';
 
 export const BusinessProfile: React.FC = () => {
@@ -22,6 +23,133 @@ export const BusinessProfile: React.FC = () => {
   const profileFromDb = useLiveQuery(() =>
     db.businessProfiles.where('tenantId').equals(currentTenant.id).first()
   );
+
+  // Live branches from IndexedDB
+  const liveBranches = useLiveQuery(
+    () => db.branches.where('tenant_id').equals(currentTenant?.id || '').toArray(),
+    [currentTenant?.id]
+  ) || [];
+
+  // Seed default branches into IndexedDB if empty
+  useEffect(() => {
+    const seedDefaultBranches = async () => {
+      if (!currentTenant?.id) return;
+      const existing = await db.branches.where('tenant_id').equals(currentTenant.id).toArray();
+      if (existing.length === 0) {
+        await db.branches.bulkPut([
+          {
+            id: `br-${currentTenant.id}-dar-hq`,
+            tenant_id: currentTenant.id,
+            branch_code: 'DAR-HQ',
+            name: 'Dar es Salaam HQ Branch',
+            location: 'Posta, Dar es Salaam',
+            status: 'Active',
+            is_headquarters: true,
+            created_at: Date.now()
+          },
+          {
+            id: `br-${currentTenant.id}-aru-dep`,
+            tenant_id: currentTenant.id,
+            branch_code: 'ARU-DEP',
+            name: 'Arusha Retail Branch',
+            location: 'Njiro, Arusha',
+            status: 'Active',
+            is_headquarters: false,
+            created_at: Date.now() + 1000
+          }
+        ]);
+      }
+    };
+    seedDefaultBranches();
+  }, [currentTenant?.id]);
+
+  // Branch Editor Modal States
+  const [isBranchModalOpen, setIsBranchModalOpen] = useState(false);
+  const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+  const [bName, setBName] = useState('');
+  const [bCode, setBCode] = useState('');
+  const [bLocation, setBLocation] = useState('');
+  const [bStatus, setBStatus] = useState<'Active' | 'Inactive'>('Active');
+  const [bIsHq, setBIsHq] = useState(false);
+  const [isSavingBranch, setIsSavingBranch] = useState(false);
+
+  const openAddBranchModal = () => {
+    setEditingBranch(null);
+    setBName('');
+    setBCode(`BR-${Math.floor(100 + Math.random() * 900)}`);
+    setBLocation('');
+    setBStatus('Active');
+    setBIsHq(false);
+    setIsBranchModalOpen(true);
+  };
+
+  const openEditBranchModal = (br: Branch) => {
+    setEditingBranch(br);
+    setBName(br.name);
+    setBCode(br.branch_code || br.id);
+    setBLocation(br.location || '');
+    setBStatus(br.status || 'Active');
+    setBIsHq(Boolean(br.is_headquarters));
+    setIsBranchModalOpen(true);
+  };
+
+  const handleSaveBranch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bName.trim() || !bCode.trim() || !currentTenant?.id) return;
+    setIsSavingBranch(true);
+    try {
+      if (bIsHq) {
+        const otherBranches = await db.branches.where('tenant_id').equals(currentTenant.id).toArray();
+        for (const ob of otherBranches) {
+          if (ob.is_headquarters) {
+            await db.branches.put({ ...ob, is_headquarters: false });
+          }
+        }
+      }
+
+      if (editingBranch) {
+        await db.branches.put({
+          ...editingBranch,
+          name: bName.trim(),
+          branch_code: bCode.trim().toUpperCase(),
+          location: bLocation.trim(),
+          status: bStatus,
+          is_headquarters: bIsHq
+        });
+      } else {
+        const newBranchId = `branch-${currentTenant.id}-${Date.now()}`;
+        await db.branches.put({
+          id: newBranchId,
+          tenant_id: currentTenant.id,
+          branch_code: bCode.trim().toUpperCase(),
+          name: bName.trim(),
+          location: bLocation.trim(),
+          status: bStatus,
+          is_headquarters: bIsHq,
+          created_at: Date.now()
+        });
+      }
+      setIsBranchModalOpen(false);
+    } catch (err) {
+      console.error('Failed to save branch:', err);
+      alert('Failed to save branch details.');
+    } finally {
+      setIsSavingBranch(false);
+    }
+  };
+
+  const handleDeleteBranch = async (br: Branch) => {
+    if (br.is_headquarters) {
+      alert('⚠️ Cannot delete the Headquarters/Default branch.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete branch "${br.name}" (${br.branch_code || br.id})?`)) return;
+    try {
+      await db.branches.delete(br.id);
+    } catch (err) {
+      console.error('Failed to delete branch:', err);
+    }
+  };
 
   // Form State
   const [form, setForm] = useState<Partial<BPType>>({});
@@ -413,6 +541,16 @@ export const BusinessProfile: React.FC = () => {
               {subTab === 'compliance' && 'Verify permits, licenses, and official incorporation attachments.'}
               {subTab === 'security' && 'Audit logs, allowed devices, and authentication policies.'}
             </CardDescription>
+            <div className="flex flex-wrap items-center gap-2 mt-2">
+              <span className="text-[10px] font-mono bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 px-2.5 py-1 rounded-lg font-bold border border-indigo-200/60 dark:border-indigo-900/40 flex items-center gap-1">
+                🆔 Tenant ID: {tenantIdentifierService.getReadableTenantId(currentTenant)}
+              </span>
+              {currentTenant.business_code && (
+                <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 px-2.5 py-1 rounded-lg font-bold border border-emerald-200/60 dark:border-emerald-900/40 flex items-center gap-1">
+                  🏢 Business Code: {currentTenant.business_code}
+                </span>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="pt-5 space-y-4">
             
@@ -988,25 +1126,71 @@ export const BusinessProfile: React.FC = () => {
             {subTab === 'operations' && (
               <div className="space-y-4">
                 <div>
-                  <h4 className="font-black text-slate-800 dark:text-white mb-2">Branches & Outlets</h4>
+                  <div className="flex justify-between items-center mb-2">
+                    <h4 className="font-black text-slate-800 dark:text-white m-0">Branches & Outlets</h4>
+                    <Button
+                      onClick={openAddBranchModal}
+                      disabled={!canEdit}
+                      variant="primary"
+                      className="h-8 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus size={13} /> Add New Branch
+                    </Button>
+                  </div>
                   <div className="p-3 bg-slate-50 dark:bg-darkbg border border-slate-200/50 dark:border-darkbg-border/40 rounded-xl space-y-2">
-                    <div className="flex justify-between items-center text-[10px] uppercase font-black text-slate-400 pb-1 border-b border-slate-200/30">
-                      <span>Branch Code</span>
-                      <span>Branch Name</span>
-                      <span>Location</span>
-                      <span>Status</span>
+                    <div className="grid grid-cols-12 text-[10px] uppercase font-black text-slate-400 pb-1 border-b border-slate-200/30">
+                      <span className="col-span-2">Branch Code</span>
+                      <span className="col-span-4">Branch Name</span>
+                      <span className="col-span-3">Location</span>
+                      <span className="col-span-2">Status</span>
+                      <span className="col-span-1 text-right">Actions</span>
                     </div>
-                    {[
-                      { code: 'DAR-HQ', name: 'Dar es Salaam HQ Branch', loc: 'Posta, Dar es Salaam', status: 'ACTIVE', default: true },
-                      { code: 'ARU-DEP', name: 'Arusha Retail Branch', loc: 'Njiro, Arusha', status: 'ACTIVE', default: false }
-                    ].map((b, i) => (
-                      <div key={i} className="flex justify-between items-center py-1">
-                        <span className="font-mono font-bold text-primary">{b.code}</span>
-                        <span className="font-semibold text-slate-700 dark:text-slate-300">{b.name} {b.default && <span className="text-[9px] bg-indigo-50 text-primary border border-indigo-200 px-1 py-0.5 rounded font-bold ml-1">Default</span>}</span>
-                        <span className="text-slate-500">{b.loc}</span>
-                        <span className="text-emerald-600 font-bold">{b.status}</span>
+                    {liveBranches.map((b) => (
+                      <div key={b.id} className="grid grid-cols-12 items-center py-1.5 text-xs">
+                        <span className="col-span-2 font-mono font-bold text-primary">{b.branch_code || b.id}</span>
+                        <span className="col-span-4 font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                          {b.name}
+                          {b.is_headquarters && (
+                            <span className="text-[9px] bg-indigo-50 text-primary border border-indigo-200 px-1.5 py-0.5 rounded font-bold">Default HQ</span>
+                          )}
+                        </span>
+                        <span className="col-span-3 text-slate-500 truncate">{b.location || '—'}</span>
+                        <span className="col-span-2">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            b.status === 'Active'
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400'
+                              : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                          }`}>
+                            {b.status || 'Active'}
+                          </span>
+                        </span>
+                        <div className="col-span-1 flex items-center justify-end gap-1">
+                          <button
+                            title="Edit Branch Details"
+                            onClick={() => openEditBranchModal(b)}
+                            disabled={!canEdit}
+                            className="p-1 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition cursor-pointer"
+                          >
+                            <Edit size={14} />
+                          </button>
+                          {!b.is_headquarters && (
+                            <button
+                              title="Delete Branch"
+                              onClick={() => handleDeleteBranch(b)}
+                              disabled={!canEdit}
+                              className="p-1 text-slate-500 hover:text-red-600 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition cursor-pointer"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
+                    {liveBranches.length === 0 && (
+                      <div className="text-center py-4 text-xs text-slate-400 italic">
+                        No branches registered. Click "+ Add New Branch" to create one.
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1218,6 +1402,97 @@ export const BusinessProfile: React.FC = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Branch Edit / Create Modal */}
+      <Dialog
+        isOpen={isBranchModalOpen}
+        onClose={() => setIsBranchModalOpen(false)}
+        title={editingBranch ? `Edit Branch: ${editingBranch.name}` : "Create New Operational Branch"}
+        description="Manage branch location details, code, and headquarters status."
+      >
+        <form onSubmit={handleSaveBranch} className="space-y-4 pt-2 font-sans">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Branch Name *</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Arusha Retail Branch, Mwanza City Store"
+              value={bName}
+              onChange={e => setBName(e.target.value)}
+              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Branch Code *</label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. ARU-DEP, MWZ-01"
+                value={bCode}
+                onChange={e => setBCode(e.target.value.toUpperCase())}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white px-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Status</label>
+              <select
+                value={bStatus}
+                onChange={e => setBStatus(e.target.value as any)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white px-2 text-xs focus:outline-none"
+              >
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Location / Street Address</label>
+            <input
+              type="text"
+              placeholder="e.g. Njiro, Arusha"
+              value={bLocation}
+              onChange={e => setBLocation(e.target.value)}
+              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <input
+              type="checkbox"
+              id="branch-hq-check"
+              checked={bIsHq}
+              onChange={e => setBIsHq(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+            />
+            <label htmlFor="branch-hq-check" className="text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
+              Set as Headquarters / Primary Business Branch
+            </label>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-darkbg-border/30">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsBranchModalOpen(false)}
+              className="h-9 px-4 text-xs font-semibold"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={isSavingBranch}
+              className="h-9 px-4 text-xs font-bold"
+            >
+              {isSavingBranch ? 'Saving...' : (editingBranch ? 'Update Branch' : 'Create Branch')}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 };

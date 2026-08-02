@@ -4,13 +4,14 @@ import { db, type TenantUser, type Role, type Permission } from '../../db/dexie'
 import { cloudDb } from '../../db/supabaseMock';
 import { supabase } from '../../db/supabaseClient';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { tenantIdentifierService } from '../../services/tenantIdentifierService';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Badge } from '../UI/custom-ui';
 import {
   Users, Shield, Key, GitBranch, History, UserPlus,
   Plus, Check, X, AlertTriangle, Activity, Mail, Phone,
   CheckCircle2, Trash2, Edit2, Save, ChevronRight,
   Eye, EyeOff, UserCog, Fingerprint, RefreshCw, QrCode,
-  Calendar, Filter, ArrowUp, ArrowDown, ShieldCheck, Globe, Laptop, Info
+  Calendar, Filter, ArrowUp, ArrowDown, ShieldCheck, Globe, Laptop, Info, Copy
 } from 'lucide-react';
 
 const TABS = ['Users Directory', 'Role Builder', 'Branch Allocations', 'POS PIN Switcher', 'Security Audit Trail'];
@@ -569,6 +570,38 @@ export const UsersRoles: React.FC = () => {
     setSelectedBuilderRoleId(newRoleId);
   };
 
+  // Clone Role & Permissions
+  const handleCloneRole = async (baseRole: Role) => {
+    const cloneName = `${baseRole.name} (Custom)`;
+    const slug = `${baseRole.slug}_custom_${Date.now().toString(36).slice(-4)}`;
+    const newRoleId = `role-${slug}-${Date.now().toString(36)}`;
+
+    await db.roles.put({
+      id: newRoleId,
+      tenant_id: currentTenant.id,
+      name: cloneName,
+      slug,
+      description: `Custom role cloned from ${baseRole.name}. ${baseRole.description}`,
+      is_system_role: false,
+      is_custom: true,
+      created_at: Date.now()
+    });
+
+    // Copy permission links from base role
+    const basePermissions = allRolePermissions.filter(rp => rp.role_id === baseRole.id);
+    for (const rp of basePermissions) {
+      await db.rolePermissions.put({
+        id: `rp-${newRoleId}-${rp.permission_id}`,
+        role_id: newRoleId,
+        permission_id: rp.permission_id
+      });
+    }
+
+    await logAudit('role.cloned', { base_role: baseRole.name, new_role: cloneName });
+    setSelectedBuilderRoleId(newRoleId);
+    alert(`✅ Role "${baseRole.name}" cloned as "${cloneName}". You can now customize its permission set.`);
+  };
+
   // Start Editing Role
   const handleStartEditRole = (role: Role) => {
     setEditingRoleId(role.id);
@@ -714,13 +747,24 @@ export const UsersRoles: React.FC = () => {
           const tuId = `tu-${currentTenant.id}-${u.id}`;
           const tubId = `tub-${currentTenant.id}-${u.id}`;
 
+          const uRoleLower = ((u as any).role || u.role || '').toLowerCase();
+          let targetRoleSlug = 'cashier';
+          if (u.id.includes('owner') || uRoleLower.includes('owner')) targetRoleSlug = 'tenant_owner';
+          else if (uRoleLower.includes('admin')) targetRoleSlug = 'business_administrator';
+          else if (uRoleLower.includes('manager')) targetRoleSlug = 'branch_manager';
+          else if (uRoleLower.includes('inventory')) targetRoleSlug = 'inventory_officer';
+          else if (uRoleLower.includes('accountant')) targetRoleSlug = 'accountant';
+
+          const matchedRoleObj = allRoles.find(r => r.slug === targetRoleSlug || r.name.toLowerCase().includes(targetRoleSlug.replace('_', ' ')));
+          const assignedRoleId = matchedRoleObj?.id || (u.id.includes('owner') ? `role-owner-${currentTenant.id}` : `role-cashier-${currentTenant.id}`);
+
           const newTu: TenantUser = {
             id: tuId,
             tenant_id: currentTenant.id,
             user_id: u.id,
             employee_code: u.id.includes('owner') ? 'EMP-OWNER' : `EMP-${Math.floor(100 + Math.random() * 900)}`,
-            job_title: u.id.includes('owner') ? 'Tenant Owner' : ((u as any).role || 'Business Administrator'),
-            department: 'Management',
+            job_title: matchedRoleObj?.name || (u as any).role || 'Employee',
+            department: 'Staff',
             status: u.status || 'Active',
             joined_at: u.created_at || Date.now()
           };
@@ -734,7 +778,7 @@ export const UsersRoles: React.FC = () => {
               tenant_id: currentTenant.id,
               user_id: u.id,
               branch_id: (u as any).branch_id || dbBranches[0]?.id || `branch-hq-${currentTenant.id}`,
-              role_id: `role-owner-${currentTenant.id}`,
+              role_id: assignedRoleId,
               is_primary: true,
               assigned_at: Date.now()
             });
@@ -1095,7 +1139,8 @@ export const UsersRoles: React.FC = () => {
                               </div>
                               <div>
                                 <p className="font-bold text-slate-800 dark:text-white">{dbUser?.name || 'Unknown'}</p>
-                                <span className="font-mono text-[9px] bg-slate-100 dark:bg-darkbg/50 px-1.5 py-0.5 rounded text-slate-500">{tu.employee_code}</span>
+                                <span className="font-mono text-[9px] bg-slate-100 dark:bg-darkbg/50 px-1.5 py-0.5 rounded text-slate-500">{tenantIdentifierService.getReadableEmployeeCode(tu)}</span>
+                                <span className="font-mono text-[9px] bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 px-1 py-0.5 rounded ml-1 font-bold">{tenantIdentifierService.getReadableUserId(dbUser)}</span>
                               </div>
                             </div>
                           </td>
@@ -1273,6 +1318,9 @@ export const UsersRoles: React.FC = () => {
                               </Badge>
                             </div>
                             <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={e => { e.stopPropagation(); handleCloneRole(role); }} title="Clone role & permissions" className="p-1 rounded-md bg-slate-100 dark:bg-darkbg text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 transition">
+                                <Copy className="h-3 w-3" />
+                              </button>
                               <button onClick={e => { e.stopPropagation(); handleStartEditRole(role); }} title="Edit role" className="p-1 rounded-md bg-slate-100 dark:bg-darkbg text-slate-500 hover:bg-primary/10 hover:text-primary transition">
                                 <Edit2 className="h-3 w-3" />
                               </button>
@@ -1607,7 +1655,7 @@ export const UsersRoles: React.FC = () => {
                           }`}>{initials}</div>
                           <div>
                             <p className="text-xs font-bold text-slate-800 dark:text-white">{dbUser?.name || '—'}</p>
-                            <p className="text-[10px] text-slate-400 mt-0.5">{roleObj?.name || 'Cashier'} · {tu.employee_code}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{roleObj?.name || 'Cashier'} · {tenantIdentifierService.getReadableEmployeeCode(tu)}</p>
                           </div>
                         </div>
                         <div className={`h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
@@ -2304,7 +2352,7 @@ export const UsersRoles: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Employee Code</span>
-                  <p className="font-mono font-bold text-primary mt-0.5">{selectedAuditUser.tu?.employee_code || 'EMP-001'}</p>
+                  <p className="font-mono font-bold text-primary mt-0.5">{tenantIdentifierService.getReadableEmployeeCode(selectedAuditUser.tu)} · {tenantIdentifierService.getReadableUserId(selectedAuditUser.dbUser)}</p>
                 </div>
                 <div>
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Email Address</span>

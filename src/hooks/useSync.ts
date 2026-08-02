@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type SyncItem, applyIdMappings } from '../db/dexie';
-import { supabase, setMockAuthOverride } from '../db/supabaseClient';
-import { mapProductToLocal } from '../services/productService';
+import { db, type SyncOperation } from '../db/dexie';
+import { mapProductToLocal, recoverUnsyncedProducts } from '../services/productService';
+import { createSyncEvent } from '../services/syncEventGenerator';
+import { productionSyncEngine } from '../services/productionSyncEngine';
 
 export interface SyncProgress {
   current: number;
@@ -11,7 +12,7 @@ export interface SyncProgress {
 }
 
 export function useSync() {
-  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [syncLogs, setSyncLogs] = useState<string[]>([]);
@@ -21,6 +22,8 @@ export function useSync() {
   const isSyncingRef = useRef(false);
   const isSimulatedRef = useRef(false);
   const isOnlineRef = useRef(isOnline);
+  const lastSyncTimeRef = useRef<number>(0);
+  const syncTimeoutRef = useRef<any>(null);
 
   useEffect(() => { isSyncingRef.current = isSyncing; }, [isSyncing]);
   useEffect(() => { isSimulatedRef.current = isSimulated; }, [isSimulated]);
@@ -71,10 +74,6 @@ export function useSync() {
     return true;
   };
 
-  const renewSyncLock = () => {
-    localStorage.setItem('dukapos_sync_lock', JSON.stringify({ ts: Date.now(), tabId: currentTabId }));
-  };
-
   const releaseSyncLock = () => {
     const lockStr = localStorage.getItem('dukapos_sync_lock');
     if (lockStr) {
@@ -121,18 +120,29 @@ export function useSync() {
         } catch {}
       }
 
+      // Step 1: Force local un-synced product recovery push first
+      if (currentTenantId) {
+        await recoverUnsyncedProducts(currentTenantId);
+      }
+
       const headers: Record<string, string> = {
         'x-tenant-id': currentTenantId || '',
-        'x-user-id': currentUserId
+        'X-Tenant-ID': currentTenantId || '',
+        'x-user-id': currentUserId,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
       };
 
+      const cacheBust = `_t=${Date.now()}`;
       const url = currentTenantId
-        ? `/api/products?tenantId=${encodeURIComponent(currentTenantId)}`
-        : '/api/products';
+        ? `/api/products?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
+        : `/api/products?${cacheBust}`;
       const res = await fetch(url, { method: 'GET', headers });
       if (!res.ok) return 0;
 
-      const serverProducts: any[] = await res.json();
+      const rawProducts: any = await res.json();
+      const serverProducts: any[] = Array.isArray(rawProducts) ? rawProducts : (rawProducts.products || []);
       let syncedCount = 0;
       if (Array.isArray(serverProducts)) {
         for (const sp of serverProducts) {
@@ -150,11 +160,12 @@ export function useSync() {
 
       // Pull variants
       const varUrl = currentTenantId
-        ? `/api/variants?tenantId=${encodeURIComponent(currentTenantId)}`
-        : '/api/variants';
+        ? `/api/variants?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
+        : `/api/variants?${cacheBust}`;
       const varRes = await fetch(varUrl, { method: 'GET', headers });
       if (varRes.ok) {
-        const serverVariants: any[] = await varRes.json();
+        const rawVariants: any = await varRes.json();
+        const serverVariants: any[] = Array.isArray(rawVariants) ? rawVariants : (rawVariants.variants || []);
         if (Array.isArray(serverVariants)) {
           for (const sv of serverVariants) {
             if (sv.deletedAt || sv.deleted_at) continue;
@@ -163,16 +174,29 @@ export function useSync() {
               await db.productVariants.put({ ...sv, syncStatus: 'SYNCED', isSynced: 1 });
             }
           }
+
+          // Recalculate parent product stock from variants
+          const allProds = await db.products.toArray();
+          for (const p of allProds) {
+            if (p.hasVariants) {
+              const vars = await db.productVariants.where('productId').equals(p.id).toArray();
+              const totalStock = vars.reduce((sum, v) => sum + (v.stock || 0), 0);
+              if (p.stock !== totalStock) {
+                await db.products.update(p.id, { stock: totalStock });
+              }
+            }
+          }
         }
       }
 
       // Pull customers
       const custUrl = currentTenantId
-        ? `/api/customers?tenantId=${encodeURIComponent(currentTenantId)}`
-        : '/api/customers';
+        ? `/api/customers?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
+        : `/api/customers?${cacheBust}`;
       const custRes = await fetch(custUrl, { method: 'GET', headers });
       if (custRes.ok) {
-        const serverCustomers: any[] = await custRes.json();
+        const rawCust: any = await custRes.json();
+        const serverCustomers: any[] = Array.isArray(rawCust) ? rawCust : (rawCust.customers || []);
         if (Array.isArray(serverCustomers)) {
           for (const sc of serverCustomers) {
             if (sc.deletedAt || sc.deleted_at) continue;
@@ -186,11 +210,12 @@ export function useSync() {
 
       // Pull orders
       const orderUrl = currentTenantId
-        ? `/api/orders?tenantId=${encodeURIComponent(currentTenantId)}`
-        : '/api/orders';
+        ? `/api/orders?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
+        : `/api/orders?${cacheBust}`;
       const orderRes = await fetch(orderUrl, { method: 'GET', headers });
       if (orderRes.ok) {
-        const serverOrders: any[] = await orderRes.json();
+        const rawOrders: any = await orderRes.json();
+        const serverOrders: any[] = Array.isArray(rawOrders) ? rawOrders : (rawOrders.orders || []);
         if (Array.isArray(serverOrders)) {
           for (const so of serverOrders) {
             if (so.deletedAt || so.deleted_at) continue;
@@ -264,29 +289,49 @@ export function useSync() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Trigger autoSync whenever browser is online and there are pending items
+  // Trigger autoSync whenever browser is online and there are pending items (Debounced)
   useEffect(() => {
-    if (isOnline && pendingCount > 0) {
-      syncData();
-    }
+    if (!isOnline || pendingCount === 0) return;
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(() => {
+      if (!isSyncingRef.current) {
+        syncData(false);
+      }
+    }, 1500);
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCount, isOnline]);
 
-  // Main synchronization engine — uploads local pending changes to the server
-  const syncData = async () => {
+  // Main synchronization engine — delegates queue processing to productionSyncEngine
+  const syncData = async (isManual = false) => {
     if (isSyncingRef.current) return;
 
-    const isReallyOnline = isSimulatedRef.current ? isOnlineRef.current : await checkRealConnectivity();
+    // Minimum 3-second spacing between automatic sync executions
+    const now = Date.now();
+    if (!isManual && now - lastSyncTimeRef.current < 3000) {
+      return;
+    }
+    lastSyncTimeRef.current = now;
+
+    let isReallyOnline: boolean;
+    if (isOnlineRef.current) {
+      isReallyOnline = true;
+    } else {
+      isReallyOnline = isSimulatedRef.current ? false : await checkRealConnectivity();
+    }
+
     if (!isReallyOnline) {
-      if (isOnlineRef.current) {
-        setIsOnline(false);
-        addLog('Server ping failed. Postponing synchronization.');
-      }
+      addLog('Offline: Sync postponed.');
       return;
     }
 
-    const items = await db.syncQueue.where('status').equals('Pending').toArray();
-    if (items.length === 0) return;
+    const pendingCount = await db.syncQueue.where('status').equals('Pending').count();
+    const failedCount = await db.syncQueue.where('status').equals('Failed').count();
+    const totalCount = pendingCount + failedCount;
+
+    if (totalCount === 0) return;
 
     if (!acquireSyncLock()) {
       addLog('Sync postponed: Another browser tab is syncing.');
@@ -295,154 +340,43 @@ export function useSync() {
 
     setIsSyncing(true);
     isSyncingRef.current = true;
-    setSyncProgress({ current: 0, total: items.length, percentage: 0 });
-    addLog(`↑ Syncing ${items.length} pending operation(s) to server...`);
+    setSyncProgress({ current: 0, total: totalCount, percentage: 0 });
+    addLog(`↑ Production Sync Engine processing ${totalCount} operation(s)...`);
 
-    let processedCount = 0;
-
-    for (const item of items) {
-      if (item.id === undefined) continue;
-      renewSyncLock();
-      processedCount++;
-      setSyncProgress({
-        current: processedCount,
-        total: items.length,
-        percentage: Math.round((processedCount / items.length) * 100)
-      });
-
-      // AUTH CONTEXT impersonation for sync engine
-      const itemTenantId = (item.payload as any)?.tenantId || (item.payload as any)?.tenant_id || null;
-      const itemUserId   = (item.payload as any)?.createdBy || (item.payload as any)?.created_by ||
-                           (item.payload as any)?.updatedBy || 'usr-sync-engine';
-      if (itemTenantId) {
-        setMockAuthOverride({ tenant_id: itemTenantId, user_id: itemUserId, user_name: 'Sync Engine' });
-      }
-
+    let currentTenantId: string | undefined;
+    const session = localStorage.getItem('dukapos_session');
+    if (session) {
       try {
-        await db.syncQueue.update(item.id, { status: 'Processing' });
-        addLog(`  → ${item.entityName} [${item.actionType}]`);
-
-        let response: { data: any; error: any } | undefined;
-
-        if (item.entityName === 'products') {
-          // CONFLICT RESOLUTION: check server version before UPDATE/DELETE
-          if (item.actionType === 'UPDATE' || item.actionType === 'DELETE') {
-            const { data: serverProds } = await supabase.from('products').select('*').eq('id', item.payload.id);
-            if (serverProds && serverProds.length > 0) {
-              const serverRecord = serverProds[0];
-              const localVersion = item.payload.version || 1;
-              const serverVersion = serverRecord.version || 1;
-
-              if (serverVersion > localVersion) {
-                addLog(`Conflict: Server v${serverVersion} > local v${localVersion}. Using server version.`);
-                const localFormat = mapProductToLocal({ ...serverRecord, syncStatus: 'SYNCED' });
-                await db.products.put(localFormat);
-                await db.syncQueue.delete(item.id);
-                continue;
-              } else if (serverVersion === localVersion && JSON.stringify(serverRecord) !== JSON.stringify(item.payload)) {
-                addLog(`Conflict: Same version, different content. Applying Last Write Wins.`);
-                item.payload.version = localVersion + 1;
-              }
-            }
-          }
-
-          if (item.actionType === 'DELETE') {
-            response = await supabase.from('products').delete().eq('id', item.payload.id);
-          } else if (item.actionType === 'INSERT') {
-            response = await supabase.from('products').insert(item.payload);
-          } else if (item.actionType === 'UPDATE') {
-            response = await supabase.from('products').update(item.payload).eq('id', item.payload.id);
-          }
-
-          // ID MAPPING RECONCILIATION (for offline-created products with temp IDs)
-          if (item.actionType === 'INSERT' && response != null && response.data?.length > 0) {
-            const serverProd = response.data[0];
-            const oldClientId = item.payload.id;
-            const newServerId  = serverProd.id;
-            const mappings: Record<string, string> = {};
-            if (oldClientId !== newServerId) mappings[oldClientId] = newServerId;
-
-            const serverVariants: any[] = serverProd.variants || [];
-            for (const sv of serverVariants) {
-              if (sv.clientId && sv.id && sv.clientId !== sv.id) mappings[sv.clientId] = sv.id;
-            }
-
-            if (Object.keys(mappings).length > 0) {
-              addLog('  ↔ Reconciling temporary IDs...');
-              await applyIdMappings(mappings, item.payload.tenantId || item.payload.tenant_id || '');
-            } else {
-              await db.products.update(oldClientId, { syncStatus: 'SYNCED', isSynced: 1 } as any);
-            }
-          }
-
-          if ((item.actionType === 'UPDATE' || item.actionType === 'DELETE') && response && !response.error) {
-            await db.products.update(item.payload.id, { syncStatus: 'SYNCED' } as any);
-          }
-
-        } else if (item.entityName === 'productVariants') {
-          if (item.actionType === 'DELETE') {
-            response = await supabase.from('product_variants').delete().eq('id', item.payload.id);
-          } else if (item.actionType === 'INSERT') {
-            response = await supabase.from('product_variants').insert(item.payload);
-          } else if (item.actionType === 'UPDATE') {
-            response = await supabase.from('product_variants').update(item.payload).eq('id', item.payload.id);
-          }
-          if (response && !response.error) {
-            await db.productVariants.update(item.payload.id, { syncStatus: 'SYNCED', isSynced: 1 } as any);
-          }
-
-        } else if (item.entityName === 'customers') {
-          if (item.actionType === 'DELETE') {
-            response = await supabase.from('customers').delete().eq('id', item.payload.id);
-          } else if (item.actionType === 'INSERT') {
-            response = await supabase.from('customers').insert(item.payload);
-          } else if (item.actionType === 'UPDATE') {
-            response = await supabase.from('customers').update(item.payload).eq('id', item.payload.id);
-          }
-          if (response && !response.error) {
-            await db.customers.update(item.payload.id, { syncStatus: 'SYNCED' } as any);
-          }
-
-        } else if (item.entityName === 'orders') {
-          if (item.actionType === 'DELETE') {
-            response = await supabase.from('orders').delete().eq('id', item.payload.id);
-          } else if (item.actionType === 'INSERT') {
-            response = await supabase.from('orders').insert(item.payload);
-          } else if (item.actionType === 'UPDATE') {
-            response = await supabase.from('orders').update(item.payload).eq('id', item.payload.id);
-          }
-          if (response && !response.error) {
-            await db.orders.update(item.payload.id, { syncStatus: 'SYNCED' } as any);
-          }
-        }
-
-        if (response?.error) {
-          throw new Error(response.error.message);
-        }
-
-        await db.syncQueue.delete(item.id);
-        addLog(`  ✓ ${item.entityName} synced.`);
-      } catch (error: any) {
-        console.error('Failed to sync item:', item, error);
-        await db.syncQueue.update(item.id, { status: 'Failed' });
-        addLog(`  ✗ ${item.entityName} failed: ${error.message || 'Unknown error'}. Will retry.`);
-      } finally {
-        setMockAuthOverride(null);
-      }
+        const parsed = JSON.parse(session);
+        currentTenantId = parsed?.user?.tenant_id || parsed?.user?.tenantId;
+      } catch {}
     }
 
-    releaseSyncLock();
-    setIsSyncing(false);
-    isSyncingRef.current = false;
-    setSyncProgress(null);
-    addLog('Sync cycle complete.');
+    try {
+      const result = await productionSyncEngine.processQueue(currentTenantId);
+      if (result.syncedItems > 0) {
+        addLog(`✓ Production Sync Engine synced ${result.syncedItems} item(s).`);
+      }
+      if (result.failedItems > 0) {
+        addLog(`✗ ${result.failedItems} item(s) failed. Will retry with exponential backoff.`);
+      }
+    } catch (err: any) {
+      addLog(`Sync processing error: ${err.message || 'Unknown error'}`);
+    } finally {
+      releaseSyncLock();
+      setIsSyncing(false);
+      isSyncingRef.current = false;
+      setSyncProgress(null);
+      addLog('Sync cycle complete.');
+    }
   };
 
   // Queue an operation to local DB and sync queue
   const queueOperation = async (
     actionType: 'INSERT' | 'UPDATE' | 'DELETE',
-    entityName: 'products' | 'customers' | 'orders' | 'productVariants',
-    payload: any
+    entityName: 'products' | 'customers' | 'orders' | 'productVariants' | string,
+    payload: any,
+    operationOverride?: SyncOperation
   ) => {
     if (entityName === 'products') {
       if (actionType === 'DELETE') await db.products.delete(payload.id);
@@ -458,21 +392,24 @@ export function useSync() {
       else await db.productVariants.put({ ...payload, syncStatus: 'PENDING' });
     }
 
-    const syncItem: SyncItem = {
-      actionType,
-      entityName,
-      payload,
-      timestamp: Date.now(),
-      status: 'Pending'
-    };
+    const tenantId = payload.tenantId || payload.tenant_id || 'tenant-001';
+    const branchId = payload.branchId || payload.branch_id || 'main-branch';
+    const operation: SyncOperation = operationOverride || (actionType === 'DELETE' ? 'DELETE' : actionType === 'UPDATE' ? 'UPDATE' : 'CREATE');
 
-    await db.syncQueue.add(syncItem);
+    await createSyncEvent({
+      tenant_id: tenantId,
+      branch_id: branchId,
+      entity: entityName,
+      entity_id: payload.id || `ent-${Date.now()}`,
+      operation,
+      payload,
+    });
 
     if (isOnlineRef.current) {
-      addLog(`Queued ${actionType} on ${entityName}. Auto-syncing...`);
-      setTimeout(syncData, 100);
+      addLog(`Queued [${operation}] on ${entityName}. Auto-syncing...`);
+      setTimeout(() => syncData(false), 300);
     } else {
-      addLog(`Offline: Queued ${actionType} on ${entityName}.`);
+      addLog(`Offline: Queued [${operation}] on ${entityName}.`);
     }
   };
 
@@ -485,7 +422,7 @@ export function useSync() {
 
     if (nextState) {
       addLog('SIMULATION: Online mode activated.');
-      setTimeout(syncData, 200);
+      setTimeout(() => syncData(true), 200);
     } else {
       addLog('SIMULATION: Offline mode activated.');
     }
@@ -497,7 +434,7 @@ export function useSync() {
     syncProgress,
     pendingCount,
     syncLogs,
-    syncData,
+    syncData: (isManual = true) => syncData(isManual),
     syncFromServer,
     queueOperation,
     toggleOfflineSimulation,

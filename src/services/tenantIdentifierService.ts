@@ -219,5 +219,109 @@ export const tenantIdentifierService = {
       default:
         return parsed.formatted;
     }
+  },
+
+  /**
+   * Returns a clean, human-readable Tenant ID for UI display, badges, cards, and tables.
+   * Guaranteed never to return raw UUID or truncated '-uuid' string.
+   */
+  getReadableTenantId(tenantOrId: any): string {
+    if (!tenantOrId) return 'TZ-RET-DUKA-1001';
+
+    let tenantObj: any = null;
+    let rawIdStr = '';
+
+    if (typeof tenantOrId === 'string') {
+      rawIdStr = tenantOrId;
+    } else if (typeof tenantOrId === 'object') {
+      tenantObj = tenantOrId;
+      if (tenantObj.human_tenant_id) return tenantObj.human_tenant_id;
+      if (tenantObj.tenant_code && !tenantObj.tenant_code.startsWith('-') && !/^[0-9a-f]{8}-/i.test(tenantObj.tenant_code)) {
+        return tenantObj.tenant_code;
+      }
+      if (tenantObj.business_code) return tenantObj.business_code;
+      rawIdStr = tenantObj.id || tenantObj.tenant_id || '';
+    }
+
+    if (!rawIdStr) return 'TZ-RET-DUKA-1001';
+
+    // If it already looks like a formatted HR-TID (e.g. TZ-RET-BONGO-9K8M or DKP-RET-8X92)
+    if (/^[A-Z]{2,3}-[A-Z]{3}-[A-Z0-9]+-[A-Z0-9]+$/i.test(rawIdStr) || /^BIZ-[A-Z0-9]+-[A-Z0-9]+$/i.test(rawIdStr)) {
+      return rawIdStr.toUpperCase();
+    }
+
+    // Fallback: Construct a clean, human-readable ID from available properties or hex tail
+    const name = tenantObj?.name || 'DUKA';
+    const bizType = tenantObj?.business_type || tenantObj?.industry || 'Retail';
+    const indCode = INDUSTRY_CODE_MAP[bizType] || 'RET';
+    const moniker = extractBrandMoniker(name);
+
+    // Extract clean 4-char hash from UUID or string, excluding leading hyphens
+    const cleanHash = rawIdStr.replace(/[^a-fA-F0-9]/g, '').slice(-4).toUpperCase() || '1001';
+
+    return `TZ-${indCode}-${moniker}-${cleanHash}`;
+  },
+
+  /**
+   * Returns a clean, human-readable User ID for UI display (e.g., USR-OWNER, USR-CSH-4C00, USR-1001)
+   */
+  getReadableUserId(userOrId: any): string {
+    if (!userOrId) return 'USR-1001';
+
+    let userObj: any = null;
+    let rawIdStr = '';
+
+    if (typeof userOrId === 'string') {
+      rawIdStr = userOrId;
+    } else if (typeof userOrId === 'object') {
+      userObj = userOrId;
+      if (userObj.user_code) return userObj.user_code;
+      rawIdStr = userObj.id || userObj.user_id || '';
+    }
+
+    if (!rawIdStr) return 'USR-1001';
+
+    // If already formatted like USR-OWNER or USR-1001
+    if (/^USR-[A-Z0-9-]+$/i.test(rawIdStr) && !rawIdStr.includes('-uuid-') && !/^[0-9a-f]{8}-/i.test(rawIdStr.replace('usr-', ''))) {
+      return rawIdStr.toUpperCase();
+    }
+
+    if (rawIdStr.includes('owner') || (userObj && (userObj.role === 'Tenant Owner' || userObj.role === 'Owner'))) {
+      return 'USR-OWNER';
+    }
+    if (rawIdStr.includes('superadmin') || (userObj && userObj.is_super_admin)) {
+      return 'USR-SUPERADMIN';
+    }
+
+    const roleTag = userObj?.role ? userObj.role.replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() : 'STF';
+    const cleanHash = rawIdStr.replace(/[^a-fA-F0-9]/g, '').slice(-4).toUpperCase() || '1001';
+
+    return `USR-${roleTag}-${cleanHash}`;
+  },
+
+  /**
+   * Returns a clean, readable Employee Code (e.g., EMP-OWNER, EMP-1001, EMP-1002)
+   */
+  getReadableEmployeeCode(empOrCode: any, roleName?: string): string {
+    if (!empOrCode && !roleName) return 'EMP-1001';
+
+    let codeStr = typeof empOrCode === 'string' ? empOrCode : (empOrCode?.employee_code || empOrCode?.employee_number || '');
+    
+    if (codeStr && codeStr !== 'EMP-001' && codeStr !== 'EMP-OWNER' && !codeStr.startsWith('-') && !codeStr.includes('undefined')) {
+      return codeStr;
+    }
+
+    if (roleName === 'Tenant Owner' || (typeof empOrCode === 'object' && (empOrCode?.job_title === 'Tenant Owner' || empOrCode?.user_id?.includes('owner')))) {
+      return 'EMP-OWNER';
+    }
+
+    if (typeof empOrCode === 'object' && empOrCode?.id) {
+      const numPart = empOrCode.id.replace(/[^0-9]/g, '').slice(-3);
+      if (numPart && numPart.length >= 3) {
+        return `EMP-${numPart}`;
+      }
+    }
+
+    return codeStr || 'EMP-1001';
   }
 };

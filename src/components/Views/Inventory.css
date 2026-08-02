@@ -14,7 +14,8 @@
   padding: 12px 20px 0;
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
   background: transparent;
-  overflow: hidden;
+  overflow-x: auto;
+  scrollbar-width: thin;
   width: 100%;
 }
 .dark .inv-top-tabs {
@@ -26,7 +27,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-radius: 8px 8px 0 0;
   border: none;
   background: transparent;
@@ -37,8 +38,8 @@
   transition: all 0.2s;
   white-space: nowrap;
   border-bottom: 2px solid transparent;
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
+  flex-shrink: 0;
 }
 .dark .inv-top-tab {
   color: #94a3b8;
@@ -69,9 +70,15 @@
   font-size: 0.65rem;
   font-weight: 700;
   border-radius: 9999px;
-  padding: 1px 5px;
-  min-width: 16px;
-  text-align: center;
+  padding: 1px 6px;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-left: 2px;
 }
 .inv-tab-body {
   flex: 1;

@@ -1,14 +1,13 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { db, recalculateProductStock } from '../db/dexie';
 import { supabase, setMockAuthOverride } from '../db/supabaseClient';
-import { seedCloudDatabase } from '../db/supabaseMock';
 import { ProductService } from '../services/productService';
 import { sessionService } from '../services/sessionService';
 import { SettingsResolver, DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../services/settingsService';
 import { tenantRecoveryService } from '../services/tenantRecoveryService';
 import { tenantHealthMonitor } from '../services/tenantHealthMonitor';
 
-export type UserRole = 'Super Admin' | 'Business Owner' | 'Tenant Owner' | 'Business Administrator' | 'Branch Manager' | 'Cashier' | 'Inventory Officer' | 'Accountant';
+export type UserRole = 'Super Admin' | 'Business Owner' | 'Tenant Owner' | 'Business Administrator' | 'Branch Manager' | 'Cashier' | 'Inventory Officer' | 'Accountant' | (string & {});
 
 export interface Branch {
   id: string;
@@ -22,6 +21,9 @@ export interface Tenant {
   name: string;
   plan: 'Basic' | 'Professional' | 'Enterprise';
   status?: 'Active' | 'Suspended' | 'Trial' | 'Registered' | 'Cancelled' | 'Demo' | 'DEMO' | 'ACTIVE' | 'TRIAL' | 'SUSPENDED' | 'EXPIRED' | 'ARCHIVED';
+  business_code?: string;
+  tenant_code?: string;
+  human_tenant_id?: string;
   created_at?: number;
   createdAt?: number;
   deleted_at?: number;
@@ -148,7 +150,21 @@ async function resolveTenantById(tenantId: string): Promise<Tenant | null> {
 }
 
 export const getPermissionsForRoleSlug = async (roleSlugOrName: string): Promise<string[]> => {
-  if (roleSlugOrName === 'Super Admin') return ['*'];
+  if (!roleSlugOrName) return ['*'];
+
+  const clean = roleSlugOrName.trim().toLowerCase();
+  
+  // Super Admin & Tenant Owner & Business Owner get full permissions [*]
+  if (
+    clean === 'super admin' || 
+    clean === 'business owner' || 
+    clean === 'tenant owner' || 
+    clean === 'tenant_owner' ||
+    clean.includes('owner') ||
+    clean.startsWith('role-owner')
+  ) {
+    return ['*'];
+  }
 
   // Map user-friendly names to slugs
   const mapper: Record<string, string> = {
@@ -161,23 +177,45 @@ export const getPermissionsForRoleSlug = async (roleSlugOrName: string): Promise
     'Accountant': 'accountant'
   };
 
-  const slug = mapper[roleSlugOrName] || roleSlugOrName.toLowerCase().replace(/\s+/g, '_');
+  const slug = mapper[roleSlugOrName] || clean.replace(/\s+/g, '_');
 
   try {
-    const roleObj = await db.roles.where('slug').equals(slug).first();
+    let roleObj = await db.roles.where('slug').equals(slug).first();
     if (!roleObj) {
-      // Basic fallback permissions
+      roleObj = await db.roles.get(roleSlugOrName);
+    }
+
+    if (!roleObj) {
+      if (slug === 'tenant_owner' || slug.includes('owner')) return ['*'];
+      if (slug === 'business_administrator' || slug === 'admin') {
+        return ['sales.create', 'sales.refund', 'sales.void', 'discount.override', 'inventory.product.create', 'inventory.product.edit', 'inventory.category.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'purchase.create', 'purchase.approve', 'supplier.manage', 'customer.view', 'customer.create', 'expense.manage', 'expense.approve', 'banking.manage', 'taxes.manage', 'reports.view', 'reports.branch', 'reports.sales.view', 'reports.inventory.view', 'users.manage', 'roles.assign', 'branches.manage', 'settings.manage', 'audit.logs.view'];
+      }
+      if (slug === 'branch_manager') {
+        return ['sales.create', 'sales.refund', 'sales.void', 'inventory.product.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'inventory.stock.count', 'purchase.create', 'supplier.manage', 'customer.create', 'customer.view', 'expense.manage', 'reports.branch', 'users.manage', 'audit.logs.view'];
+      }
+      if (slug === 'inventory_officer') {
+        return ['inventory.product.create', 'inventory.product.edit', 'inventory.category.create', 'inventory.stock.view', 'inventory.stock.receive', 'inventory.stock.transfer', 'inventory.stock.adjust', 'inventory.stock.count', 'inventory.stock.wastage', 'inventory.barcode.print', 'purchase.create', 'purchase.approve', 'supplier.manage', 'reports.inventory.view', 'audit.logs.view'];
+      }
+      if (slug === 'accountant') {
+        return ['expense.manage', 'expense.create', 'expense.approve', 'payment.manage', 'financial_reports.view', 'banking.manage', 'taxes.manage', 'reports.view', 'reports.branch', 'inventory.stock.view', 'customer.view', 'supplier.manage', 'audit.logs.view'];
+      }
+      if (slug === 'cashier') {
+        return ['sales.create', 'payment.manage', 'pos.shift.manage', 'customer.create', 'customer.view', 'inventory.stock.view'];
+      }
       return ['sales.create', 'payment.manage'];
     }
 
     const rpList = await db.rolePermissions.where('role_id').equals(roleObj.id).toArray();
-    const permIds = rpList.map(rp => rp.permission_id);
+    if (rpList.length === 0 && (roleObj.slug === 'tenant_owner' || roleObj.slug.includes('owner'))) {
+      return ['*'];
+    }
 
+    const permIds = rpList.map(rp => rp.permission_id);
     const permRecords = await db.permissions.where('id').anyOf(permIds).toArray();
-    return permRecords.map(p => p.slug);
+    return permRecords.length > 0 ? permRecords.map(p => p.slug) : (roleObj.slug === 'tenant_owner' ? ['*'] : ['sales.create', 'payment.manage']);
   } catch (e) {
     console.error('Error fetching role permissions:', e);
-    return ['sales.create', 'payment.manage'];
+    return clean.includes('owner') ? ['*'] : ['sales.create', 'payment.manage'];
   }
 };
 
@@ -240,12 +278,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [theme]);
 
-  // Load session and seed cloud DB on initialization
+  // Load session and restore user state on initialization
   useEffect(() => {
-    // 1. Seed simulated cloud
-    seedCloudDatabase();
-
-    // 2. Restore session
+    // Restore session from localStorage
     const sessionStr = localStorage.getItem('dukapos_session');
     let initFinalized = false;
 
@@ -268,18 +303,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const session = JSON.parse(sessionStr);
         
+        const normalizeRoleName = (r: string): UserRole => {
+          if (!r) return 'Tenant Owner';
+          const clean = r.trim().toLowerCase();
+          if (clean === 'super admin') return 'Super Admin';
+          if (clean.includes('owner') || clean.startsWith('role-owner')) return 'Tenant Owner';
+          if (clean.includes('admin') || clean.startsWith('role-admin')) return 'Business Administrator';
+          if (clean.includes('manager') || clean.startsWith('role-manager')) return 'Branch Manager';
+          if (clean.includes('cashier') || clean.startsWith('role-cashier')) return 'Cashier';
+          if (clean.includes('inventory') || clean.startsWith('role-inventory')) return 'Inventory Officer';
+          if (clean.includes('accountant') || clean.startsWith('role-accountant')) return 'Accountant';
+          return (r as UserRole) || 'Tenant Owner';
+        };
+
         const restoreSessionData = (sess: any) => {
-          setUserState(sess.user);
-          setRoleState(sess.role);
+          const normRole = normalizeRoleName(sess.role || sess.user?.role);
+          const normUser = sess.user ? { ...sess.user, role: normRole } : null;
+          setUserState(normUser);
+          setRoleState(normRole);
           setTenantState(sess.tenant);
           setCurrentBranchState(sess.branch);
           setCurrentIndustryState(sess.industry);
           setJwtToken(sess.jwtToken);
           setJwtClaims(sess.jwtClaims);
-          if (sess.role === 'Super Admin' || sess.user?.role === 'Super Admin' || sess.isSuperAdminView) {
+          if (normRole === 'Super Admin' || normUser?.role === 'Super Admin' || sess.isSuperAdminView) {
             setIsSuperAdminView(true);
           }
-          console.log(`[Auth] Session restored successfully for ${sess.user.name}`);
+          console.log(`[Auth] Session restored successfully for ${normUser?.name || 'User'} (${normRole})`);
           
           if (sess.tenant && sess.tenant.id) {
             syncFromCloudOnLogin(sess.tenant.id).catch(err => {
@@ -398,7 +448,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       'ind-restaurant': 'Restaurant',
       'ind-sacco': 'SACCO',
       'ind-bar': 'Bar',
-      'ind-consulting': 'BusinessConsultant'
+      'ind-consulting': 'BusinessConsultant',
+      'ind-technical': 'TechnicalCompany'
     };
     const industryId = currentUser.industry_id || 'ind-retail';
     const activeInd = { id: industryId, name: indNames[industryId] || 'Retail' };
@@ -415,11 +466,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const setUser = (newUser: User | null) => {
-    setUserState(newUser);
     if (newUser) {
+      const cleanRole = (newUser.role || '').toLowerCase();
+      let normRole: UserRole = newUser.role;
+      if (cleanRole === 'super admin') normRole = 'Super Admin';
+      else if (cleanRole.includes('owner') || cleanRole.startsWith('role-owner')) normRole = 'Tenant Owner';
+      else if (cleanRole.includes('admin') || cleanRole.startsWith('role-admin')) normRole = 'Business Administrator';
+      else if (cleanRole.includes('manager') || cleanRole.startsWith('role-manager')) normRole = 'Branch Manager';
+      else if (cleanRole.includes('cashier') || cleanRole.startsWith('role-cashier')) normRole = 'Cashier';
+      else if (cleanRole.includes('inventory')) normRole = 'Inventory Officer';
+      else if (cleanRole.includes('accountant')) normRole = 'Accountant';
+
+      const normalizedUser = { ...newUser, role: normRole };
+      setUserState(normalizedUser);
       setIsInitializing(true);
-      setRoleState(newUser.role);
-      if (newUser.role === 'Super Admin') {
+      setRoleState(normRole);
+      if (normRole === 'Super Admin') {
         setIsSuperAdminView(true);
       } else {
         setIsSuperAdminView(false);
@@ -454,7 +516,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'ind-restaurant': 'Restaurant',
         'ind-sacco': 'SACCO',
         'ind-bar': 'Bar',
-        'ind-consulting': 'BusinessConsultant'
+        'ind-consulting': 'BusinessConsultant',
+        'ind-technical': 'TechnicalCompany'
       };
       const industryId = newUser.industry_id || 'ind-retail';
       setCurrentIndustryState({ id: industryId, name: indNames[industryId] || 'Retail' });
@@ -600,7 +663,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       'ind-restaurant': 'Restaurant',
       'ind-sacco': 'SACCO',
       'ind-bar': 'Bar',
-      'ind-consulting': 'BusinessConsultant'
+      'ind-consulting': 'BusinessConsultant',
+      'ind-technical': 'TechnicalCompany'
     };
     setCurrentIndustryState({ id: industryId, name: indNames[industryId] || 'Retail' });
     setRoleState(roleName);
@@ -658,7 +722,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const hasBranchAccess = (targetBranchId: string): boolean => {
     if (!user) return false;
-    if (user.role === 'Super Admin' || user.role === 'Business Owner') return true;
+    const rClean = (user.role || '').toLowerCase();
+    if (rClean === 'super admin' || rClean === 'business owner' || rClean === 'tenant owner' || rClean.includes('owner')) return true;
     return user.branch_id === targetBranchId;
   };
 
@@ -846,6 +911,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const hasPermission = (permission: string): boolean => {
+    if (!user) return false;
+    const rLower = (role || user.role || '').toLowerCase();
+    if (
+      rLower === 'super admin' || 
+      rLower === 'business owner' || 
+      rLower === 'tenant owner' || 
+      rLower === 'tenant_owner' ||
+      rLower.includes('owner') ||
+      rLower.startsWith('role-owner')
+    ) {
+      return true;
+    }
     if (!jwtClaims) return false;
     if (jwtClaims.permissions.includes('*')) return true;
     return jwtClaims.permissions.includes(permission);

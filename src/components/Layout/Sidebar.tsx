@@ -12,7 +12,7 @@ import {
   Egg, Heart, Footprints, Activity, Database,
   Truck, ShoppingCart, ClipboardList, Receipt,
   Calendar, Clock, Target, MessageSquare,
-  GlassWater, UserCheck
+  GlassWater, UserCheck, Wallet
 } from 'lucide-react';
 
 interface SidebarProps {}
@@ -85,7 +85,56 @@ export const Sidebar: React.FC<SidebarProps> = () => {
   };
 
   const sidebarItems = useMemo(() => {
-    return rawSidebarItems
+    let items = [...rawSidebarItems];
+    if (!isSuperAdminView && !items.some(item => (typeof item === 'string' ? item : item.name) === 'AI Insights Engine')) {
+      const settingsIdx = items.findIndex(item => (typeof item === 'string' ? item : item.name) === 'Settings');
+      const aiItem: SidebarItem = {
+        name: 'AI Insights Engine',
+        subItems: [
+          'Business Health Score',
+          'Sales Intelligence',
+          'Inventory Intelligence',
+          'Profit & Pricing',
+          'Customer CLV',
+          'Cash Flow & Burn',
+          'Fraud & Security',
+          'Branch Comparison',
+          'Demand Forecast'
+        ]
+      };
+      if (settingsIdx !== -1) {
+        items.splice(settingsIdx, 0, aiItem);
+      } else {
+        items.push(aiItem);
+      }
+    }
+
+    if (!isSuperAdminView && !items.some(item => (typeof item === 'string' ? item : item.name) === 'Cash Drawer')) {
+      const posIdx = items.findIndex(item => {
+        const n = (typeof item === 'string' ? item : item.name).toLowerCase();
+        return n === 'pos' || n.includes('sale') || n.includes('counter');
+      });
+      const cashDrawerItem: SidebarItem = {
+        name: 'Cash Drawer',
+        subItems: [
+          'Shift & Active Register',
+          'Cash Movement Ledger',
+          'Reconciliation & Variances',
+          'Safe & Bank Deposits',
+          'No Sale & Event Logs',
+          '15 Financial Reports',
+          'Security & RBAC Rules',
+          'AI Cash Advisor'
+        ]
+      };
+      if (posIdx !== -1) {
+        items.splice(posIdx + 1, 0, cashDrawerItem);
+      } else {
+        items.push(cashDrawerItem);
+      }
+    }
+
+    return items
       .map(item => {
         const name = typeof item === 'string' ? item : item.name;
         if (name === 'Settings' || name === 'System Settings' || name === 'General Settings') {
@@ -99,8 +148,42 @@ export const Sidebar: React.FC<SidebarProps> = () => {
               'Security Policies',
               'Terminals & Sessions',
               'Subscriptions & Billing',
+              'Developer Options',
+              'User Manual & Guide',
               'Change Log'
             ]
+          };
+        }
+
+        if (name === 'Inventory' || name === 'Beverage Inventory') {
+          const rawSubs = typeof item === 'string'
+            ? ['Products', 'Categories', 'Stock Adjustment', 'Stock Transfer', 'Stock Alerts']
+            : (item.subItems || []);
+
+          const baseSubs = rawSubs.filter(
+            s => s !== 'Categories' && s !== 'Stock Sync Engine' && s !== 'Categories & Brands' && s !== 'Product Bundles & Kits'
+          );
+
+          const alertsIndex = baseSubs.findIndex(
+            s => s === 'Stock Alerts' || s === 'Low Stock Alerts' || s === 'Low Stock'
+          );
+
+          const injectedItems = ['Stock Sync Engine', 'Categories & Brands', 'Product Bundles & Kits'];
+
+          let newSubItems: string[];
+          if (alertsIndex !== -1) {
+            newSubItems = [
+              ...baseSubs.slice(0, alertsIndex + 1),
+              ...injectedItems,
+              ...baseSubs.slice(alertsIndex + 1)
+            ];
+          } else {
+            newSubItems = [...baseSubs, ...injectedItems];
+          }
+
+          return {
+            name: typeof item === 'string' ? item : item.name,
+            subItems: newSubItems
           };
         }
 
@@ -129,6 +212,9 @@ export const Sidebar: React.FC<SidebarProps> = () => {
             subLower === 'security policies' ||
             subLower === 'terminals & sessions' ||
             subLower === 'subscriptions & billing' ||
+            subLower === 'developer options' ||
+            subLower === 'user manual & guide' ||
+            subLower === 'user manual' ||
             subLower === 'change log'
           ) {
             return hasPermission('settings.manage') || ['Super Admin', 'Business Owner', 'Tenant Owner', 'Business Administrator'].includes(role);
@@ -164,6 +250,7 @@ export const Sidebar: React.FC<SidebarProps> = () => {
   const getIcon = (name: string) => {
     const n = name.toLowerCase();
     if (n === 'dashboard') return <BarChart3 className="h-4.5 w-4.5 shrink-0" />;
+    if (n.includes('ai') || n.includes('copilot') || n.includes('intelligence')) return <Sparkles className="h-4.5 w-4.5 shrink-0 text-indigo-500" />;
     if (n === 'pos') return <ShoppingCart className="h-4.5 w-4.5 shrink-0" />;
     if (n.includes('inventory') || n === 'products' || n === 'medicines') return <Package className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'customers' || n === 'members' || n === 'patients' || n === 'clients' || n === 'guests' || n === 'students' || n === 'tenants' || n === 'employees' || n === 'staff' || n === 'users & roles') return <Users className="h-4.5 w-4.5 shrink-0" />;
@@ -202,6 +289,7 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     if (n === 'salon' || n === 'commission') return <Scissors className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'rooms' || n === 'reservations') return <Bed className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'expenses' || n === 'expense ledger' || n === 'operating expenses') return <Receipt className="h-4.5 w-4.5 shrink-0" />;
+    if (n.includes('cash drawer') || n.includes('drawer')) return <Wallet className="h-4.5 w-4.5 shrink-0 text-emerald-500" />;
     
     // Poultry & Livestock specific matches
     if (n === 'animals') return <Footprints className="h-4.5 w-4.5 shrink-0" />;

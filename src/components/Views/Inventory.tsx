@@ -7,9 +7,9 @@ import {
   type BatchLot, type StockTransfer,
   type PhysicalCount,
   recordStockMovement,
-  recalculateProductStock,
+  syncParentStock,
 } from '../../db/dexie';
-import { ProductService, createCategory, updateCategory, deleteCategory, createBrand, updateBrand, deleteBrand } from '../../services/productService';
+import { ProductService, cleanDuplicateVariants, getVariantAttrSig, createCategory, updateCategory, deleteCategory, createBrand, updateBrand, deleteBrand } from '../../services/productService';
 import { Html5Qrcode } from 'html5-qrcode';
 import {
   getDashboardKPIs, get7DayMovements, generateValuationReport,
@@ -17,10 +17,12 @@ import {
   addSerialNumbers, createStockTransfer, submitTransfer, receiveTransfer,
   createPhysicalCount, updateCountItem, submitCountForApproval, approvePhysicalCount,
   saveReorderRule, getReorderReport, getSlowMovingReport, getNegativeStockReport,
-  logWastage,
+  logWastage, getBranchValuationSummary, getProductValuationMetrics, getHistoricalValuation,
   type InventoryKPIs, type DailyMovement, type ReorderAlert,
+  type ProductValuationMetric, type BranchValuationSummary, type HistoricalValuationSnapshot,
 } from '../../services/inventoryService';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { stockLedgerSyncEngine, INBOUND_MOVEMENT_TYPES } from '../../services/stockLedgerSyncEngine';
 import { DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../../services/settingsService';
 import { Dialog, Badge, Input, Button } from '../UI/custom-ui';
 import {
@@ -28,14 +30,14 @@ import {
   AlertTriangle, Package, Layers, BarChart3, Tag, Clock,
   X, CheckCircle2, ArrowLeftRight, ClipboardList, FileText,
   RefreshCw, TrendingUp, TrendingDown, Archive, AlertCircle, Zap,
-  ChevronRight, Barcode, Hash, Calendar, Target,
+  ChevronRight, ChevronDown, Download, Barcode, Hash, Calendar, Target,
   Send, Check, Eye,
   ShoppingCart, Activity, DollarSign, Shield, Camera, Upload,
 } from 'lucide-react';
 import './Inventory.css';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
-type InventoryTab = 'dashboard' | 'products' | 'categories' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
+type InventoryTab = 'dashboard' | 'products' | 'categories' | 'stockSync' | 'ledger' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
 type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'batch' | 'serials' | 'reorder' | 'history';
 type ReportType = 'balance' | 'movements' | 'valuation' | 'batch' | 'expiry' | 'reorder' | 'slow' | 'negative';
 
@@ -92,7 +94,14 @@ export const Inventory: React.FC = () => {
         setInvTab('products');
         break;
       case 'Categories':
+      case 'Categories & Brands':
+      case 'Categories & brands':
         setInvTab('categories');
+        break;
+      case 'Product Bundles & Kits':
+      case 'Product Bundles':
+      case 'Bundles & Kits':
+        setInvTab('recipes' as any);
         break;
       case 'Stock Adjustment':
       case 'Stock Adjustments':
@@ -101,6 +110,11 @@ export const Inventory: React.FC = () => {
       case 'Stock Transfer':
       case 'Stock Transfers':
         setInvTab('transfers');
+        break;
+      case 'Stock Sync':
+      case 'Stock Sync Engine':
+      case 'Stock Ledger Sync':
+        setInvTab('stockSync');
         break;
       case 'Stock Alerts':
       case 'Low Stock Alerts':
@@ -141,8 +155,13 @@ export const Inventory: React.FC = () => {
   const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
-  const [catOrBrandTab, setCatOrBrandTab] = useState<'categories' | 'brands'>('categories');
   const [brandSearch, setBrandSearch] = useState('');
+  const [catFilter, setCatFilter] = useState<'all' | 'active' | 'empty'>('all');
+  const [catSort, setCatSort] = useState<'count' | 'name'>('count');
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  const [brandFilter, setBrandFilter] = useState<'all' | 'active' | 'empty'>('all');
+  const [brandSort, setBrandSort] = useState<'count' | 'name'>('count');
+  const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
 
   // ── Camera Barcode Scanner States ──────────────────────────────────────────
   const [isCameraScannerOpen, setIsCameraScannerOpen] = useState(false);
@@ -236,9 +255,9 @@ export const Inventory: React.FC = () => {
   const products = useLiveQuery(() =>
     db.products
       .where('tenant_id').equals(currentTenant?.id || '')
-      .and(p => p.module === activeModule && !p.deletedAt)
+      .and(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive')
       .toArray()
-  , [currentTenant?.id, activeModule]) || [];
+  , [currentTenant?.id]) || [];
 
   const productVariants = useLiveQuery(() =>
     db.productVariants.where('tenant_id').equals(currentTenant?.id || '')
@@ -293,33 +312,18 @@ export const Inventory: React.FC = () => {
     [currentTenant.id]
   ) || [];
 
-  const handleRenameCategory = async (oldName: string) => {
-    const newName = prompt(`Rename Category "${oldName}" to:`, oldName);
-    if (!newName || !newName.trim() || newName.trim() === oldName) return;
-    
-    const trimmed = newName.trim();
-    try {
-      const catRec = await db.categories.where('tenant_id').equals(currentTenant.id).filter(c => c.name === oldName).first();
-      if (catRec) {
-        await updateCategory(catRec.id, { name: trimmed });
-      }
-    } catch {}
 
-    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
-    const categoryProds = prods.filter(p => p.category === oldName);
-    
-    await db.transaction('rw', db.products, async () => {
-      for (const p of categoryProds) {
-        p.category = trimmed;
-        p.syncStatus = 'PENDING';
-        await db.products.put(p);
-      }
-    });
-    alert(`Successfully renamed category "${oldName}" to "${trimmed}" for ${categoryProds.length} products.`);
-  };
 
   const handleDeleteCategory = async (name: string) => {
-    if (!confirm(`Are you sure you want to delete the category "${name}"? Products under this category will be moved to "General".`)) return;
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const categoryProds = prods.filter(p => p.category === name);
+
+    if (categoryProds.length > 0) {
+      alert(`⚠️ Cannot delete category "${name}"!\n\nThere are ${categoryProds.length} product(s) currently assigned to this category. Please reassign or delete those products first before deleting this category.`);
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete the empty category "${name}"?`)) return;
     
     try {
       const catRec = await db.categories.where('tenant_id').equals(currentTenant.id).filter(c => c.name === name).first();
@@ -327,47 +331,21 @@ export const Inventory: React.FC = () => {
         await deleteCategory(catRec.id);
       }
     } catch {}
-
-    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
-    const categoryProds = prods.filter(p => p.category === name);
-    
-    await db.transaction('rw', db.products, async () => {
-      for (const p of categoryProds) {
-        p.category = 'General';
-        p.syncStatus = 'PENDING';
-        await db.products.put(p);
-      }
-    });
-    alert(`Category "${name}" deleted. ${categoryProds.length} products moved to "General".`);
+    alert(`✅ Category "${name}" successfully deleted.`);
   };
 
-  const handleRenameBrand = async (oldName: string) => {
-    const newName = prompt(`Rename Brand "${oldName}" to:`, oldName);
-    if (!newName || !newName.trim() || newName.trim() === oldName) return;
-    
-    const trimmed = newName.trim();
-    try {
-      const brandRec = await db.brands.where('tenant_id').equals(currentTenant.id).filter(b => b.name === oldName).first();
-      if (brandRec) {
-        await updateBrand(brandRec.id, { name: trimmed });
-      }
-    } catch {}
 
-    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
-    const brandProds = prods.filter(p => p.brand === oldName);
-    
-    await db.transaction('rw', db.products, async () => {
-      for (const p of brandProds) {
-        p.brand = trimmed;
-        p.syncStatus = 'PENDING';
-        await db.products.put(p);
-      }
-    });
-    alert(`Successfully renamed brand "${oldName}" to "${trimmed}" for ${brandProds.length} products.`);
-  };
 
   const handleDeleteBrand = async (name: string) => {
-    if (!confirm(`Are you sure you want to delete the brand "${name}"? Products under this brand will have no brand assigned.`)) return;
+    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+    const brandProds = prods.filter(p => p.brand === name);
+
+    if (brandProds.length > 0) {
+      alert(`⚠️ Cannot delete brand "${name}"!\n\nThere are ${brandProds.length} product(s) currently assigned to this brand. Please reassign or delete those products first before deleting this brand.`);
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete the empty brand "${name}"?`)) return;
     
     try {
       const brandRec = await db.brands.where('tenant_id').equals(currentTenant.id).filter(b => b.name === name).first();
@@ -375,18 +353,7 @@ export const Inventory: React.FC = () => {
         await deleteBrand(brandRec.id);
       }
     } catch {}
-
-    const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
-    const brandProds = prods.filter(p => p.brand === name);
-    
-    await db.transaction('rw', db.products, async () => {
-      for (const p of brandProds) {
-        delete p.brand;
-        p.syncStatus = 'PENDING';
-        await db.products.put(p);
-      }
-    });
-    alert(`Brand "${name}" deleted from ${brandProds.length} products.`);
+    alert(`✅ Brand "${name}" successfully deleted.`);
   };
 
   // Recipe sub-tab states
@@ -747,58 +714,88 @@ export const Inventory: React.FC = () => {
     setCsvLoading(true);
     try {
       let importCount = 0;
-      for (const row of validRows) {
-        const prodId = typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `prod-import-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-        const productObj: Product = {
-          id: prodId,
-          name: row.name,
-          category: row.category,
-          buyingPrice: row.buyingPrice,
-          sellingPrice: row.sellingPrice,
-          price: row.sellingPrice,
-          stock: 0,
-          tenant_id: currentTenant.id,
-          branch_id: currentBranch.id,
-          module: activeModule,
-          hasVariants: false,
-          brand: row.brand || undefined,
-          sku: row.sku || `SKU-${row.name.replace(/\s+/g, '').toUpperCase().slice(0, 4)}-${Math.floor(1000 + Math.random() * 9000)}`,
-          barcode: row.barcode || undefined,
-          syncStatus: 'PENDING'
-        };
+      // Wrap import in a single atomic Dexie transaction with UPSERT logic
+      await db.transaction('rw', db.products, db.productVariants, db.stockLedger, db.stockBalance, db.syncQueue, async () => {
+        const existingProducts = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
 
-        const ctx = {
-          id: user?.id || 'usr-anon',
-          tenant_id: currentTenant.id,
-          branch_id: currentBranch.id,
-          role: user?.role || 'Business Owner',
-          name: user?.name || 'User'
-        };
+        for (const row of validRows) {
+          const rowSku = (row.sku || '').trim().toLowerCase();
+          const rowName = (row.name || '').trim().toLowerCase();
+          const rowCat = (row.category || '').trim().toLowerCase();
 
-        await ProductService.createProduct(productObj, ctx, isOnline);
+          // Check if product already exists by SKU or Name+Category
+          const existing = existingProducts.find(p => 
+            (rowSku && p.sku && p.sku.trim().toLowerCase() === rowSku) ||
+            (p.name.trim().toLowerCase() === rowName && p.category.trim().toLowerCase() === rowCat)
+          );
 
-        if (row.stock > 0) {
-          await recordStockMovement({
-            tenant_id: currentTenant.id,
-            branch_id: currentBranch.id,
-            warehouse_id: 'warehouse-main',
-            product_id: prodId,
-            movement_type: 'OPENING_STOCK',
-            reference_type: 'OPENING',
-            quantity_change: row.stock,
-            unit_cost: row.buyingPrice,
-            total_cost: row.buyingPrice * row.stock,
-            user_id: user?.name || 'System Importer',
-            notes: 'Imported initial stock via CSV'
-          });
+          let prodId: string;
+          if (existing) {
+            // UPSERT: Update existing product
+            prodId = existing.id;
+            const updatedProd: Product = {
+              ...existing,
+              buyingPrice: row.buyingPrice || existing.buyingPrice,
+              sellingPrice: row.sellingPrice || existing.sellingPrice,
+              price: row.sellingPrice || existing.price,
+              brand: row.brand || existing.brand,
+              sku: row.sku || existing.sku,
+              barcode: row.barcode || existing.barcode,
+              syncStatus: 'PENDING',
+              updatedAt: Date.now(),
+            };
+            await db.products.put(updatedProd);
+          } else {
+            // INSERT: Create new product
+            prodId = typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `prod-import-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+            const newProd: Product = {
+              id: prodId,
+              name: row.name.trim(),
+              category: row.category.trim(),
+              buyingPrice: row.buyingPrice,
+              sellingPrice: row.sellingPrice,
+              price: row.sellingPrice,
+              stock: 0,
+              tenant_id: currentTenant.id,
+              branch_id: currentBranch.id,
+              module: activeModule,
+              hasVariants: false,
+              brand: row.brand || undefined,
+              sku: row.sku || `SKU-${row.name.replace(/\s+/g, '').toUpperCase().slice(0, 4)}-${Math.floor(1000 + Math.random() * 9000)}`,
+              barcode: row.barcode || undefined,
+              syncStatus: 'PENDING',
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            await db.products.put(newProd);
+            existingProducts.push(newProd);
+          }
+
+          if (row.stock > 0) {
+            await recordStockMovement({
+              tenant_id: currentTenant.id,
+              branch_id: currentBranch.id,
+              warehouse_id: 'warehouse-main',
+              product_id: prodId,
+              movement_type: existing ? 'ADJUSTMENT_GAIN' : 'OPENING_STOCK',
+              reference_type: existing ? 'CSV_UPDATE' : 'OPENING',
+              quantity_change: row.stock,
+              unit_cost: row.buyingPrice,
+              total_cost: row.buyingPrice * row.stock,
+              user_id: user?.name || 'System Importer',
+              notes: existing ? 'CSV import stock update' : 'Imported initial stock via CSV'
+            });
+            await syncParentStock(prodId);
+          }
+          importCount++;
         }
-        importCount++;
-      }
+      });
 
-      alert(`Successfully imported ${importCount} products.`);
+      alert(`🎉 Successfully imported ${importCount} product(s).`);
       setIsCsvImportOpen(false);
       setCsvData('');
       setCsvParsedRows([]);
@@ -812,49 +809,475 @@ export const Inventory: React.FC = () => {
 
   const allWarehouses = useLiveQuery(() => db.warehouses.where('tenant_id').equals(currentTenant?.id || '').toArray(), [currentTenant?.id]) || [];
 
-  // ── Alerts state ───────────────────────────────────────────────────────────
+  // ── Alerts & Valuation State ───────────────────────────────────────────────
   const [kpis, setKpis] = useState<InventoryKPIs | null>(null);
   const [movements7d, setMovements7d] = useState<DailyMovement[]>([]);
   const [reorderAlerts, setReorderAlerts] = useState<ReorderAlert[]>([]);
+  const [branchSummaryData, setBranchSummaryData] = useState<{
+    branches: BranchValuationSummary[];
+    tenantTotals: {
+      buyingValue: number;
+      sellingValue: number;
+      potentialProfit: number;
+      marginPercent: number;
+      itemCount: number;
+      totalUnits: number;
+    };
+  } | null>(null);
+  const [productValuationList, setProductValuationList] = useState<ProductValuationMetric[]>([]);
+  const [ledgerDrilldownProduct, setLedgerDrilldownProduct] = useState<ProductValuationMetric | null>(null);
+  const [ledgerDrilldownEntries, setLedgerDrilldownEntries] = useState<StockLedgerEntry[]>([]);
+  const [isDrilldownOpen, setIsDrilldownOpen] = useState(false);
+  const [selectedLedgerProductId, setSelectedLedgerProductId] = useState<string>('');
+  const [ledgerSearchQuery, setLedgerSearchQuery] = useState<string>('');
+  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<string>('ALL');
+
+  // Categories & Brands Form State (Project-1 design)
+  const [catName, setCatName] = useState('');
+  const [catDesc, setCatDesc] = useState('');
+  const [editingCategory, setEditingCategory] = useState<{ id: string; name: string } | null>(null);
+  const [brandName, setBrandName] = useState('');
+  const [brandDesc, setBrandDesc] = useState('');
+  const [editingBrand, setEditingBrand] = useState<{ id: string; name: string } | null>(null);
+
+  // Historical Valuation Filter States
+  const [historicalSnapshot, setHistoricalSnapshot] = useState<HistoricalValuationSnapshot | null>(null);
+  const [snapshotPreset, setSnapshotPreset] = useState<'today' | 'yesterday' | '7d' | '30d' | 'month_end' | 'year_end'>('today');
+  const [valuationPriceTier, setValuationPriceTier] = useState<'retail' | 'wholesale' | 'vip' | 'online'>('retail');
 
   useEffect(() => {
     const load = async () => {
-      const [k, m, r] = await Promise.all([
+      await cleanDuplicateVariants(currentTenant.id);
+      const [k, m, r, bSummary, pMetrics] = await Promise.all([
         getDashboardKPIs(currentTenant.id, currentBranch.id),
         get7DayMovements(currentTenant.id),
         evaluateReorderRules(currentTenant.id, currentBranch.id),
+        getBranchValuationSummary(currentTenant.id),
+        getProductValuationMetrics(currentTenant.id, currentBranch.id),
       ]);
       setKpis(k);
       setMovements7d(m);
       setReorderAlerts(r);
+      setBranchSummaryData(bSummary);
+      setProductValuationList(pMetrics);
     };
     load();
-  }, [currentTenant.id, currentBranch.id, products.length]);
+  }, [currentTenant.id, currentBranch.id, products, productVariants]);
+
+  // Load historical snapshot on change
+  useEffect(() => {
+    const loadSnapshot = async () => {
+      const now = Date.now();
+      const dayMs = 86_400_000;
+      let targetTime = now;
+      if (snapshotPreset === 'yesterday') targetTime = now - dayMs;
+      else if (snapshotPreset === '7d') targetTime = now - 7 * dayMs;
+      else if (snapshotPreset === '30d') targetTime = now - 30 * dayMs;
+      else if (snapshotPreset === 'month_end') {
+        const d = new Date();
+        targetTime = new Date(d.getFullYear(), d.getMonth(), 1).getTime() - 1;
+      } else if (snapshotPreset === 'year_end') {
+        const d = new Date();
+        targetTime = new Date(d.getFullYear(), 0, 1).getTime() - 1;
+      }
+
+      const snap = await getHistoricalValuation(currentTenant.id, currentBranch.id, targetTime, valuationPriceTier);
+      setHistoricalSnapshot(snap);
+    };
+    loadSnapshot();
+  }, [currentTenant.id, currentBranch.id, snapshotPreset, valuationPriceTier, products, productVariants]);
+
+  // Drilldown handler for stock ledger
+  const openLedgerDrilldown = async (pItem: ProductValuationMetric | Product) => {
+    let pMetric: ProductValuationMetric;
+    if ('productId' in pItem && pItem.productId) {
+      pMetric = pItem as ProductValuationMetric;
+    } else {
+      const p = pItem as Product;
+      const foundMetric = productValuationList.find(m => m.productId === p.id && !m.variantId);
+      if (foundMetric) {
+        pMetric = foundMetric;
+      } else {
+        const qty = Math.max(0, p.stock || 0);
+        const buyPrice = p.buyingPrice || 0;
+        const sellPrice = p.sellingPrice || p.price || 0;
+        const buyVal = qty * buyPrice;
+        const sellVal = qty * sellPrice;
+        const profit = sellVal - buyVal;
+        const margin = sellVal > 0 ? Math.round((profit / sellVal) * 1000) / 10 : 0;
+        const status = qty <= 0 ? 'Out of Stock' : qty < 10 ? 'Low Stock' : 'In Stock';
+        pMetric = {
+          productId: p.id,
+          name: p.name,
+          category: p.category,
+          sku: p.sku || '—',
+          currentQuantity: qty,
+          averageCostPrice: buyPrice,
+          lastPurchaseCost: buyPrice,
+          sellingPrice: sellPrice,
+          wholesalePrice: (p as any).wholesalePrice || 0,
+          vipPrice: (p as any).vipPrice || 0,
+          onlinePrice: (p as any).onlinePrice || 0,
+          buyingValue: buyVal,
+          sellingValue: sellVal,
+          expectedProfit: profit,
+          profitPercent: margin,
+          stockStatus: status,
+          lastMovementDate: null,
+          lastMovementType: null,
+          stockAgeDays: 0,
+        };
+      }
+    }
+    setLedgerDrilldownProduct(pMetric);
+    const query = db.stockLedger.where('product_id').equals(pMetric.productId);
+    let entries = await query.toArray();
+    if (pMetric.variantId) {
+      entries = entries.filter(e => e.variant_id === pMetric.variantId);
+    }
+    entries.sort((a, b) => b.created_at - a.created_at);
+    setLedgerDrilldownEntries(entries);
+    setSelectedLedgerProductId(pMetric.productId);
+    setIsDrilldownOpen(true);
+  };
+
+  // Product Editor States & Open Handler (accessible by all tabs)
+  const [pId, setPId] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'simple' | 'variant'>('all');
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [editorTab, setEditorTab] = useState<ProductTab>('general');
+
+  // Editor Form fields
+  const [pName, setPName] = useState('');
+  const [productCreatedAtDate, setProductCreatedAtDate] = useState('');
+
+  // --- Supervisor PIN Approval ---
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [pinReason, setPinReason] = useState('');
+  const [enteredPin, setEnteredPin] = useState('');
+  const [pinSuccessCallback, setPinSuccessCallback] = useState<(() => void) | null>(null);
+
+  const requestPinApproval = (reason: string, callback: () => void) => {
+    setPinReason(reason);
+    setEnteredPin('');
+    setPinSuccessCallback(() => callback);
+    setIsPinModalOpen(true);
+  };
+
+  const handleVerifyPin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (enteredPin === '1234' || enteredPin === 'admin123') {
+      setIsPinModalOpen(false);
+      if (pinSuccessCallback) pinSuccessCallback();
+    } else {
+      alert('Invalid supervisor PIN. Access denied.');
+    }
+  };
+  const [pCategory, setPCategory] = useState('');
+  const [pBrand, setPBrand] = useState('');
+  const [pDescription, setPDescription] = useState('');
+  const [pSupplier, setPSupplier] = useState('');   // supplier display name (free-text fallback)
+  const [pSupplierId, setPSupplierId] = useState(''); // linked supplier ID from db.suppliers
+  const [pTaxRate, setPTaxRate] = useState(0);
+  const [pHasVariants, setPHasVariants] = useState(false);
+  const [pImageUrl, setPImageUrl] = useState('');
+  const [pImagePreview, setPImagePreview] = useState('');
+  const [pExpiry, setPExpiry] = useState('');
+  const [pModule, setPModule] = useState(activeModule);
+  const [pBuyingPrice, setPBuyingPrice] = useState(0);
+  const [pSellingPrice, setPSellingPrice] = useState(0);
+  const [pWholesalePrice, setPWholesalePrice] = useState(0);
+  const [pVipPrice, setPVipPrice] = useState(0);
+  const [pOnlinePrice, setPOnlinePrice] = useState(0);
+  const [pStock, setPStock] = useState(0);
+  const [pReorderLevel, setPReorderLevel] = useState(5);
+  const [pSku, setPSku] = useState('');
+  const [pBarcode, setPBarcode] = useState('');
+
+  // Product photo camera state
+  const [isPhotoCameraOpen, setIsPhotoCameraOpen] = useState(false);
+  const [photoCameraStream, setPhotoCameraStream] = useState<MediaStream | null>(null);
+  const photoVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const startImageCamera = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      setPhotoCameraStream(stream);
+      setIsPhotoCameraOpen(true);
+    } catch (err) {
+      console.warn('Camera stream error, launching camera file input fallback:', err);
+      (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
+    }
+  };
+
+  const stopPhotoCamera = useCallback(() => {
+    if (photoCameraStream) {
+      photoCameraStream.getTracks().forEach(track => track.stop());
+      setPhotoCameraStream(null);
+    }
+    setIsPhotoCameraOpen(false);
+  }, [photoCameraStream]);
+
+  const capturePhoto = () => {
+    if (photoVideoRef.current) {
+      const video = photoVideoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPImageUrl(dataUrl);
+        setPImagePreview(dataUrl);
+        stopPhotoCamera();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isPhotoCameraOpen && photoCameraStream && photoVideoRef.current) {
+      photoVideoRef.current.srcObject = photoCameraStream;
+    }
+  }, [isPhotoCameraOpen, photoCameraStream]);
+
+  // Variants state
+  const [localVariants, setLocalVariants] = useState<ProductVariant[]>([]);
+  const [originalVariants, setOriginalVariants] = useState<ProductVariant[]>([]);
+  const [selectedVariantIds, setSelectedVariantIds] = useState<Set<string>>(new Set());
+  const [customAttributes, setCustomAttributes] = useState<Record<string, string[]>>({});
+  const [newAttrName, setNewAttrName] = useState('');
+  const [newAttrValues, setNewAttrValues] = useState('');
+  const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
+
+  // Batch/Lot form
+  const [batchNum, setBatchNum] = useState('');
+  const [batchQty, setBatchQty] = useState(0);
+  const [batchCost, setBatchCost] = useState(0);
+  const [batchExpiry, setBatchExpiry] = useState('');
+  const [batchSupplier, setBatchSupplier] = useState('');   // supplier display name
+  const [batchSupplierId, setBatchSupplierId] = useState(''); // linked supplier ID
+  const [batchSaving, setBatchSaving] = useState(false);
+
+  // Serial form
+  const [serialInput, setSerialInput] = useState('');
+
+  // Reorder rule form
+  const [rrMinQty, setRrMinQty] = useState(10);
+  const [rrMaxQty, setRrMaxQty] = useState(200);
+  const [rrReorderQty, setRrReorderQty] = useState(50);
+  const [rrLeadTime, setRrLeadTime] = useState(7);
+  const [rrSupplier, setRrSupplier] = useState('');
+  const [rrSaving, setRrSaving] = useState(false);
+
+  // Product batches and serials for the selected product
+  const productBatches = useLiveQuery(async () => {
+    if (!pId) return [];
+    return db.batchLots.where('product_id').equals(pId).toArray();
+  }, [pId]) || [];
+
+  const productSerials = useLiveQuery(async () => {
+    if (!pId) return [];
+    return db.serialNumbers.where('product_id').equals(pId).toArray();
+  }, [pId]) || [];
+
+  const productHistory = useLiveQuery(async () => {
+    if (!pId) return [];
+    const entries = await db.stockLedger.where('product_id').equals(pId).toArray();
+    return entries.sort((a, b) => b.created_at - a.created_at);
+  }, [pId]) || [];
+
+  const productReorderRule = useLiveQuery(async () => {
+    if (!pId) return null;
+    return db.reorderRules.where('product_id').equals(pId).and(r => !r.variant_id).first();
+  }, [pId]);
+
+  useEffect(() => {
+    if (productReorderRule) {
+      setRrMinQty(productReorderRule.min_quantity);
+      setRrMaxQty(productReorderRule.max_quantity);
+      setRrReorderQty(productReorderRule.reorder_quantity);
+      setRrLeadTime(productReorderRule.lead_time_days);
+      setRrSupplier(productReorderRule.preferred_supplier_name ?? '');
+    }
+  }, [productReorderRule?.id]);
+
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      const q = searchQuery.toLowerCase();
+      const matchSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q);
+      const matchType = filterType === 'all' || (filterType === 'simple' && !p.hasVariants) || (filterType === 'variant' && p.hasVariants);
+      return matchSearch && matchType;
+    });
+  }, [products, searchQuery, filterType]);
+
+  const stats = useMemo(() => {
+    const total = products.length;
+    const variantProducts = products.filter(p => p.hasVariants).length;
+    
+    // Low stock: simple products with stock < 10 + variants with stock < (reorderLevel || 5)
+    const simpleLow = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).length;
+    const variantLow = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).length;
+    const lowStock = simpleLow + variantLow;
+
+    // Out of stock: simple products with stock <= 0 + variants with stock <= 0
+    const simpleOut = products.filter(p => !p.hasVariants && p.stock <= 0).length;
+    const variantOut = productVariants.filter(v => v.stock <= 0).length;
+    const outOfStock = simpleOut + variantOut;
+
+    return { total, variantProducts, lowStock, outOfStock };
+  }, [products, productVariants]);
+
+  const openEditor = useCallback(async (product: Product | null, initialValues?: Partial<Product>) => {
+    setSelectedProduct(product);
+    setEditorTab('general');
+    setEditingVariantIdx(null);
+    setCustomAttributes({});
+    setNewAttrName(''); setNewAttrValues('');
+    setBatchNum(''); setBatchQty(0); setBatchCost(0); setBatchExpiry('');
+    setBatchSupplier(''); setBatchSupplierId('');
+    setSerialInput('');
+    setProductCreatedAtDate('');
+
+    if (product) {
+      setPId(product.id);
+      setPName(product.name);
+      setPCategory(product.category);
+      setPBrand(product.brand || '');
+      setPDescription(product.description || '');
+      setPSupplier(product.supplier || '');
+      setPSupplierId((product as any).supplier_id || '');
+      setPBuyingPrice(product.buyingPrice || 0);
+      setPSellingPrice(product.sellingPrice || product.price || 0);
+      setPWholesalePrice((product as any).wholesalePrice || 0);
+      setPVipPrice((product as any).vipPrice || 0);
+      setPOnlinePrice((product as any).onlinePrice || 0);
+      setPStock(product.stock || 0);
+      setPHasVariants(product.hasVariants || false);
+      setPExpiry(product.expiryDate || '');
+      setPTaxRate((product as any).taxRate !== undefined ? (product as any).taxRate : 0);
+      setPReorderLevel(5);
+      setPSku(product.sku || '');
+      setPBarcode(product.barcode || '');
+      setPImageUrl((product as any).image_url || '');
+      setPImagePreview((product as any).image_url || '');
+
+      if (product.hasVariants) {
+        await cleanDuplicateVariants(currentTenant.id);
+
+        const vars = await db.productVariants.where('productId').equals(product.id).toArray();
+
+        // In-memory deduplication pass for any residual duplicate variants
+        const uniqueMap = new Map<string, ProductVariant>();
+        for (const v of vars) {
+          const sig = getVariantAttrSig(v.attributes) || (v.sku ? `sku:${v.sku.toLowerCase()}` : v.id);
+          if (!uniqueMap.has(sig)) {
+            uniqueMap.set(sig, v);
+          } else {
+            const existing = uniqueMap.get(sig)!;
+            const vStock = v.stock || 0;
+            const exStock = existing.stock || 0;
+            if (vStock > exStock) {
+              await db.productVariants.delete(existing.id).catch(() => {});
+              uniqueMap.set(sig, v);
+            } else {
+              await db.productVariants.delete(v.id).catch(() => {});
+            }
+          }
+        }
+        const cleanVars = Array.from(uniqueMap.values());
+
+        const activeVars = cleanVars.filter(v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt);
+        const computedStock = activeVars.reduce((sum, v) => sum + (v.stock || 0), 0);
+        setPStock(computedStock);
+        if (product.stock !== computedStock) {
+          await syncParentStock(product.id);
+        }
+        setOriginalVariants(cleanVars);
+        setLocalVariants(cleanVars.map(v => ({
+          ...v,
+          inheritBuyingPrice:  v.inheritBuyingPrice  !== undefined ? v.inheritBuyingPrice  : v.buyingPrice  === undefined,
+          inheritSellingPrice: v.inheritSellingPrice !== undefined ? v.inheritSellingPrice : v.sellingPrice === undefined,
+        })));
+        const attrs: Record<string, Set<string>> = {};
+        cleanVars.forEach(v => Object.entries(v.attributes).forEach(([key, val]) => {
+          if (!attrs[key]) attrs[key] = new Set();
+          attrs[key].add(val);
+        }));
+        setCustomAttributes(Object.fromEntries(Object.entries(attrs).map(([k, v]) => [k, Array.from(v)])));
+      } else {
+        setOriginalVariants([]);
+        setLocalVariants([]);
+        setPStock(product.stock || 0);
+      }
+    } else {
+      const newId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `prod-${Date.now().toString().slice(-7)}`;
+      setPId(newId);
+      setOriginalVariants([]);
+      setPName(initialValues?.name || '');
+      setPCategory(initialValues?.category || '');
+      setPBrand(initialValues?.brand || '');
+      setPDescription(initialValues?.description || '');
+      setPSupplier(initialValues?.supplier || '');
+      setPSupplierId('');
+      setPBuyingPrice(initialValues?.buyingPrice || 0);
+      setPSellingPrice(initialValues?.sellingPrice || initialValues?.price || 0);
+      setPStock(initialValues?.stock || 0);
+      setPHasVariants(initialValues?.hasVariants || false);
+      setPExpiry(initialValues?.expiryDate || '');
+      setPTaxRate(0);
+      setPReorderLevel(5);
+      setPSku(initialValues?.sku || '');
+      setPBarcode(initialValues?.barcode || '');
+      setPImageUrl('');
+      setPImagePreview('');
+      setPModule(activeModule);
+      setLocalVariants([]);
+    }
+    setIsEditorOpen(true);
+    setInvTab('products');
+  }, [activeModule]);
 
   // ──────────────────────────────────────────────────────────────────────────
   // TAB 1 — DASHBOARD
   // ──────────────────────────────────────────────────────────────────────────
   const renderDashboardTab = () => {
-    const total = kpis?.totalProducts ?? 0;
+    const total = kpis?.totalStockItems ?? kpis?.totalProducts ?? 0;
     const outOfStock = kpis?.outOfStockCount ?? 0;
     const lowStock = kpis?.lowStockCount ?? 0;
+    const overstock = kpis?.overstockCount ?? 0;
     const inStock = Math.max(0, total - outOfStock - lowStock);
 
-    // Inventory Health Score (0–100)
-    const healthPenalty = (outOfStock * 3) + (lowStock * 1.5) + ((kpis?.expiredCount ?? 0) * 2) + ((kpis?.reorderAlertCount ?? 0) * 0.5);
-    const healthScore = total > 0 ? Math.max(0, Math.min(100, Math.round(100 - (healthPenalty / total) * 10))) : 100;
+    const healthScore = kpis?.inventoryHealthScore ?? 100;
     const healthColor = healthScore >= 80 ? '#10b981' : healthScore >= 60 ? '#f59e0b' : '#ef4444';
     const healthLabel = healthScore >= 80 ? 'Excellent' : healthScore >= 60 ? 'Fair' : 'Critical';
 
+    // Production 11 KPI Cards
     const kpiCards = [
-      { label: 'Total Products',  value: fmtNum(total),                      icon: <Package />,     color: '#6366f1', sub: `${fmtNum(kpis?.totalVariants ?? 0)} variants` },
-      { label: 'Stock Value',     value: fmtCcy(kpis?.totalStockValue ?? 0), icon: <DollarSign />,  color: '#10b981', sub: 'Ledger WAC valuation' },
-      { label: 'Low Stock',       value: fmtNum(lowStock),                   icon: <AlertTriangle />,color: '#f59e0b', sub: 'Below reorder level' },
-      { label: 'Out of Stock',    value: fmtNum(outOfStock),                 icon: <AlertCircle />, color: '#ef4444', sub: 'Zero qty products' },
-      { label: 'Expiring (30d)',  value: fmtNum(kpis?.expiringThisMonth ?? 0),icon: <Calendar />,   color: '#f97316', sub: `${fmtNum(kpis?.expiredCount ?? 0)} already expired` },
-      { label: "Today's Moves",  value: fmtNum(kpis?.todayMovements ?? 0),  icon: <Activity />,    color: '#8b5cf6', sub: 'Ledger entries today' },
-      { label: 'Transfers',       value: fmtNum(kpis?.pendingTransfers ?? 0),icon: <ArrowLeftRight />,color: '#06b6d4',sub: 'Pending / In Transit' },
-      { label: 'Reorder Alerts',  value: fmtNum(kpis?.reorderAlertCount ?? 0),icon: <Zap />,        color: '#ec4899', sub: 'Need restocking' },
+      { label: 'Total Stock Items',    value: fmtNum(total),                                icon: <Package />,        color: '#6366f1', sub: `${fmtNum(kpis?.totalVariants ?? 0)} variants` },
+      { label: 'Total Units in Stock',  value: fmtNum(kpis?.totalUnitsInStock ?? 0),         icon: <Layers />,         color: '#3b82f6', sub: 'Sum of all quantities' },
+      { label: 'Inventory Buying Value',value: fmtCcy(kpis?.inventoryBuyingValue ?? 0),    icon: <DollarSign />,     color: '#059669', sub: 'Cost basis (WAC)' },
+      { label: 'Inventory Selling Value',value: fmtCcy(kpis?.inventorySellingValue ?? 0),  icon: <TrendingUp />,     color: '#10b981', sub: 'Retail value' },
+      { label: 'Potential Gross Profit',value: fmtCcy(kpis?.potentialGrossProfit ?? 0),    icon: <Activity />,       color: '#8b5cf6', sub: 'Selling − Buying Value' },
+      { label: 'Average Margin %',      value: `${kpis?.averageMarginPercent ?? 0}%`,        icon: <BarChart3 />,      color: '#06b6d4', sub: 'Gross profit margin' },
+      { label: 'Low Stock Items',       value: fmtNum(lowStock),                             icon: <AlertTriangle />,  color: '#f59e0b', sub: 'Below reorder level' },
+      { label: 'Out of Stock',          value: fmtNum(outOfStock),                           icon: <AlertCircle />,    color: '#ef4444', sub: 'Zero qty products' },
+      { label: 'Overstock Items',       value: fmtNum(overstock),                            icon: <Archive />,        color: '#a855f7', sub: 'Exceeding max capacity' },
+      { label: 'Expired Products',      value: fmtNum(kpis?.expiredCount ?? 0),              icon: <Clock />,          color: '#f97316', sub: `${fmtNum(kpis?.expiringThisMonth ?? 0)} expiring soon` },
+      { label: 'Inventory Health Score',value: `${healthScore} / 100`,                       icon: <Zap />,            color: healthColor, sub: healthLabel },
     ];
 
     const maxBar = Math.max(...movements7d.map(m => Math.max(m.inbound, m.outbound)), 1);
@@ -995,6 +1418,7 @@ export const Inventory: React.FC = () => {
           {[
             { label: 'New Adjustment', icon: <Sliders size={14}/>, color: '#6366f1', action: () => { const first = products[0]; if (first) openAdjustment(first); } },
             { label: 'New Transfer',   icon: <ArrowLeftRight size={14}/>, color: '#06b6d4', action: () => setInvTab('transfers') },
+            { label: 'Stock Sync Engine', icon: <RefreshCw size={14}/>, color: '#ec4899', action: () => setInvTab('stockSync') },
             { label: 'Stock Count',    icon: <ClipboardList size={14}/>, color: '#10b981', action: () => setInvTab('count') },
             { label: 'View Reports',   icon: <BarChart3 size={14}/>, color: '#8b5cf6', action: () => setInvTab('reports') },
             { label: 'Alerts',         icon: <AlertTriangle size={14}/>, color: '#f59e0b', action: () => setInvTab('alerts') },
@@ -1076,278 +1500,1079 @@ export const Inventory: React.FC = () => {
           </div>
           <div className="inv-ai-cta-arrow">→</div>
         </div>
-      </div>
-    );
-  };
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // DEDICATED TAB 1B — CATEGORIES
-  // ──────────────────────────────────────────────────────────────────────────
-  const renderCategoriesTab = () => {
-    const isCat = catOrBrandTab === 'categories';
-    const activeLabel = isCat ? (filterCategory || 'All Categories') : (filterBrand || 'All Brands');
+        {/* ── Inventory Valuation Summary Panel ─── */}
+        <div className="inv-table-card" style={{marginTop:'16px'}}>
+          <div className="inv-table-header" style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px'}}>
+            <h3><DollarSign size={15}/> Inventory Valuation Summary</h3>
+            <div style={{display:'flex', gap:'6px', flexWrap:'wrap'}}>
+              {(['today','yesterday','7d','30d','month_end','year_end'] as const).map(p => (
+                <button key={p}
+                  onClick={() => setSnapshotPreset(p)}
+                  style={{
+                    padding:'4px 10px', borderRadius:'20px', fontSize:'0.72rem', fontWeight:600, cursor:'pointer',
+                    border:`1.5px solid ${snapshotPreset === p ? '#6366f1' : '#e2e8f0'}`,
+                    background: snapshotPreset === p ? '#6366f1' : 'transparent',
+                    color: snapshotPreset === p ? '#fff' : '#64748b',
+                    transition: 'all 0.15s'
+                  }}
+                >
+                  {p === 'today' ? 'Today' : p === 'yesterday' ? 'Yesterday' : p === '7d' ? '7 Days' : p === '30d' ? '30 Days' : p === 'month_end' ? 'Month Start' : 'Year Start'}
+                </button>
+              ))}
+              <select
+                value={valuationPriceTier}
+                onChange={e => setValuationPriceTier(e.target.value as any)}
+                style={{padding:'4px 8px', borderRadius:'6px', fontSize:'0.72rem', border:'1.5px solid #e2e8f0', color:'#334155', fontWeight:600, cursor:'pointer'}}
+              >
+                <option value="retail">Retail Price</option>
+                <option value="wholesale">Wholesale Price</option>
+                <option value="vip">VIP Price</option>
+                <option value="online">Online Price</option>
+              </select>
+            </div>
+          </div>
+          {historicalSnapshot && (
+            <>
+              {/* Snapshot KPI Row */}
+              <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:'12px', padding:'12px 0 16px'}}>
+                {[
+                  { label: 'Snapshot Date', value: historicalSnapshot.snapshotDate, color: '#6366f1' },
+                  { label: 'Total Items', value: fmtNum(historicalSnapshot.totalItems), color: '#3b82f6' },
+                  { label: 'Total Quantity', value: fmtNum(historicalSnapshot.totalQuantity), color: '#06b6d4' },
+                  { label: 'Buying Value', value: fmtCcy(historicalSnapshot.buyingValue), color: '#059669' },
+                  { label: 'Selling Value', value: fmtCcy(historicalSnapshot.sellingValue), color: '#10b981' },
+                  { label: 'Potential Profit', value: fmtCcy(historicalSnapshot.potentialProfit), color: '#8b5cf6' },
+                  { label: 'Margin %', value: `${historicalSnapshot.marginPercent}%`, color: '#06b6d4' },
+                ].map(c => (
+                  <div key={c.label} style={{background:'var(--bg-card,#f8fafc)', borderRadius:'10px', padding:'12px', border:`1px solid ${c.color}22`}}>
+                    <div style={{fontSize:'0.68rem', color:'#94a3b8', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:'4px'}}>{c.label}</div>
+                    <div style={{fontSize:'1rem', fontWeight:800, color: c.color}}>{c.value}</div>
+                  </div>
+                ))}
+              </div>
 
-    return (
-      <div className="inv-categories-view">
-        <div className="inv-toolbar">
-          <h2 style={{margin:0}}>Categories &amp; Brands</h2>
-          {isCat ? (
-            <button className="inv-add-btn" onClick={async () => {
-              const name = prompt('Enter new category name:');
-              if (name && name.trim()) {
-                await createCategory({ name: name.trim(), tenant_id: currentTenant.id });
-                alert(`✅ Category "${name.trim()}" successfully created!`);
-              }
-            }}>
-              <Plus size={14}/> Add New Category
-            </button>
-          ) : (
-            <button className="inv-add-btn" onClick={async () => {
-              const name = prompt('Enter new brand name:');
-              if (name && name.trim()) {
-                await createBrand({ name: name.trim(), tenant_id: currentTenant.id });
-                alert(`✅ Brand "${name.trim()}" successfully created!`);
-              }
-            }}>
-              <Plus size={14}/> Add New Brand
-            </button>
+              {/* Top items by buying value */}
+              {historicalSnapshot.items.length > 0 && (
+                <div style={{overflowX:'auto'}}>
+                  <table className="inv-table" style={{minWidth:'700px'}}>
+                    <thead>
+                      <tr>
+                        <th>Product</th>
+                        <th style={{textAlign:'right'}}>Qty</th>
+                        <th style={{textAlign:'right'}}>Avg Cost</th>
+                        <th style={{textAlign:'right'}}>Unit Price</th>
+                        <th style={{textAlign:'right'}}>Buying Value</th>
+                        <th style={{textAlign:'right'}}>Selling Value</th>
+                        <th style={{textAlign:'right'}}>Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...historicalSnapshot.items].sort((a,b) => b.buyingValue - a.buyingValue).slice(0, 10).map((item, i) => (
+                        <tr key={i}>
+                          <td style={{fontWeight:600}}>{item.productName}</td>
+                          <td style={{textAlign:'right'}}>{fmtNum(item.quantity)}</td>
+                          <td style={{textAlign:'right', color:'#64748b'}}>{fmtCcy(item.unitCost)}</td>
+                          <td style={{textAlign:'right', color:'#64748b'}}>{fmtCcy(item.unitPrice)}</td>
+                          <td style={{textAlign:'right', fontWeight:600, color:'#059669'}}>{fmtCcy(item.buyingValue)}</td>
+                          <td style={{textAlign:'right', fontWeight:600, color:'#10b981'}}>{fmtCcy(item.sellingValue)}</td>
+                          <td style={{textAlign:'right', fontWeight:700, color: item.profit >= 0 ? '#8b5cf6' : '#ef4444'}}>{fmtCcy(item.profit)}</td>
+                          <td style={{textAlign:'right'}}>
+                            <button
+                              title="View Stock Ledger"
+                              onClick={() => {
+                                const prod = products.find(p => p.id === item.productId || p.name === item.productName);
+                                if (prod) openLedgerDrilldown(prod);
+                              }}
+                              style={{
+                                padding:'3px 7px', borderRadius:'5px', fontSize:'0.7rem',
+                                border:'1px solid rgba(99, 102, 241, 0.3)', background:'rgba(99, 102, 241, 0.12)',
+                                color:'#6366f1', cursor:'pointer', fontWeight:600, display:'inline-flex', alignItems:'center'
+                              }}
+                            >
+                              <Eye size={12}/>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           )}
         </div>
-        
-        <div style={{marginTop: '16px', display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px'}}>
-          {/* Sub-tab selection pane */}
-          <div className="inv-table-card" style={{padding: '16px'}}>
-            {/* Sub-navigator capsule buttons */}
-            <div className="inv-filter-btns" style={{marginBottom: '14px', width: '100%'}}>
-              <button
-                style={{flex: 1, textAlign: 'center', fontSize: '0.8rem'}}
-                className={`inv-filter-btn ${isCat ? 'active' : ''}`}
-                onClick={() => setCatOrBrandTab('categories')}
-              >
-                📁 Categories ({allCategories.length})
-              </button>
-              <button
-                style={{flex: 1, textAlign: 'center', fontSize: '0.8rem'}}
-                className={`inv-filter-btn ${!isCat ? 'active' : ''}`}
-                onClick={() => setCatOrBrandTab('brands')}
-              >
-                🏷️ Brands ({allBrands.length})
-              </button>
-            </div>
 
-            {isCat ? (
-              <>
-                <h3 style={{margin: '0 0 10px 0', fontSize: '0.85rem'}}>Categories List</h3>
-                <div className="inv-search-wrap" style={{minWidth: 'unset', marginBottom: '12px'}}>
-                  <Search size={14} className="inv-search-icon"/>
-                  <input className="inv-search" placeholder="Search categories…" value={categorySearch} onChange={e => setCategorySearch(e.target.value)}/>
-                </div>
-                
-                <div className="cat-list" style={{maxHeight: '450px'}}>
-                  <div
-                    className={`cat-list-row ${!filterCategory ? 'active' : ''}`}
-                    onClick={() => setFilterCategory('')}
-                    style={{cursor: 'pointer', border: !filterCategory ? '1px solid #4f46e5' : undefined}}
-                  >
-                    <div className="cat-list-dot" style={{background: '#cbd5e1'}}/>
-                    <div className="cat-list-info">
-                      <span className="cat-list-name">All Categories</span>
-                      <span className="cat-list-count">{products.length} products total</span>
-                    </div>
-                  </div>
-
-                  {allCategories
-                    .filter(c => c.name.toLowerCase().includes(categorySearch.toLowerCase()))
-                    .map(c => {
-                      const isActive = filterCategory === c.name;
-                      return (
-                        <div key={c.name} 
-                          className={`cat-list-row ${isActive ? 'active' : ''}`}
-                          onClick={() => setFilterCategory(c.name)}
-                          style={{cursor: 'pointer', border: isActive ? '1px solid #4f46e5' : undefined}}
-                        >
-                          <div className="cat-list-dot" style={{background: `hsl(${(c.name.charCodeAt(0) * 37) % 360}, 60%, 55%)`}}/>
-                          <div className="cat-list-info">
-                            <span className="cat-list-name">{c.name}</span>
-                            <span className="cat-list-count">{c.count} product{c.count !== 1 ? 's' : ''}</span>
-                          </div>
-                          <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
-                            <button
-                              title="Rename Category"
-                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
-                              onClick={() => handleRenameCategory(c.name)}
-                            >
-                              <Edit size={12} />
-                            </button>
-                            <button
-                              title="Delete Category"
-                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
-                              onClick={() => handleDeleteCategory(c.name)}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                            <button
-                              className="inv-add-btn outline"
-                              style={{padding:'4px 8px',fontSize:'0.7rem', marginLeft: '4px'}}
-                              onClick={() => {
-                                openEditor(null, { category: c.name });
-                              }}
-                            >
-                              + Add
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  {allCategories.length === 0 && (
-                    <div style={{textAlign:'center',padding:'24px',opacity:0.5}}>
-                      <Tag size={28} style={{marginBottom:'8px', display:'block', margin:'0 auto'}}/>
-                      <p>No categories found.</p>
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <h3 style={{margin: '0 0 10px 0', fontSize: '0.85rem'}}>Brands List</h3>
-                <div className="inv-search-wrap" style={{minWidth: 'unset', marginBottom: '12px'}}>
-                  <Search size={14} className="inv-search-icon"/>
-                  <input className="inv-search" placeholder="Search brands…" value={brandSearch} onChange={e => setBrandSearch(e.target.value)}/>
-                </div>
-                
-                <div className="cat-list" style={{maxHeight: '450px'}}>
-                  <div
-                    className={`cat-list-row ${!filterBrand ? 'active' : ''}`}
-                    onClick={() => setFilterBrand('')}
-                    style={{cursor: 'pointer', border: !filterBrand ? '1px solid #4f46e5' : undefined}}
-                  >
-                    <div className="cat-list-dot" style={{background: '#cbd5e1'}}/>
-                    <div className="cat-list-info">
-                      <span className="cat-list-name">All Brands</span>
-                      <span className="cat-list-count">{products.length} products total</span>
-                    </div>
-                  </div>
-
-                  {allBrands
-                    .filter(b => b.name.toLowerCase().includes(brandSearch.toLowerCase()))
-                    .map(b => {
-                      const isActive = filterBrand === b.name;
-                      return (
-                        <div key={b.name} 
-                          className={`cat-list-row ${isActive ? 'active' : ''}`}
-                          onClick={() => setFilterBrand(b.name)}
-                          style={{cursor: 'pointer', border: isActive ? '1px solid #4f46e5' : undefined}}
-                        >
-                          <div className="cat-list-dot" style={{background: `hsl(${(b.name.charCodeAt(0) * 83) % 360}, 55%, 50%)`}}/>
-                          <div className="cat-list-info">
-                            <span className="cat-list-name">{b.name}</span>
-                            <span className="cat-list-count">{b.count} product{b.count !== 1 ? 's' : ''}</span>
-                          </div>
-                          <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
-                            <button
-                              title="Rename Brand"
-                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
-                              onClick={() => handleRenameBrand(b.name)}
-                            >
-                              <Edit size={12} />
-                            </button>
-                            <button
-                              title="Delete Brand"
-                              className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
-                              onClick={() => handleDeleteBrand(b.name)}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                            <button
-                              className="inv-add-btn outline"
-                              style={{padding:'4px 8px',fontSize:'0.7rem', marginLeft: '4px'}}
-                              onClick={() => {
-                                openEditor(null, { brand: b.name });
-                              }}
-                            >
-                              + Add
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  {allBrands.length === 0 && (
-                    <div style={{textAlign:'center',padding:'24px',opacity:0.5}}>
-                      <Tag size={28} style={{marginBottom:'8px', display:'block', margin:'0 auto'}}/>
-                      <p>No brands found.</p>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Products Pane */}
-          <div className="inv-table-card">
+        {/* ── Branch-Level Valuation Summary ─── */}
+        {branchSummaryData && branchSummaryData.branches.length > 0 && (
+          <div className="inv-table-card" style={{marginTop:'16px'}}>
             <div className="inv-table-header">
-              <h3>Products under: &quot;{activeLabel}&quot;</h3>
+              <h3><ArrowLeftRight size={15}/> Branch-Level Valuation Breakdown</h3>
             </div>
-            <div style={{padding: '12px', overflowX: 'auto'}}>
-              <table className="inv-table">
+            <div style={{overflowX:'auto'}}>
+              <table className="inv-table" style={{minWidth:'650px'}}>
                 <thead>
                   <tr>
-                    <th>Product Name</th>
-                    <th>Category</th>
-                    <th>Brand</th>
-                    <th>SKU</th>
-                    <th style={{textAlign: 'right'}}>Stock</th>
-                    <th style={{textAlign: 'right'}}>Selling Price</th>
-                    <th>Actions</th>
+                    <th>Branch</th>
+                    <th style={{textAlign:'right'}}>Items</th>
+                    <th style={{textAlign:'right'}}>Total Units</th>
+                    <th style={{textAlign:'right'}}>Buying Value</th>
+                    <th style={{textAlign:'right'}}>Selling Value</th>
+                    <th style={{textAlign:'right'}}>Potential Profit</th>
+                    <th style={{textAlign:'right'}}>Margin %</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {products
-                    .filter(p => {
-                      if (isCat) {
-                        return !filterCategory || p.category === filterCategory;
-                      } else {
-                        return !filterBrand || p.brand === filterBrand;
-                      }
-                    })
-                    .map(p => (
-                      <tr key={p.id}>
-                        <td style={{fontWeight: 600}}>{p.name}</td>
-                        <td><span className="inv-badge">{p.category}</span></td>
-                        <td>{p.brand || <span style={{opacity:0.4}}>—</span>}</td>
-                        <td><code>{p.sku || '—'}</code></td>
-                        <td style={{textAlign: 'right', fontWeight: 'bold', color: p.stock < 10 ? '#ef4444' : undefined}}>
-                          {p.stock}
-                        </td>
-                        <td style={{textAlign: 'right'}}>{fmtCcy(p.sellingPrice || p.price)}</td>
-                        <td>
-                          <button className="inv-view-all-btn" onClick={() => openEditor(p)}>Edit</button>
-                        </td>
-                      </tr>
-                    ))}
-                  {products.filter(p => {
-                    if (isCat) {
-                      return !filterCategory || p.category === filterCategory;
-                    } else {
-                      return !filterBrand || p.brand === filterBrand;
-                    }
-                  }).length === 0 && (
-                    <tr>
-                      <td colSpan={7} style={{textAlign: 'center', padding: '32px', opacity: 0.5}}>
-                        No products found under this {isCat ? 'category' : 'brand'}.
+                  {branchSummaryData.branches.map(b => (
+                    <tr key={b.branchId}>
+                      <td style={{fontWeight:600}}>
+                        {b.branchName}
+                        {b.isHeadquarters && (
+                          <span style={{marginLeft:'6px', fontSize:'0.65rem', background:'#6366f111', color:'#6366f1', padding:'2px 6px', borderRadius:'10px', fontWeight:700}}>HQ</span>
+                        )}
+                      </td>
+                      <td style={{textAlign:'right'}}>{fmtNum(b.itemCount)}</td>
+                      <td style={{textAlign:'right'}}>{fmtNum(b.totalUnits)}</td>
+                      <td style={{textAlign:'right', fontWeight:600, color:'#059669'}}>{fmtCcy(b.buyingValue)}</td>
+                      <td style={{textAlign:'right', fontWeight:600, color:'#10b981'}}>{fmtCcy(b.sellingValue)}</td>
+                      <td style={{textAlign:'right', fontWeight:700, color: b.potentialProfit >= 0 ? '#8b5cf6' : '#ef4444'}}>{fmtCcy(b.potentialProfit)}</td>
+                      <td style={{textAlign:'right'}}>
+                        <span style={{
+                          display:'inline-block', padding:'2px 8px', borderRadius:'12px', fontSize:'0.75rem', fontWeight:700,
+                          background: b.marginPercent >= 20 ? '#10b98122' : b.marginPercent >= 10 ? '#f59e0b22' : '#ef444422',
+                          color: b.marginPercent >= 20 ? '#059669' : b.marginPercent >= 10 ? '#d97706' : '#dc2626'
+                        }}>{b.marginPercent}%</span>
                       </td>
                     </tr>
-                  )}
+                  ))}
+                  {/* Tenant Totals Footer */}
+                  <tr style={{background:'var(--bg-hover,#f1f5f9)', fontWeight:700, borderTop:'2px solid #e2e8f0'}}>
+                    <td>🏢 Tenant Total</td>
+                    <td style={{textAlign:'right'}}>{fmtNum(branchSummaryData.tenantTotals.itemCount)}</td>
+                    <td style={{textAlign:'right'}}>{fmtNum(branchSummaryData.tenantTotals.totalUnits)}</td>
+                    <td style={{textAlign:'right', color:'#059669'}}>{fmtCcy(branchSummaryData.tenantTotals.buyingValue)}</td>
+                    <td style={{textAlign:'right', color:'#10b981'}}>{fmtCcy(branchSummaryData.tenantTotals.sellingValue)}</td>
+                    <td style={{textAlign:'right', color:'#8b5cf6'}}>{fmtCcy(branchSummaryData.tenantTotals.potentialProfit)}</td>
+                    <td style={{textAlign:'right'}}>
+                      <span style={{
+                        display:'inline-block', padding:'2px 8px', borderRadius:'12px', fontSize:'0.75rem', fontWeight:800,
+                        background: '#6366f122', color: '#6366f1'
+                      }}>{branchSummaryData.tenantTotals.marginPercent}%</span>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
           </div>
+        )}
+      </div>
+    );
+  };
+  const handleExportTaxonomyCSV = () => {
+    let csv = 'Type,Name,Product_Count\n';
+    allCategories.forEach(c => {
+      csv += `Category,"${c.name.replace(/"/g, '""')}",${c.count}\n`;
+    });
+    allBrands.forEach(b => {
+      csv += `Brand,"${b.name.replace(/"/g, '""')}",${b.count}\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `dukapos_taxonomy_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const renderCategoriesTab = () => {
+    const totalCatalogProducts = products.length;
+    const uncategorizedCount = products.filter(p => !p.category || p.category === 'General').length;
+    const topCategory = allCategories.length > 0 ? [...allCategories].sort((a, b) => b.count - a.count)[0] : null;
+    const topBrand = allBrands.length > 0 ? [...allBrands].sort((a, b) => b.count - a.count)[0] : null;
+
+    const filteredCategories = allCategories
+      .filter(c => {
+        const matchQ = c.name.toLowerCase().includes(categorySearch.toLowerCase());
+        const matchF = catFilter === 'all' || (catFilter === 'active' && c.count > 0) || (catFilter === 'empty' && c.count === 0);
+        return matchQ && matchF;
+      })
+      .sort((a, b) => (catSort === 'count' ? b.count - a.count : a.name.localeCompare(b.name)));
+
+    const filteredBrands = allBrands
+      .filter(b => {
+        const matchQ = b.name.toLowerCase().includes(brandSearch.toLowerCase());
+        const matchF = brandFilter === 'all' || (brandFilter === 'active' && b.count > 0) || (brandFilter === 'empty' && b.count === 0);
+        return matchQ && matchF;
+      })
+      .sort((a, b) => (brandSort === 'count' ? b.count - a.count : a.name.localeCompare(b.name)));
+
+    return (
+      <div className="space-y-6">
+        {/* Page Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-darkbg-card p-4 rounded-2xl border dark:border-darkbg-border shadow-xs">
+          <div>
+            <h2 className="text-lg font-extrabold text-slate-900 dark:text-white m-0 flex items-center gap-2">
+              <Layers className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+              Categories &amp; Brands Management Hub
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 m-0 mt-0.5">
+              Organize catalog taxonomy, manage brand relationships, and inspect item distribution
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
+              📁 {allCategories.length} Categories
+            </span>
+            <span className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-800">
+              🏷️ {allBrands.length} Brands
+            </span>
+            <button
+              onClick={handleExportTaxonomyCSV}
+              className="px-3 py-1.5 text-xs font-bold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-darkbg-border transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download size={13} /> Export CSV
+            </button>
+          </div>
+        </div>
+
+        {/* Catalog Insights KPI Banner Cards */}
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="bg-white dark:bg-darkbg-card p-4 rounded-2xl border dark:border-darkbg-border shadow-xs flex items-center gap-3.5">
+            <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 shrink-0">
+              <Layers size={22} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Top Category</span>
+              <div className="font-black text-slate-800 dark:text-white text-sm truncate">
+                {topCategory ? topCategory.name : 'None'}
+              </div>
+              <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
+                {topCategory ? `${topCategory.count} products (${totalCatalogProducts > 0 ? Math.round((topCategory.count / totalCatalogProducts) * 100) : 0}% share)` : '0 products'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-darkbg-card p-4 rounded-2xl border dark:border-darkbg-border shadow-xs flex items-center gap-3.5">
+            <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 shrink-0">
+              <Tag size={22} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Top Brand</span>
+              <div className="font-black text-slate-800 dark:text-white text-sm truncate">
+                {topBrand ? topBrand.name : 'None'}
+              </div>
+              <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400">
+                {topBrand ? `${topBrand.count} products (${totalCatalogProducts > 0 ? Math.round((topBrand.count / totalCatalogProducts) * 100) : 0}% share)` : '0 products'}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-darkbg-card p-4 rounded-2xl border dark:border-darkbg-border shadow-xs flex items-center gap-3.5">
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 shrink-0">
+              <Package size={22} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Catalog Coverage</span>
+              <div className="font-black text-slate-800 dark:text-white text-sm">
+                {totalCatalogProducts} Total Items
+              </div>
+              <span className={`text-[11px] font-semibold ${uncategorizedCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                {uncategorizedCount > 0 ? `⚠️ ${uncategorizedCount} Uncategorized` : '✓ 100% Categorized'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 2-Column Side-by-Side Grid Layout */}
+        <div className="grid gap-6 md:grid-cols-2">
+          
+          {/* LEFT COLUMN: Categories Manager Card */}
+          <div className="p-5 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-2xl shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b dark:border-darkbg-border pb-3">
+              <h3 className="text-sm font-extrabold text-slate-900 dark:text-white m-0 flex items-center gap-2">
+                <Layers className="h-4.5 w-4.5 text-indigo-600 dark:text-indigo-400" />
+                Categories Manager
+              </h3>
+              <span className="text-xs text-slate-400 font-medium">{filteredCategories.length} Categories</span>
+            </div>
+
+            {/* Create / Edit Category Inline Form */}
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!catName.trim()) return;
+              const trimmed = catName.trim();
+              if (editingCategory) {
+                const oldName = editingCategory.name;
+                try {
+                  const catRec = await db.categories.where('tenant_id').equals(currentTenant.id).filter(c => c.name === oldName).first();
+                  if (catRec) {
+                    await updateCategory(catRec.id, { name: trimmed, description: catDesc.trim() });
+                  }
+                } catch {}
+
+                if (oldName !== trimmed) {
+                  const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+                  const categoryProds = prods.filter(p => p.category === oldName);
+                  await db.transaction('rw', db.products, async () => {
+                    for (const p of categoryProds) {
+                      p.category = trimmed;
+                      p.syncStatus = 'PENDING';
+                      await db.products.put(p);
+                    }
+                  });
+                }
+                setEditingCategory(null);
+              } else {
+                await createCategory({ name: trimmed, description: catDesc.trim(), tenant_id: currentTenant.id });
+              }
+              setCatName('');
+              setCatDesc('');
+            }} className="space-y-3 bg-slate-50 dark:bg-darkbg/50 p-3.5 rounded-xl border dark:border-darkbg-border">
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {editingCategory ? `Edit Category Name (currently "${editingCategory.name}")` : 'Category Name *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Smart Phones, Local Beer, Cigarettes"
+                  value={catName}
+                  onChange={e => setCatName(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Description / Scope</label>
+                <input
+                  type="text"
+                  placeholder="Electronics, mobile devices, and accessories"
+                  value={catDesc}
+                  onChange={e => setCatDesc(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="submit"
+                  className="flex-1 h-9 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Plus size={14} /> {editingCategory ? 'Update Category' : 'Save Category'}
+                </button>
+                {editingCategory && (
+                  <button
+                    type="button"
+                    onClick={() => { setEditingCategory(null); setCatName(''); setCatDesc(''); }}
+                    className="h-9 px-3 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-xs rounded-lg transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+
+            {/* Categories Controls (Search, Filters, Sort) */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+                <div className="relative flex-1 w-full">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search categories…"
+                    value={categorySearch}
+                    onChange={e => setCategorySearch(e.target.value)}
+                    className="h-8 w-full pl-9 pr-3 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                  />
+                </div>
+                <select
+                  value={catSort}
+                  onChange={e => setCatSort(e.target.value as any)}
+                  className="h-8 text-xs font-semibold rounded-lg border border-slate-200 bg-white px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none shrink-0"
+                >
+                  <option value="count">Sort: Most Items</option>
+                  <option value="name">Sort: A - Z</option>
+                </select>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-darkbg/70 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setCatFilter('all')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${catFilter === 'all' ? 'bg-white dark:bg-darkbg-card text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  All ({allCategories.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCatFilter('active')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${catFilter === 'active' ? 'bg-white dark:bg-darkbg-card text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  With Items ({allCategories.filter(c => c.count > 0).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCatFilter('empty')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${catFilter === 'empty' ? 'bg-white dark:bg-darkbg-card text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  Empty ({allCategories.filter(c => c.count === 0).length})
+                </button>
+              </div>
+
+              {/* Categories List with Accordion Inspector */}
+              <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
+                {filteredCategories.map(c => {
+                  const isEditing = editingCategory?.name === c.name;
+                  const isExpanded = expandedCategory === c.name;
+                  const categoryProducts = products.filter(p => p.category === c.name);
+                  return (
+                    <div key={c.name} className="space-y-1">
+                      <div
+                        className={`flex items-center justify-between p-3 rounded-xl border transition ${
+                          isEditing
+                            ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-300 dark:border-indigo-800'
+                            : 'bg-slate-50/70 dark:bg-darkbg/40 border-slate-200/80 dark:border-darkbg-border hover:bg-slate-100 dark:hover:bg-darkbg/70'
+                        }`}
+                      >
+                        <div
+                          onClick={() => setExpandedCategory(isExpanded ? null : c.name)}
+                          className="flex items-center gap-2.5 min-w-0 flex-1 pr-2 cursor-pointer"
+                        >
+                          <button className="text-slate-400 hover:text-indigo-600 transition">
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                          <div
+                            className="h-8 w-8 rounded-lg shrink-0 flex items-center justify-center text-white font-bold text-xs shadow-xs"
+                            style={{ background: `hsl(${(c.name.charCodeAt(0) * 37) % 360}, 65%, 50%)` }}
+                          >
+                            {c.name.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">{c.name}</div>
+                            <div className="text-[11px] text-slate-400 font-medium">{c.count} product{c.count !== 1 ? 's' : ''}</div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            title="Edit Category"
+                            onClick={() => { setEditingCategory({ id: c.name, name: c.name }); setCatName(c.name); setCatDesc(''); }}
+                            className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
+                          >
+                            <Edit size={14} />
+                          </button>
+                          <button
+                            title={c.count > 0 ? `Cannot delete: ${c.count} products assigned` : "Delete Category"}
+                            onClick={() => handleDeleteCategory(c.name)}
+                            className={`p-1.5 rounded-lg transition ${
+                              c.count > 0
+                                ? 'text-slate-300 dark:text-slate-700 cursor-not-allowed opacity-40'
+                                : 'text-slate-500 hover:text-red-600 hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer'
+                            }`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                          <button
+                            onClick={() => openEditor(null, { category: c.name })}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 transition cursor-pointer"
+                          >
+                            + Add Product
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expandable Product Inspector Drawer */}
+                      {isExpanded && (
+                        <div className="p-3 bg-white dark:bg-darkbg rounded-xl border border-indigo-100 dark:border-indigo-900/40 space-y-2 text-xs">
+                          <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 pb-1 border-b border-slate-100 dark:border-darkbg-border">
+                            <span>Products in "{c.name}"</span>
+                            <span>{categoryProducts.length} Item(s)</span>
+                          </div>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                            {categoryProducts.map(p => (
+                              <div key={p.id} className="flex items-center justify-between py-1 border-b border-slate-50 dark:border-darkbg-border/30 last:border-0">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <div className="h-6 w-6 rounded bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 shrink-0 flex items-center justify-center font-bold text-[10px]">
+                                    {p.name.slice(0, 1).toUpperCase()}
+                                  </div>
+                                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</span>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0 text-slate-500 font-mono text-[11px]">
+                                  <span>Stock: <strong className={p.stock > 0 ? 'text-emerald-600' : 'text-red-500'}>{p.stock}</strong></span>
+                                  <span>{fmtCcy(p.sellingPrice || p.price)}</span>
+                                  <button
+                                    onClick={() => openEditor(p)}
+                                    className="text-indigo-600 hover:underline font-bold text-[11px] cursor-pointer"
+                                  >
+                                    Edit
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                            {categoryProducts.length === 0 && (
+                              <div className="text-center py-2 text-slate-400 italic text-[11px]">
+                                No products in this category yet. Click + Add Product above to create one.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {filteredCategories.length === 0 && (
+                  <div className="text-center py-10 text-slate-400 italic text-xs">
+                    No categories found.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: Brands Manager Card */}
+          <div className="p-5 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-2xl shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b dark:border-darkbg-border pb-3">
+              <h3 className="text-sm font-extrabold text-slate-900 dark:text-white m-0 flex items-center gap-2">
+                <Tag className="h-4.5 w-4.5 text-purple-600 dark:text-purple-400" />
+                Brands Manager
+              </h3>
+              <span className="text-xs text-slate-400 font-medium">{filteredBrands.length} Brands</span>
+            </div>
+
+            {/* Create / Edit Brand Inline Form */}
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!brandName.trim()) return;
+              const trimmed = brandName.trim();
+              if (editingBrand) {
+                const oldName = editingBrand.name;
+                try {
+                  const brandRec = await db.brands.where('tenant_id').equals(currentTenant.id).filter(b => b.name === oldName).first();
+                  if (brandRec) {
+                    await updateBrand(brandRec.id, { name: trimmed, description: brandDesc.trim() });
+                  }
+                } catch {}
+
+                if (oldName !== trimmed) {
+                  const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
+                  const brandProds = prods.filter(p => p.brand === oldName);
+                  await db.transaction('rw', db.products, async () => {
+                    for (const p of brandProds) {
+                      p.brand = trimmed;
+                      p.syncStatus = 'PENDING';
+                      await db.products.put(p);
+                    }
+                  });
+                }
+                setEditingBrand(null);
+              } else {
+                await createBrand({ name: trimmed, description: brandDesc.trim(), tenant_id: currentTenant.id });
+              }
+              setBrandName('');
+              setBrandDesc('');
+            }} className="space-y-3 bg-slate-50 dark:bg-darkbg/50 p-3.5 rounded-xl border dark:border-darkbg-border">
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {editingBrand ? `Edit Brand Name (currently "${editingBrand.name}")` : 'Brand Name *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Apple, Samsung, Heineken, Safari"
+                  value={brandName}
+                  onChange={e => setBrandName(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Description / Corporate Line</label>
+                <input
+                  type="text"
+                  placeholder="Manufacturer or brand origin details"
+                  value={brandDesc}
+                  onChange={e => setBrandDesc(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="submit"
+                  className="flex-1 h-9 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-lg transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Plus size={14} /> {editingBrand ? 'Update Brand' : 'Save Brand'}
+                </button>
+                {editingBrand && (
+                  <button
+                    type="button"
+                    onClick={() => { setEditingBrand(null); setBrandName(''); setBrandDesc(''); }}
+                    className="h-9 px-3 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-xs rounded-lg transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+
+            {/* Brands Controls (Search, Filters, Sort) */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+                <div className="relative flex-1 w-full">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search brands…"
+                    value={brandSearch}
+                    onChange={e => setBrandSearch(e.target.value)}
+                    className="h-8 w-full pl-9 pr-3 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                  />
+                </div>
+                <select
+                  value={brandSort}
+                  onChange={e => setBrandSort(e.target.value as any)}
+                  className="h-8 text-xs font-semibold rounded-lg border border-slate-200 bg-white px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none shrink-0"
+                >
+                  <option value="count">Sort: Most Items</option>
+                  <option value="name">Sort: A - Z</option>
+                </select>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-darkbg/70 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setBrandFilter('all')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${brandFilter === 'all' ? 'bg-white dark:bg-darkbg-card text-purple-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  All ({allBrands.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBrandFilter('active')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${brandFilter === 'active' ? 'bg-white dark:bg-darkbg-card text-purple-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  With Items ({allBrands.filter(b => b.count > 0).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBrandFilter('empty')}
+                  className={`flex-1 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer ${brandFilter === 'empty' ? 'bg-white dark:bg-darkbg-card text-purple-600 shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}
+                >
+                  Empty ({allBrands.filter(b => b.count === 0).length})
+                </button>
+              </div>
+
+              {/* Brands List with Accordion Inspector */}
+              <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
+                {filteredBrands.map(b => {
+                  const isEditing = editingBrand?.name === b.name;
+                  const isExpanded = expandedBrand === b.name;
+                  const brandProducts = products.filter(p => p.brand === b.name);
+                  return (
+                    <div key={b.name} className="space-y-1">
+                      <div
+                        className={`flex items-center justify-between p-3 rounded-xl border transition ${
+                          isEditing
+                            ? 'bg-purple-50 dark:bg-purple-950/60 border-purple-300 dark:border-purple-800'
+                            : 'bg-slate-50/70 dark:bg-darkbg/40 border-slate-200/80 dark:border-darkbg-border hover:bg-slate-100 dark:hover:bg-darkbg/70'
+                        }`}
+                      >
+                        <div
+                          onClick={() => setExpandedBrand(isExpanded ? null : b.name)}
+                          className="flex items-center gap-2.5 min-w-0 flex-1 pr-2 cursor-pointer"
+                        >
+                          <button className="text-slate-400 hover:text-purple-600 transition">
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                          <div
+                            className="h-8 w-8 rounded-lg shrink-0 flex items-center justify-center text-white font-bold text-xs shadow-xs"
+                            style={{ background: `hsl(${(b.name.charCodeAt(0) * 83) % 360}, 60%, 48%)` }}
+                          >
+                            {b.name.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">{b.name}</div>
+                            <div className="text-[11px] text-slate-400 font-medium">{b.count} product{b.count !== 1 ? 's' : ''}</div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            title="Edit Brand"
+                            onClick={() => { setEditingBrand({ id: b.name, name: b.name }); setBrandName(b.name); setBrandDesc(''); }}
+                            className="p-1.5 text-slate-500 hover:text-purple-600 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
+                          >
+                            <Edit size={14} />
+                          </button>
+                          <button
+                            title={b.count > 0 ? `Cannot delete: ${b.count} products assigned` : "Delete Brand"}
+                            onClick={() => handleDeleteBrand(b.name)}
+                            className={`p-1.5 rounded-lg transition ${
+                              b.count > 0
+                                ? 'text-slate-300 dark:text-slate-700 cursor-not-allowed opacity-40'
+                                : 'text-slate-500 hover:text-red-600 hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer'
+                            }`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                          <button
+                            onClick={() => openEditor(null, { brand: b.name })}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-800 transition cursor-pointer"
+                          >
+                            + Add Product
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expandable Product Inspector Drawer */}
+                      {isExpanded && (
+                        <div className="p-3 bg-white dark:bg-darkbg rounded-xl border border-purple-100 dark:border-purple-900/40 space-y-2 text-xs">
+                          <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 pb-1 border-b border-slate-100 dark:border-darkbg-border">
+                            <span>Products under "{b.name}"</span>
+                            <span>{brandProducts.length} Item(s)</span>
+                          </div>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                            {brandProducts.map(p => (
+                              <div key={p.id} className="flex items-center justify-between py-1 border-b border-slate-50 dark:border-darkbg-border/30 last:border-0">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <div className="h-6 w-6 rounded bg-purple-50 dark:bg-purple-950/50 text-purple-600 shrink-0 flex items-center justify-center font-bold text-[10px]">
+                                    {p.name.slice(0, 1).toUpperCase()}
+                                  </div>
+                                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</span>
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0 text-slate-500 font-mono text-[11px]">
+                                  <span>Stock: <strong className={p.stock > 0 ? 'text-emerald-600' : 'text-red-500'}>{p.stock}</strong></span>
+                                  <span>{fmtCcy(p.sellingPrice || p.price)}</span>
+                                  <button
+                                    onClick={() => openEditor(p)}
+                                    className="text-purple-600 hover:underline font-bold text-[11px] cursor-pointer"
+                                  >
+                                    Edit
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                            {brandProducts.length === 0 && (
+                              <div className="text-center py-2 text-slate-400 italic text-[11px]">
+                                No products under this brand yet. Click + Add Product above to create one.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {filteredBrands.length === 0 && (
+                  <div className="text-center py-10 text-slate-400 italic text-xs">
+                    No brands found.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
     );
   };
 
   // ──────────────────────────────────────────────────────────────────────────
-  // DEDICATED TAB 1C — ALERTS
+  // DEDICATED TAB 1C — STOCK LEDGER & DRILLDOWN
+  // ──────────────────────────────────────────────────────────────────────────
+  const renderLedgerTab = () => {
+    const selectedProd = products.find(p => p.id === selectedLedgerProductId) || products[0] || null;
+    const metric = selectedProd
+      ? (productValuationList.find(m => m.productId === selectedProd.id && !m.variantId) || {
+          productId: selectedProd.id,
+          name: selectedProd.name,
+          category: selectedProd.category,
+          sku: selectedProd.sku || '—',
+          currentQuantity: Math.max(0, selectedProd.stock || 0),
+          averageCostPrice: selectedProd.buyingPrice || 0,
+          lastPurchaseCost: selectedProd.buyingPrice || 0,
+          sellingPrice: selectedProd.sellingPrice || selectedProd.price || 0,
+          wholesalePrice: (selectedProd as any).wholesalePrice || 0,
+          vipPrice: (selectedProd as any).vipPrice || 0,
+          onlinePrice: (selectedProd as any).onlinePrice || 0,
+          buyingValue: Math.max(0, selectedProd.stock || 0) * (selectedProd.buyingPrice || 0),
+          sellingValue: Math.max(0, selectedProd.stock || 0) * (selectedProd.sellingPrice || selectedProd.price || 0),
+          expectedProfit: (Math.max(0, selectedProd.stock || 0) * (selectedProd.sellingPrice || selectedProd.price || 0)) - (Math.max(0, selectedProd.stock || 0) * (selectedProd.buyingPrice || 0)),
+          profitPercent: (selectedProd.sellingPrice || selectedProd.price || 0) > 0 ? Math.round((((selectedProd.sellingPrice || selectedProd.price || 0) - (selectedProd.buyingPrice || 0)) / (selectedProd.sellingPrice || selectedProd.price || 0)) * 1000) / 10 : 0,
+          stockStatus: (selectedProd.stock || 0) <= 0 ? 'Out of Stock' : (selectedProd.stock || 0) < 10 ? 'Low Stock' : 'In Stock',
+          lastMovementDate: null,
+          lastMovementType: null,
+          stockAgeDays: 0,
+        })
+      : null;
+
+    const displayEntries = ledgerDrilldownEntries.length > 0 && ledgerDrilldownProduct?.productId === selectedProd?.id
+      ? ledgerDrilldownEntries
+      : (productHistory || []);
+
+    const filteredEntries = displayEntries.filter(e => {
+      const q = ledgerSearchQuery.toLowerCase();
+      const matchesSearch = !q || (e.notes || '').toLowerCase().includes(q) || (e.user_id || '').toLowerCase().includes(q) || (e.reference_id || '').toLowerCase().includes(q) || (e.movement_type || '').toLowerCase().includes(q);
+      const matchesType = ledgerTypeFilter === 'ALL' || e.movement_type === ledgerTypeFilter;
+      return matchesSearch && matchesType;
+    });
+
+    return (
+      <div className="space-y-6">
+        {/* Header Toolbar */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-darkbg-card p-4 rounded-xl border dark:border-darkbg-border shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
+              <Activity size={22} />
+            </div>
+            <div>
+              <h2 className="text-base font-extrabold text-slate-900 dark:text-white m-0 flex items-center gap-2">
+                Stock Ledger &amp; Financial Drilldown
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 m-0">
+                Immutable double-entry stock movements audit trail &amp; valuation metrics
+              </p>
+            </div>
+          </div>
+
+          {/* Product Selector & Filters */}
+          <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+            <div className="flex-1 min-w-[220px]">
+              <select
+                value={selectedLedgerProductId || selectedProd?.id || ''}
+                onChange={e => {
+                  const targetId = e.target.value;
+                  const p = products.find(prod => prod.id === targetId);
+                  if (p) openLedgerDrilldown(p);
+                }}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white font-semibold focus:outline-none"
+              >
+                <option value="">— Select Product for Drilldown —</option>
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.stock} in stock)</option>
+                ))}
+              </select>
+            </div>
+
+            <select
+              value={ledgerTypeFilter}
+              onChange={e => setLedgerTypeFilter(e.target.value)}
+              className="h-9 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+            >
+              <option value="ALL">All Movement Types</option>
+              <optgroup label="Inbound (+)">
+                {(['OPENING_STOCK','PURCHASE_RECEIVE','CUSTOMER_RETURN','TRANSFER_IN','PRODUCTION_OUTPUT','ADJUSTMENT_GAIN'] as const).map(t =>
+                  <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+                )}
+              </optgroup>
+              <optgroup label="Outbound (−)">
+                {(['SALE','SUPPLIER_RETURN','TRANSFER_OUT','DAMAGE','EXPIRY','ADJUSTMENT_LOSS','PRODUCTION_USAGE'] as const).map(t =>
+                  <option key={t} value={t}>{t.replace(/_/g,' ')}</option>
+                )}
+              </optgroup>
+            </select>
+
+            <div className="relative flex-1 md:w-48">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                className="h-9 w-full pl-8 pr-3 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white focus:outline-none"
+                placeholder="Search notes, ref, user…"
+                value={ledgerSearchQuery}
+                onChange={e => setLedgerSearchQuery(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Products Valuation Overview Table (Moved to Ledger Drilldown) */}
+        <div className="inv-table-card">
+          <div className="inv-table-header">
+            <h3>Products Valuation &amp; Stock Summary Overview</h3>
+            <span className="text-xs text-slate-400 font-normal">Click &quot;Ledger&quot; on any product to view its detailed movement history below</span>
+          </div>
+          <div style={{padding: '12px', overflowX: 'auto'}}>
+            <table className="inv-table" style={{minWidth:'900px'}}>
+              <thead>
+                <tr>
+                  <th>Product Name</th>
+                  <th>Category</th>
+                  <th>SKU</th>
+                  <th style={{textAlign: 'right'}}>Qty</th>
+                  <th style={{textAlign: 'right'}}>Avg Cost</th>
+                  <th style={{textAlign: 'right'}}>Selling Price</th>
+                  <th style={{textAlign: 'right'}}>Buying Value</th>
+                  <th style={{textAlign: 'right'}}>Selling Value</th>
+                  <th style={{textAlign: 'right'}}>Profit</th>
+                  <th style={{textAlign: 'right'}}>Margin</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map(p => {
+                  const metric = productValuationList.find(m => m.productId === p.id && !m.variantId);
+                  const qty = Math.max(0, p.stock || 0);
+                  const avgCost = metric?.averageCostPrice ?? p.buyingPrice ?? 0;
+                  const sellPrice = metric?.sellingPrice ?? p.sellingPrice ?? p.price ?? 0;
+                  const buyVal = metric?.buyingValue ?? (qty * avgCost);
+                  const sellVal = metric?.sellingValue ?? (qty * sellPrice);
+                  const profit = metric?.expectedProfit ?? (sellVal - buyVal);
+                  const margin = metric?.profitPercent ?? (sellVal > 0 ? Math.round((profit / sellVal) * 1000) / 10 : 0);
+                  const status = metric?.stockStatus ?? (qty <= 0 ? 'Out of Stock' : qty < 10 ? 'Low Stock' : 'In Stock');
+                  const statusColor = status === 'Out of Stock' ? '#ef4444' : status === 'Low Stock' ? '#f59e0b' : status === 'Overstock' ? '#a855f7' : '#10b981';
+
+                  const isSelected = selectedProd?.id === p.id;
+
+                  return (
+                    <tr key={p.id} className={isSelected ? 'bg-indigo-50/50 dark:bg-indigo-950/30' : undefined}>
+                      <td style={{fontWeight: 600}}>
+                        {p.name}
+                        {p.hasVariants && <span style={{marginLeft:'4px', fontSize:'0.65rem', opacity:0.5}}>(variants)</span>}
+                      </td>
+                      <td><span className="inv-badge">{p.category}</span></td>
+                      <td><code style={{fontSize:'0.7rem'}}>{p.sku || '—'}</code></td>
+                      <td style={{textAlign:'right', fontWeight:700, color: qty <= 0 ? '#ef4444' : qty < 10 ? '#f59e0b' : undefined}}>{fmtNum(qty)}</td>
+                      <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{fmtCcy(avgCost)}</td>
+                      <td style={{textAlign:'right'}}>{fmtCcy(sellPrice)}</td>
+                      <td style={{textAlign:'right', fontWeight:600, color:'#059669'}}>{fmtCcy(buyVal)}</td>
+                      <td style={{textAlign:'right', fontWeight:600, color:'#10b981'}}>{fmtCcy(sellVal)}</td>
+                      <td style={{textAlign:'right', fontWeight:700, color: profit >= 0 ? '#8b5cf6' : '#ef4444'}}>{fmtCcy(profit)}</td>
+                      <td style={{textAlign:'right'}}>
+                        <span style={{
+                          display:'inline-block', padding:'2px 6px', borderRadius:'10px', fontSize:'0.72rem', fontWeight:700,
+                          background: margin >= 20 ? '#10b98122' : margin >= 10 ? '#f59e0b22' : '#ef444422',
+                          color: margin >= 20 ? '#059669' : margin >= 10 ? '#d97706' : '#dc2626'
+                        }}>{margin}%</span>
+                      </td>
+                      <td>
+                        <span style={{
+                          display:'inline-block', padding:'2px 8px', borderRadius:'10px', fontSize:'0.7rem', fontWeight:600,
+                          background: statusColor + '18', color: statusColor, whiteSpace:'nowrap'
+                        }}>{status}</span>
+                      </td>
+                      <td>
+                        <div style={{display:'flex', gap:'6px', alignItems:'center'}}>
+                          <button
+                            title="View Stock Ledger Drilldown"
+                            onClick={() => openLedgerDrilldown(metric || p)}
+                            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                              isSelected
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800'
+                            }`}
+                          >
+                            <Eye size={13}/> Ledger
+                          </button>
+                          <button className="inv-view-all-btn" onClick={() => openEditor(p)}>Edit</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              {products.length === 0 && (
+                <tr>
+                  <td colSpan={12} style={{textAlign: 'center', padding: '32px', opacity: 0.5}}>
+                    No products found.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+        {metric && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-3">
+              {[
+                { label: 'Current Qty', value: fmtNum(metric.currentQuantity), color:'#3b82f6' },
+                { label: 'Avg Cost', value: fmtCcy(metric.averageCostPrice), color:'#059669' },
+                { label: 'Selling Price', value: fmtCcy(metric.sellingPrice), color:'#10b981' },
+                { label: 'Buying Value', value: fmtCcy(metric.buyingValue), color:'#059669' },
+                { label: 'Selling Value', value: fmtCcy(metric.sellingValue), color:'#10b981' },
+                { label: 'Expected Profit', value: fmtCcy(metric.expectedProfit), color:'#8b5cf6' },
+                { label: 'Margin %', value: `${metric.profitPercent}%`, color:'#06b6d4' },
+                { label: 'Status', value: metric.stockStatus, color: metric.stockStatus === 'Out of Stock' ? '#ef4444' : metric.stockStatus === 'Low Stock' ? '#f59e0b' : '#10b981' },
+              ].map(c => (
+                <div key={c.label} className="p-3 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{c.label}</div>
+                  <div className="text-sm font-extrabold" style={{ color: c.color }}>{c.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Price Tiers & Stock Meta */}
+            <div className="flex flex-wrap items-center gap-4 p-3 bg-slate-50 dark:bg-darkbg/40 border dark:border-darkbg-border rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300">
+              <span>💰 Retail: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.sellingPrice)}</strong></span>
+              <span>🏪 Wholesale: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.wholesalePrice)}</strong></span>
+              <span>⭐ VIP: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.vipPrice)}</strong></span>
+              <span>🌐 Online: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.onlinePrice)}</strong></span>
+              <span className="ml-auto text-slate-400">SKU: <code className="font-mono bg-white dark:bg-darkbg px-1.5 py-0.5 rounded border border-slate-200 dark:border-darkbg-border text-slate-700 dark:text-slate-200">{metric.sku}</code></span>
+            </div>
+          </div>
+        )}
+
+        {/* Stock Movement Audit Log Table */}
+        <div className="p-4 bg-white dark:bg-darkbg-card border dark:border-darkbg-border rounded-xl shadow-sm space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="text-sm font-bold text-slate-800 dark:text-white m-0">
+              Stock Movement Audit Log ({filteredEntries.length} entries)
+            </h3>
+            <span className="text-xs text-slate-400">Showing full transaction history</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="inv-table min-w-[750px]">
+              <thead>
+                <tr>
+                  <th>Date &amp; Time</th>
+                  <th>Movement Type</th>
+                  <th style={{textAlign:'right'}}>Change</th>
+                  <th style={{textAlign:'right'}}>After</th>
+                  <th style={{textAlign:'right'}}>Unit Cost</th>
+                  <th style={{textAlign:'right'}}>Total Cost</th>
+                  <th>Reference</th>
+                  <th>User</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEntries.map(e => (
+                  <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
+                    <td style={{whiteSpace:'nowrap', fontSize:'0.75rem'}}>{fmtDateTime(e.created_at)}</td>
+                    <td>
+                      <span className={`inv-move-chip ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>
+                        {e.movement_type.replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td style={{textAlign:'right', fontWeight:700, color: e.quantity_change > 0 ? '#10b981' : '#ef4444'}}>
+                      {e.quantity_change > 0 ? '+' : ''}{fmtNum(e.quantity_change)}
+                    </td>
+                    <td style={{textAlign:'right', fontWeight:600}}>{fmtNum(e.quantity_after)}</td>
+                    <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{e.unit_cost ? fmtCcy(e.unit_cost) : '—'}</td>
+                    <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{e.total_cost ? fmtCcy(e.total_cost) : '—'}</td>
+                    <td style={{fontSize:'0.75rem', opacity:0.8}}><code className="text-[11px]">{e.reference_type || '—'}</code></td>
+                    <td style={{fontSize:'0.75rem', opacity:0.8}}>{e.user_id}</td>
+                    <td style={{fontSize:'0.75rem', opacity:0.8}}>{e.notes || '—'}</td>
+                  </tr>
+                ))}
+
+                {filteredEntries.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="text-center py-10 text-slate-400 italic text-xs">
+                      No stock movements found matching current filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // DEDICATED TAB 1D — ALERTS
   // ──────────────────────────────────────────────────────────────────────────
   const renderAlertsTab = () => {
     // Simple products low stock + variant low stock
@@ -1576,7 +2801,20 @@ export const Inventory: React.FC = () => {
                     <td style={{textAlign: 'right'}}>{fmtCcy(item.buyingPrice)}</td>
                     <td style={{textAlign: 'right'}}>{fmtCcy(item.sellingPrice)}</td>
                     <td>
-                      {item.productRef && <button className="inv-view-all-btn" onClick={() => openEditor(item.productRef!)}>Edit / Restock</button>}
+                      <div style={{display:'flex', gap:'4px', alignItems:'center'}}>
+                        {item.productRef && (
+                          <button
+                            title="View Stock Ledger"
+                            onClick={() => openLedgerDrilldown(item.productRef!)}
+                            style={{
+                              padding:'3px 7px', borderRadius:'5px', fontSize:'0.7rem',
+                              border:'1px solid rgba(99, 102, 241, 0.3)', background:'rgba(99, 102, 241, 0.12)',
+                              color:'#6366f1', cursor:'pointer', fontWeight:600, display:'inline-flex', alignItems:'center'
+                            }}
+                          ><Eye size={13}/></button>
+                        )}
+                        {item.productRef && <button className="inv-view-all-btn" onClick={() => openEditor(item.productRef!)}>Edit / Restock</button>}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1599,281 +2837,6 @@ export const Inventory: React.FC = () => {
   // ──────────────────────────────────────────────────────────────────────────
   // TAB 2 — PRODUCTS (Full editor preserved + enhanced with Batch/Serial/Reorder tabs)
   // ──────────────────────────────────────────────────────────────────────────
-  const [pId, setPId] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'simple' | 'variant'>('all');
-  const [isEditorOpen, setIsEditorOpen] = useState(false);
-  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
-  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [editorTab, setEditorTab] = useState<ProductTab>('general');
-
-  // Editor Form fields
-  const [pName, setPName] = useState('');
-  const [productCreatedAtDate, setProductCreatedAtDate] = useState('');
-
-  // --- Supervisor PIN Approval ---
-  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
-  const [pinReason, setPinReason] = useState('');
-  const [enteredPin, setEnteredPin] = useState('');
-  const [pinSuccessCallback, setPinSuccessCallback] = useState<(() => void) | null>(null);
-
-  const requestPinApproval = (reason: string, callback: () => void) => {
-    setPinReason(reason);
-    setEnteredPin('');
-    setPinSuccessCallback(() => callback);
-    setIsPinModalOpen(true);
-  };
-
-  const handleVerifyPin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (enteredPin === '1234' || enteredPin === 'admin123') {
-      setIsPinModalOpen(false);
-      if (pinSuccessCallback) pinSuccessCallback();
-    } else {
-      alert('Invalid supervisor PIN. Access denied.');
-    }
-  };
-  const [pCategory, setPCategory] = useState('');
-  const [pBrand, setPBrand] = useState('');
-  const [filterCategory, setFilterCategory] = useState('');
-  const [filterBrand, setFilterBrand] = useState('');
-  const [pDescription, setPDescription] = useState('');
-  const [pSupplier, setPSupplier] = useState('');   // supplier display name (free-text fallback)
-  const [pSupplierId, setPSupplierId] = useState(''); // linked supplier ID from db.suppliers
-  const [pTaxRate, setPTaxRate] = useState(0);
-  const [pHasVariants, setPHasVariants] = useState(false);
-  const [pImageUrl, setPImageUrl] = useState('');
-  const [pImagePreview, setPImagePreview] = useState('');
-  const [pExpiry, setPExpiry] = useState('');
-  const [pModule, setPModule] = useState(activeModule);
-  const [pBuyingPrice, setPBuyingPrice] = useState(0);
-  const [pSellingPrice, setPSellingPrice] = useState(0);
-  const [pStock, setPStock] = useState(0);
-  const [pReorderLevel, setPReorderLevel] = useState(5);
-  const [pSku, setPSku] = useState('');
-  const [pBarcode, setPBarcode] = useState('');
-
-  // Product photo camera state
-  const [isPhotoCameraOpen, setIsPhotoCameraOpen] = useState(false);
-  const [photoCameraStream, setPhotoCameraStream] = useState<MediaStream | null>(null);
-  const photoVideoRef = useRef<HTMLVideoElement | null>(null);
-
-  const startImageCamera = async () => {
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      });
-      setPhotoCameraStream(stream);
-      setIsPhotoCameraOpen(true);
-    } catch (err) {
-      console.warn('Camera stream error, launching camera file input fallback:', err);
-      (document.getElementById('product-camera-file-input') as HTMLInputElement)?.click();
-    }
-  };
-
-  const stopPhotoCamera = useCallback(() => {
-    if (photoCameraStream) {
-      photoCameraStream.getTracks().forEach(track => track.stop());
-      setPhotoCameraStream(null);
-    }
-    setIsPhotoCameraOpen(false);
-  }, [photoCameraStream]);
-
-  const capturePhoto = () => {
-    if (photoVideoRef.current) {
-      const video = photoVideoRef.current;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        setPImageUrl(dataUrl);
-        setPImagePreview(dataUrl);
-        stopPhotoCamera();
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (isPhotoCameraOpen && photoCameraStream && photoVideoRef.current) {
-      photoVideoRef.current.srcObject = photoCameraStream;
-    }
-  }, [isPhotoCameraOpen, photoCameraStream]);
-
-  // Variants state
-  const [localVariants, setLocalVariants] = useState<ProductVariant[]>([]);
-  const [originalVariants, setOriginalVariants] = useState<ProductVariant[]>([]);
-  const [selectedVariantIds, setSelectedVariantIds] = useState<Set<string>>(new Set());
-  const [customAttributes, setCustomAttributes] = useState<Record<string, string[]>>({});
-  const [newAttrName, setNewAttrName] = useState('');
-  const [newAttrValues, setNewAttrValues] = useState('');
-  const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
-
-  // Batch/Lot form
-  const [batchNum, setBatchNum] = useState('');
-  const [batchQty, setBatchQty] = useState(0);
-  const [batchCost, setBatchCost] = useState(0);
-  const [batchExpiry, setBatchExpiry] = useState('');
-  const [batchSupplier, setBatchSupplier] = useState('');   // supplier display name
-  const [batchSupplierId, setBatchSupplierId] = useState(''); // linked supplier ID
-  const [batchSaving, setBatchSaving] = useState(false);
-
-  // Serial form
-  const [serialInput, setSerialInput] = useState('');
-
-  // Reorder rule form
-  const [rrMinQty, setRrMinQty] = useState(10);
-  const [rrMaxQty, setRrMaxQty] = useState(200);
-  const [rrReorderQty, setRrReorderQty] = useState(50);
-  const [rrLeadTime, setRrLeadTime] = useState(7);
-  const [rrSupplier, setRrSupplier] = useState('');
-  const [rrSaving, setRrSaving] = useState(false);
-
-  // Product batches and serials for the selected product
-  const productBatches = useLiveQuery(async () => {
-    if (!pId) return [];
-    return db.batchLots.where('product_id').equals(pId).toArray();
-  }, [pId]) || [];
-
-  const productSerials = useLiveQuery(async () => {
-    if (!pId) return [];
-    return db.serialNumbers.where('product_id').equals(pId).toArray();
-  }, [pId]) || [];
-
-  const productHistory = useLiveQuery(async () => {
-    if (!pId) return [];
-    const entries = await db.stockLedger.where('product_id').equals(pId).toArray();
-    return entries.sort((a, b) => b.created_at - a.created_at);
-  }, [pId]) || [];
-
-  const productReorderRule = useLiveQuery(async () => {
-    if (!pId) return null;
-    return db.reorderRules.where('product_id').equals(pId).and(r => !r.variant_id).first();
-  }, [pId]);
-
-  useEffect(() => {
-    if (productReorderRule) {
-      setRrMinQty(productReorderRule.min_quantity);
-      setRrMaxQty(productReorderRule.max_quantity);
-      setRrReorderQty(productReorderRule.reorder_quantity);
-      setRrLeadTime(productReorderRule.lead_time_days);
-      setRrSupplier(productReorderRule.preferred_supplier_name ?? '');
-    }
-  }, [productReorderRule?.id]);
-
-  const filteredProducts = useMemo(() => {
-    return products.filter((p) => {
-      const q = searchQuery.toLowerCase();
-      const matchSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q);
-      const matchType = filterType === 'all' || (filterType === 'simple' && !p.hasVariants) || (filterType === 'variant' && p.hasVariants);
-      return matchSearch && matchType;
-    });
-  }, [products, searchQuery, filterType]);
-
-  const stats = useMemo(() => {
-    const total = products.length;
-    const variantProducts = products.filter(p => p.hasVariants).length;
-    
-    // Low stock: simple products with stock < 10 + variants with stock < (reorderLevel || 5)
-    const simpleLow = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).length;
-    const variantLow = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).length;
-    const lowStock = simpleLow + variantLow;
-
-    // Out of stock: simple products with stock <= 0 + variants with stock <= 0
-    const simpleOut = products.filter(p => !p.hasVariants && p.stock <= 0).length;
-    const variantOut = productVariants.filter(v => v.stock <= 0).length;
-    const outOfStock = simpleOut + variantOut;
-
-    return { total, variantProducts, lowStock, outOfStock };
-  }, [products, productVariants]);
-
-  const openEditor = useCallback(async (product: Product | null, initialValues?: Partial<Product>) => {
-    setSelectedProduct(product);
-    setEditorTab('general');
-    setEditingVariantIdx(null);
-    setCustomAttributes({});
-    setNewAttrName(''); setNewAttrValues('');
-    setBatchNum(''); setBatchQty(0); setBatchCost(0); setBatchExpiry('');
-    setBatchSupplier(''); setBatchSupplierId('');
-    setSerialInput('');
-    setProductCreatedAtDate('');
-
-    if (product) {
-      setPId(product.id);
-      setPName(product.name);
-      setPCategory(product.category);
-      setPBrand(product.brand || '');
-      setPDescription(product.description || '');
-      setPSupplier(product.supplier || '');
-      setPSupplierId((product as any).supplier_id || '');
-      setPBuyingPrice(product.buyingPrice || 0);
-      setPSellingPrice(product.sellingPrice || product.price || 0);
-      setPStock(product.stock || 0);
-      setPHasVariants(product.hasVariants || false);
-      setPExpiry(product.expiryDate || '');
-      setPTaxRate((product as any).taxRate !== undefined ? (product as any).taxRate : 0);
-      setPReorderLevel(5);
-      setPSku(product.sku || '');
-      setPBarcode(product.barcode || '');
-      setPImageUrl((product as any).image_url || '');
-      setPImagePreview((product as any).image_url || '');
-
-      if (product.hasVariants) {
-        const vars = await db.productVariants.where('productId').equals(product.id).toArray();
-        setOriginalVariants(vars);
-        setLocalVariants(vars.map(v => ({
-          ...v,
-          // Use the saved flag directly if present; only fall back to
-          // undefined-price heuristic for records created before the flag existed
-          inheritBuyingPrice:  v.inheritBuyingPrice  !== undefined ? v.inheritBuyingPrice  : v.buyingPrice  === undefined,
-          inheritSellingPrice: v.inheritSellingPrice !== undefined ? v.inheritSellingPrice : v.sellingPrice === undefined,
-        })));
-        const attrs: Record<string, Set<string>> = {};
-        vars.forEach(v => Object.entries(v.attributes).forEach(([key, val]) => {
-          if (!attrs[key]) attrs[key] = new Set();
-          attrs[key].add(val);
-        }));
-        setCustomAttributes(Object.fromEntries(Object.entries(attrs).map(([k, v]) => [k, Array.from(v)])));
-      } else {
-        setOriginalVariants([]);
-        setLocalVariants([]);
-      }
-    } else {
-      const newId = typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `prod-${Date.now().toString().slice(-7)}`;
-      setPId(newId);
-      setOriginalVariants([]);
-      setPName(initialValues?.name || '');
-      setPCategory(initialValues?.category || '');
-      setPBrand(initialValues?.brand || '');
-      setPDescription(initialValues?.description || '');
-      setPSupplier(initialValues?.supplier || '');
-      setPSupplierId('');
-      setPBuyingPrice(initialValues?.buyingPrice || 0);
-      setPSellingPrice(initialValues?.sellingPrice || initialValues?.price || 0);
-      setPStock(initialValues?.stock || 0);
-      setPHasVariants(initialValues?.hasVariants || false);
-      setPExpiry(initialValues?.expiryDate || '');
-      setPTaxRate(0);
-      setPReorderLevel(5);
-      setPSku(initialValues?.sku || '');
-      setPBarcode(initialValues?.barcode || '');
-      setPImageUrl('');
-      setPImagePreview('');
-      setPModule(activeModule);
-      setLocalVariants([]);
-    }
-    setIsEditorOpen(true);
-  }, [activeModule]);
 
   const attrsKey = (attrs: Record<string, string>) =>
     JSON.stringify(Object.fromEntries(Object.entries(attrs).sort(([a], [b]) => a.localeCompare(b))));
@@ -1943,6 +2906,33 @@ export const Inventory: React.FC = () => {
     if (pHasVariants && localVariants.length === 0) { alert('Add at least one variant or disable Has Variants.'); setEditorTab('variants'); return; }
     if (pHasVariants && localVariants.find(v => !v.sku.trim())) { alert('All variants must have a SKU.'); setEditorTab('variants'); return; }
 
+    // Front-end Validation: Prevent duplicate attribute combinations or duplicate SKUs
+    if (pHasVariants) {
+      const seenAttrSigs = new Map<string, string>();
+      const seenSkus = new Map<string, string>();
+
+      for (let i = 0; i < localVariants.length; i++) {
+        const v = localVariants[i];
+        const attrLabel = Object.entries(v.attributes || {}).map(([k, val]) => `${k}: ${val}`).join(', ') || `Variant #${i + 1}`;
+        const attrSig = Object.values(v.attributes || {}).map(val => String(val).trim().toLowerCase()).sort().join('|');
+        const skuVal = (v.sku || '').trim().toLowerCase();
+
+        if (attrSig && seenAttrSigs.has(attrSig)) {
+          alert(`⚠️ Validation Error: Duplicate variant combination detected ("${attrLabel}"). Each variant must have unique attribute values.`);
+          setEditorTab('variants');
+          return;
+        }
+        if (attrSig) seenAttrSigs.set(attrSig, attrLabel);
+
+        if (skuVal && seenSkus.has(skuVal)) {
+          alert(`⚠️ Validation Error: Duplicate SKU "${v.sku}" detected on variant "${attrLabel}". Each variant must have a distinct SKU.`);
+          setEditorTab('variants');
+          return;
+        }
+        if (skuVal) seenSkus.set(skuVal, attrLabel);
+      }
+    }
+
     // Validate that any variant NOT inheriting a price has an explicit non-zero value
     if (pHasVariants) {
       for (const v of localVariants) {
@@ -1999,25 +2989,32 @@ export const Inventory: React.FC = () => {
           createdAt: targetTime,
           ...(pImageUrl.trim() && { image_url: pImageUrl.trim() }),
           ...(pTaxRate > 0 && { taxRate: pTaxRate }),
+          ...(pWholesalePrice > 0 && { wholesalePrice: pWholesalePrice }),
+          ...(pVipPrice > 0 && { vipPrice: pVipPrice }),
+          ...(pOnlinePrice > 0 && { onlinePrice: pOnlinePrice }),
         } as any;
 
         const ctx = { id: user?.id || 'usr-anon', tenant_id: currentTenant.id, branch_id: currentBranch.id, role: user?.role || 'Business Owner', name: user?.name || 'User' };
 
         let finalProduct: Product;
         if (selectedProduct) {
-          savedProd.stock = selectedProduct.stock;
+          savedProd.stock = pHasVariants ? localVariants.reduce((sum, lv) => sum + (lv.stock || 0), 0) : pStock;
           finalProduct = await ProductService.updateProduct(pId, savedProd, ctx, isOnline);
         } else {
           finalProduct = await ProductService.createProduct(savedProd, ctx, isOnline);
         }
         const finalProductId = finalProduct.id;
 
-        const preSnapshotVars = pHasVariants ? await db.productVariants.where('productId').equals(finalProductId).toArray() : [];
+        const preSnapshotVars = await db.productVariants.where('productId').equals(finalProductId).toArray();
+
+        for (const ev of preSnapshotVars) {
+          if (!pHasVariants || !localVariants.find(lv => lv.id === ev.id)) {
+            await queueOperation('DELETE', 'productVariants' as any, ev);
+            await db.productVariants.delete(ev.id);
+          }
+        }
 
         if (pHasVariants) {
-          for (const ev of preSnapshotVars) {
-            if (!localVariants.find(lv => lv.id === ev.id)) await queueOperation('DELETE', 'productVariants' as any, ev);
-          }
           for (const lv of localVariants) {
             const isNew = !preSnapshotVars.find(ev => ev.id === lv.id);
             const freshVar = { 
@@ -2025,9 +3022,6 @@ export const Inventory: React.FC = () => {
               productId: finalProductId,
               tenant_id: currentTenant.id,
               branch_id: currentBranch.id,
-              // Resolve effective prices before writing to IndexedDB:
-              // - If inheriting, store undefined so the POS can fall back to the parent price at render time
-              // - If overriding, store the explicit value (guaranteed non-zero by validation above)
               buyingPrice:  lv.inheritBuyingPrice  ? undefined : (lv.buyingPrice  ?? pBuyingPrice),
               sellingPrice: lv.inheritSellingPrice ? undefined : (lv.sellingPrice ?? pSellingPrice),
             };
@@ -2035,7 +3029,6 @@ export const Inventory: React.FC = () => {
             freshVar.stock = stockVal;
             await queueOperation(isNew ? 'INSERT' : 'UPDATE', 'productVariants' as any, freshVar);
 
-            // Record opening stock for new variants (for both new and existing products)
             if (isNew && stockVal > 0) {
               await recordStockMovement({
                 tenant_id: currentTenant.id, branch_id: currentBranch.id, warehouse_id: allWarehouses[0]?.id || 'warehouse-main',
@@ -2047,8 +3040,9 @@ export const Inventory: React.FC = () => {
               });
             }
           }
-          await recalculateProductStock(finalProductId);
         }
+
+        await syncParentStock(finalProductId);
 
         // Opening stock ledger entries for new simple products
         if (!selectedProduct && !pHasVariants && pStock > 0) {
@@ -2085,10 +3079,16 @@ export const Inventory: React.FC = () => {
 
   const handleDeleteProduct = async () => {
     if (!productToDelete) return;
-    await db.products.delete(productToDelete.id);
-    await db.productVariants.where('productId').equals(productToDelete.id).delete();
-    setIsDeleteConfirmOpen(false);
-    setProductToDelete(null);
+    try {
+      const ctx = { id: user?.id || 'usr-anon', tenant_id: currentTenant.id, branch_id: currentBranch.id, role: user?.role || 'Business Owner', name: user?.name || 'User' };
+      await ProductService.deleteProduct(productToDelete.id, ctx, isOnline);
+      await db.productVariants.where('productId').equals(productToDelete.id).delete();
+    } catch (err: any) {
+      alert('Error deleting product: ' + err.message);
+    } finally {
+      setIsDeleteConfirmOpen(false);
+      setProductToDelete(null);
+    }
   };
 
   const handleSaveBatch = async () => {
@@ -2190,41 +3190,48 @@ export const Inventory: React.FC = () => {
             <p>No products found</p>
             {canEdit && <button className="inv-add-btn" onClick={() => openEditor(null)}><Plus size={14}/> Add First Product</button>}
           </div>
-        ) : filteredProducts.map(p => (
-          <div key={p.id} className={`inv-product-card ${p.stock <= 0 ? 'out-of-stock' : p.stock < 10 ? 'low-stock' : ''}`}>
-            <div className="inv-product-header">
-              <div className="inv-product-icon" style={{ padding: 0, overflow: 'hidden', borderRadius: '8px' }}>
-                {(p as any).image_url ? (
-                  <img
-                    src={(p as any).image_url}
-                    alt={p.name}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '8px' }}
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                ) : (
-                  p.hasVariants ? <Layers size={18}/> : <Package size={18}/>
+        ) : filteredProducts.map(p => {
+          const effectiveStock = p.hasVariants
+            ? productVariants.filter(v => v.productId === p.id && v.status !== 'Inactive').reduce((sum, v) => sum + (v.stock || 0), 0)
+            : (p.stock || 0);
+
+          return (
+            <div key={p.id} className={`inv-product-card ${effectiveStock <= 0 ? 'out-of-stock' : effectiveStock < 10 ? 'low-stock' : ''}`}>
+              <div className="inv-product-header">
+                <div className="inv-product-icon" style={{ padding: 0, overflow: 'hidden', borderRadius: '8px' }}>
+                  {(p as any).image_url ? (
+                    <img
+                      src={(p as any).image_url}
+                      alt={p.name}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '8px' }}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    p.hasVariants ? <Layers size={18}/> : <Package size={18}/>
+                  )}
+                </div>
+                <div className="inv-product-info">
+                  <div className="inv-product-name">{p.name}</div>
+                  <div className="inv-product-cat">{p.category} {p.brand && `· ${p.brand}`}</div>
+                </div>
+                {effectiveStock <= 0 ? <Badge variant="danger">Out</Badge> : effectiveStock < 10 ? <Badge variant="warning">Low</Badge> : <Badge variant="success">In Stock</Badge>}
+              </div>
+              <div className="inv-product-meta">
+                <span>Stock: <strong>{fmtNum(effectiveStock)}</strong></span>
+                <span>Buy: <strong>{fmtCcy(p.buyingPrice)}</strong></span>
+                <span>Sell: <strong>{fmtCcy(p.sellingPrice || p.price)}</strong></span>
+              </div>
+              <div className="inv-product-actions">
+                <button onClick={() => openEditor(p)} title="Edit Product" className="inv-icon-btn edit"><Edit size={14}/></button>
+                <button onClick={() => openLedgerDrilldown(p)} title="View Stock Ledger" className="inv-icon-btn view" style={{ color: '#6366f1' }}><Eye size={14}/></button>
+                <button onClick={() => openAdjustment(p)} title="Adjust Stock" className="inv-icon-btn adjust"><Sliders size={14}/></button>
+                {canEdit && (
+                  <button onClick={() => { setProductToDelete(p); setIsDeleteConfirmOpen(true); }} title="Delete" className="inv-icon-btn delete"><Trash2 size={14}/></button>
                 )}
               </div>
-              <div className="inv-product-info">
-                <div className="inv-product-name">{p.name}</div>
-                <div className="inv-product-cat">{p.category} {p.brand && `· ${p.brand}`}</div>
-              </div>
-              {p.stock <= 0 ? <Badge variant="danger">Out</Badge> : p.stock < 10 ? <Badge variant="warning">Low</Badge> : <Badge variant="success">In Stock</Badge>}
             </div>
-            <div className="inv-product-meta">
-              <span>Stock: <strong>{fmtNum(p.stock)}</strong></span>
-              <span>Buy: <strong>{fmtCcy(p.buyingPrice)}</strong></span>
-              <span>Sell: <strong>{fmtCcy(p.sellingPrice || p.price)}</strong></span>
-            </div>
-            <div className="inv-product-actions">
-              <button onClick={() => openEditor(p)} title="Edit" className="inv-icon-btn edit"><Edit size={14}/></button>
-              <button onClick={() => openAdjustment(p)} title="Adjust Stock" className="inv-icon-btn adjust"><Sliders size={14}/></button>
-              {canEdit && (
-                <button onClick={() => { setProductToDelete(p); setIsDeleteConfirmOpen(true); }} title="Delete" className="inv-icon-btn delete"><Trash2 size={14}/></button>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Product Editor Dialog */}
@@ -2594,12 +3601,24 @@ export const Inventory: React.FC = () => {
             {editorTab === 'pricing' && (
               <div className="inv-form-grid">
                 <div className="inv-field">
-                  <label>Buying Price (Tsh)</label>
+                  <label>Buying Price / Cost (Tsh)</label>
                   <input className="inv-input" type="number" min="0" value={pBuyingPrice} onChange={e => setPBuyingPrice(Number(e.target.value))}/>
                 </div>
                 <div className="inv-field">
-                  <label>Selling Price (Tsh)</label>
+                  <label>Retail Selling Price (Tsh)</label>
                   <input className="inv-input" type="number" min="0" value={pSellingPrice} onChange={e => setPSellingPrice(Number(e.target.value))}/>
+                </div>
+                <div className="inv-field">
+                  <label>Wholesale Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                  <input className="inv-input" type="number" min="0" value={pWholesalePrice} onChange={e => setPWholesalePrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.85))}` : 'Optional'}/>
+                </div>
+                <div className="inv-field">
+                  <label>VIP / Member Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                  <input className="inv-input" type="number" min="0" value={pVipPrice} onChange={e => setPVipPrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.90))}` : 'Optional'}/>
+                </div>
+                <div className="inv-field">
+                  <label>Online Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                  <input className="inv-input" type="number" min="0" value={pOnlinePrice} onChange={e => setPOnlinePrice(Number(e.target.value))} placeholder="Same as retail if not set"/>
                 </div>
                 <div className="inv-field">
                   <label>Tax Rate (%)</label>
@@ -2608,9 +3627,10 @@ export const Inventory: React.FC = () => {
                 {pBuyingPrice > 0 && pSellingPrice > 0 && (
                   <div className="inv-field full">
                     <div className="inv-pricing-summary">
-                      <div><span>Margin:</span><strong style={{color:'#10b981'}}>{(((pSellingPrice - pBuyingPrice) / pSellingPrice) * 100).toFixed(1)}%</strong></div>
+                      <div><span>Retail Margin:</span><strong style={{color:'#10b981'}}>{(((pSellingPrice - pBuyingPrice) / pSellingPrice) * 100).toFixed(1)}%</strong></div>
                       <div><span>Markup:</span><strong style={{color:'#6366f1'}}>{(((pSellingPrice - pBuyingPrice) / pBuyingPrice) * 100).toFixed(1)}%</strong></div>
-                      <div><span>Profit:</span><strong style={{color:'#f59e0b'}}>{fmtCcy(pSellingPrice - pBuyingPrice)}</strong></div>
+                      <div><span>Unit Profit:</span><strong style={{color:'#f59e0b'}}>{fmtCcy(pSellingPrice - pBuyingPrice)}</strong></div>
+                      {pWholesalePrice > 0 && <div><span>Wholesale Margin:</span><strong style={{color:'#06b6d4'}}>{(((pWholesalePrice - pBuyingPrice) / pWholesalePrice) * 100).toFixed(1)}%</strong></div>}
                     </div>
                   </div>
                 )}
@@ -2620,7 +3640,21 @@ export const Inventory: React.FC = () => {
             {/* Inventory Tab */}
             {editorTab === 'inventory' && (
               <div className="inv-form-grid">
-                {!pHasVariants && (
+                {pHasVariants ? (
+                  <div className="inv-field">
+                    <label>Current Stock (Computed from Variants)</label>
+                    <input
+                      className="inv-input"
+                      type="number"
+                      value={pStock}
+                      disabled
+                      title="Stock is automatically calculated from product variants."
+                    />
+                    <small style={{ color: '#6366f1', fontWeight: 600 }}>
+                      Stock is automatically calculated from product variants.
+                    </small>
+                  </div>
+                ) : (
                   <div className="inv-field">
                     <label>{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
                     <input className="inv-input" type="number" min="0"
@@ -2718,48 +3752,200 @@ export const Inventory: React.FC = () => {
                                     setSelectedVariantIds(prev => { const n = new Set(prev); if (n.has(v.id)) n.delete(v.id); else n.add(v.id); return n; });
                                   }}/>
                                 </td>
-                                <td>{Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') || '—'}</td>
-                                <td>{v.sku}</td>
-                                <td>{v.barcode || '—'}</td>
-                                <td>{v.inheritBuyingPrice ? `↑${fmtCcy(pBuyingPrice)}` : fmtCcy(v.buyingPrice ?? 0)}</td>
-                                <td>{v.inheritSellingPrice ? `↑${fmtCcy(pSellingPrice)}` : fmtCcy(v.sellingPrice ?? 0)}</td>
-                                <td><span style={{color: v.stock <= 0 ? '#ef4444' : v.stock < 5 ? '#f59e0b' : '#10b981'}}>{v.stock}</span></td>
+                                <td>
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    {Object.entries(v.attributes).map(([k, val]) => {
+                                      const cleanKey = k.includes(',') ? k.split(',').join(' / ') : k;
+                                      return (
+                                        <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60">
+                                          <Tag className="h-3 w-3 text-indigo-500 shrink-0" />
+                                          <span>{cleanKey}:</span>
+                                          <span className="font-extrabold text-indigo-900 dark:text-indigo-100">{val}</span>
+                                        </span>
+                                      );
+                                    })}
+                                    {Object.keys(v.attributes).length === 0 && <span className="text-slate-400 italic text-xs">No attributes</span>}
+                                  </div>
+                                </td>
+                                <td><code className="font-mono text-xs bg-slate-100 dark:bg-darkbg px-1.5 py-0.5 rounded border border-slate-200 dark:border-darkbg-border">{v.sku}</code></td>
+                                <td><span className="font-mono text-xs text-slate-500">{v.barcode || '—'}</span></td>
+                                <td><span className="font-semibold text-slate-700 dark:text-slate-300">{v.inheritBuyingPrice ? `↑${fmtCcy(pBuyingPrice)}` : fmtCcy(v.buyingPrice ?? 0)}</span></td>
+                                <td><span className="font-semibold text-slate-700 dark:text-slate-300">{v.inheritSellingPrice ? `↑${fmtCcy(pSellingPrice)}` : fmtCcy(v.sellingPrice ?? 0)}</span></td>
+                                <td><span className="font-extrabold font-mono" style={{color: v.stock <= 0 ? '#ef4444' : v.stock < 5 ? '#f59e0b' : '#10b981'}}>{v.stock}</span></td>
                                 <td><span className={`inv-status-pill ${v.status.toLowerCase()}`}>{v.status}</span></td>
                                 <td onClick={e => e.stopPropagation()}>
-                                  <button onClick={() => handleDeleteVariant(v.id)} className="inv-icon-btn delete"><Trash2 size={13}/></button>
+                                  <button onClick={() => handleDeleteVariant(v.id)} className="inv-icon-btn delete" title="Delete variant"><Trash2 size={13}/></button>
                                 </td>
                               </tr>
                               {editingVariantIdx === idx && (
                                 <tr className="inv-var-expand">
-                                  <td colSpan={9}>
-                                    <div className="inv-var-form">
-                                      <div className="inv-field"><label>SKU *</label><input className="inv-input" value={v.sku} onChange={e => handleUpdateVariant(idx, {sku: e.target.value})}/></div>
-                                      <div className="inv-field"><label>Barcode</label><input className="inv-input" value={v.barcode||''} onChange={e => handleUpdateVariant(idx, {barcode: e.target.value})}/></div>
-                                      <div className="inv-field">
-                                        <label className="inv-checkbox-label"><input type="checkbox" checked={!!v.inheritBuyingPrice} onChange={e => handleUpdateVariant(idx, {inheritBuyingPrice: e.target.checked})}/> Inherit Buying Price</label>
-                                        {!v.inheritBuyingPrice && <input className="inv-input" type="number" value={v.buyingPrice??0} onChange={e => handleUpdateVariant(idx, {buyingPrice: Number(e.target.value)})} placeholder="Override buy price"/>}
+                                  <td colSpan={9} className="p-0 border-b border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/30 dark:bg-indigo-950/20">
+                                    <div className="p-4 bg-white dark:bg-darkbg-card border border-indigo-100 dark:border-indigo-900/40 rounded-xl m-2 shadow-xs space-y-4">
+                                      {/* Header Bar */}
+                                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-darkbg-border/40 pb-2.5">
+                                        <div className="flex items-center gap-2">
+                                          <span className="h-2 w-2 rounded-full bg-indigo-600 animate-pulse" />
+                                          <span className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider">
+                                            Editing Variant Configuration
+                                          </span>
+                                          <span className="text-xs text-indigo-600 dark:text-indigo-400 font-semibold bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-100 dark:border-indigo-900/40">
+                                            {Object.entries(v.attributes).map(([k, val]) => `${k.includes(',') ? k.split(',').join(' / ') : k}: ${val}`).join(' · ') || v.sku}
+                                          </span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-darkbg dark:hover:bg-darkbg/80 transition-all border border-slate-200/80 dark:border-darkbg-border"
+                                          onClick={(e) => { e.stopPropagation(); setEditingVariantIdx(null); }}
+                                        >
+                                          <X className="h-3.5 w-3.5" /> Close Editor
+                                        </button>
                                       </div>
-                                      <div className="inv-field">
-                                        <label className="inv-checkbox-label"><input type="checkbox" checked={!!v.inheritSellingPrice} onChange={e => handleUpdateVariant(idx, {inheritSellingPrice: e.target.checked})}/> Inherit Selling Price</label>
-                                        {!v.inheritSellingPrice && <input className="inv-input" type="number" value={v.sellingPrice??0} onChange={e => handleUpdateVariant(idx, {sellingPrice: Number(e.target.value)})} placeholder="Override sell price"/>}
+
+                                      {/* Section 1: Identifiers */}
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="inv-field">
+                                          <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                            <span>SKU *</span>
+                                            <span className="text-[10px] text-slate-400 font-normal">Unique Stock Keeping Unit</span>
+                                          </label>
+                                          <input
+                                            className="inv-input h-9 font-mono text-xs font-semibold"
+                                            value={v.sku}
+                                            onChange={e => handleUpdateVariant(idx, { sku: e.target.value })}
+                                            placeholder="e.g. SERE-S"
+                                          />
+                                        </div>
+
+                                        <div className="inv-field">
+                                          <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                            <span>Barcode</span>
+                                            <span className="text-[10px] text-slate-400 font-normal">Optional EAN/UPC Code</span>
+                                          </label>
+                                          <div className="flex gap-1.5 items-center">
+                                            <input
+                                              className="inv-input h-9 font-mono text-xs flex-1"
+                                              value={v.barcode || ''}
+                                              onChange={e => handleUpdateVariant(idx, { barcode: e.target.value })}
+                                              placeholder="Scan or enter barcode"
+                                            />
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              className="h-9 px-2.5 text-xs font-bold flex items-center gap-1 shrink-0"
+                                              onClick={() => {
+                                                setScannerTargetField('variant');
+                                                setActiveVariantIndexForScan(idx);
+                                                setIsCameraScannerOpen(true);
+                                              }}
+                                              title="Scan barcode with camera"
+                                            >
+                                              <Barcode className="h-3.5 w-3.5" />
+                                              <span>Scan</span>
+                                            </Button>
+                                          </div>
+                                        </div>
                                       </div>
-                                      <div className="inv-field">
-                                        <label>Status</label>
-                                        <select className="inv-input" value={v.status} onChange={e => handleUpdateVariant(idx, {status: e.target.value as any})}>
-                                          <option>Active</option><option>Inactive</option>
-                                        </select>
+
+                                      {/* Section 2: Pricing Strategy Cards */}
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        {/* Buying Price Card */}
+                                        <div className="p-3 bg-slate-50/80 dark:bg-darkbg/60 border border-slate-200/80 dark:border-darkbg-border rounded-xl space-y-2">
+                                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                                            <input
+                                              type="checkbox"
+                                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                                              checked={!!v.inheritBuyingPrice}
+                                              onChange={e => handleUpdateVariant(idx, { inheritBuyingPrice: e.target.checked })}
+                                            />
+                                            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                                              Inherit Parent Buy Price ({fmtCcy(pBuyingPrice)})
+                                            </span>
+                                          </label>
+                                          {v.inheritBuyingPrice ? (
+                                            <div className="p-2 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-900/40 rounded-lg text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1.5">
+                                              <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                              <span>Inheriting Base Cost: <strong>{fmtCcy(pBuyingPrice)}</strong></span>
+                                            </div>
+                                          ) : (
+                                            <div className="inv-field mt-1">
+                                              <label className="text-[11px] font-bold text-slate-500">Custom Buying Price Override (Tsh)</label>
+                                              <input
+                                                className="inv-input h-9 text-xs font-mono font-semibold"
+                                                type="number"
+                                                min="0"
+                                                value={v.buyingPrice ?? 0}
+                                                onChange={e => handleUpdateVariant(idx, { buyingPrice: Number(e.target.value) })}
+                                                placeholder="Enter custom buy price"
+                                              />
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Selling Price Card */}
+                                        <div className="p-3 bg-slate-50/80 dark:bg-darkbg/60 border border-slate-200/80 dark:border-darkbg-border rounded-xl space-y-2">
+                                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                                            <input
+                                              type="checkbox"
+                                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                                              checked={!!v.inheritSellingPrice}
+                                              onChange={e => handleUpdateVariant(idx, { inheritSellingPrice: e.target.checked })}
+                                            />
+                                            <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                                              Inherit Parent Sell Price ({fmtCcy(pSellingPrice)})
+                                            </span>
+                                          </label>
+                                          {v.inheritSellingPrice ? (
+                                            <div className="p-2 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-200/60 dark:border-indigo-900/40 rounded-lg text-[11px] text-indigo-700 dark:text-indigo-400 font-semibold flex items-center gap-1.5">
+                                              <Check className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                                              <span>Inheriting Base Retail: <strong>{fmtCcy(pSellingPrice)}</strong></span>
+                                            </div>
+                                          ) : (
+                                            <div className="inv-field mt-1">
+                                              <label className="text-[11px] font-bold text-slate-500">Custom Selling Price Override (Tsh)</label>
+                                              <input
+                                                className="inv-input h-9 text-xs font-mono font-semibold"
+                                                type="number"
+                                                min="0"
+                                                value={v.sellingPrice ?? 0}
+                                                onChange={e => handleUpdateVariant(idx, { sellingPrice: Number(e.target.value) })}
+                                                placeholder="Enter custom sell price"
+                                              />
+                                            </div>
+                                          )}
+                                        </div>
                                       </div>
-                                      <div className="inv-field font-sans">
-                                        <label>{selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
-                                        <input
-                                          className="inv-input"
-                                          type="number"
-                                          min="0"
-                                          value={v.stock || 0}
-                                          onChange={e => handleUpdateVariant(idx, { stock: Number(e.target.value) })}
-                                          disabled={!!selectedProduct && originalVariants.some(ov => ov.id === v.id)}
-                                          title={selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}
-                                        />
+
+                                      {/* Section 3: Status & Stock */}
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="inv-field">
+                                          <label className="text-xs font-bold text-slate-700 dark:text-slate-200">Operational Status</label>
+                                          <select
+                                            className="inv-input h-9 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white font-medium"
+                                            value={v.status}
+                                            onChange={e => handleUpdateVariant(idx, { status: e.target.value as any })}
+                                          >
+                                            <option value="Active">Active (Available for POS & Sales)</option>
+                                            <option value="Inactive">Inactive (Hidden from POS)</option>
+                                          </select>
+                                        </div>
+
+                                        <div className="inv-field">
+                                          <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                            <span>{selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Current Stock (Ledger-Managed)' : 'Opening Stock'}</span>
+                                            {selectedProduct && originalVariants.some(ov => ov.id === v.id) && (
+                                              <span className="text-[10px] text-amber-600 font-normal">Use Stock Adjustments tab to change</span>
+                                            )}
+                                          </label>
+                                          <input
+                                            className="inv-input h-9 text-xs font-mono font-bold"
+                                            type="number"
+                                            min="0"
+                                            value={v.stock || 0}
+                                            onChange={e => handleUpdateVariant(idx, { stock: Number(e.target.value) })}
+                                            disabled={!!selectedProduct && originalVariants.some(ov => ov.id === v.id)}
+                                            title={selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}
+                                          />
+                                        </div>
                                       </div>
                                     </div>
                                   </td>
@@ -4313,23 +5499,224 @@ export const Inventory: React.FC = () => {
     );
   };
 
+  // ─── TAB: STOCK SYNC ENGINE ────────────────────────────────────────────────
+  const syncDiagnostics = useLiveQuery(async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return null;
+    return stockLedgerSyncEngine.getSyncEngineDiagnostics(currentTenant.id, currentBranch.id);
+  }, [currentTenant?.id, currentBranch?.id]);
+
+  const syncEvents = useLiveQuery(async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return [];
+    const list = await db.stockLedger
+      .where('tenant_id').equals(currentTenant.id)
+      .and(e => e.branch_id === currentBranch.id)
+      .toArray();
+    return list.sort((a, b) => b.created_at - a.created_at).slice(0, 100);
+  }, [currentTenant?.id, currentBranch?.id]);
+
+  const [isRebuildingBalances, setIsRebuildingBalances] = useState(false);
+  const [isFlushingSync, setIsFlushingSync] = useState(false);
+
+  const handleRebuildBalances = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    setIsRebuildingBalances(true);
+    try {
+      const res = await stockLedgerSyncEngine.rebuildAllBranchBalances(currentTenant.id, currentBranch.id);
+      alert(`✅ Event Replay Complete!\nRecalculated ${res.productsRecalculated} products from ${res.totalEventsReplayed} Stock Ledger events.`);
+    } catch (err: any) {
+      alert(`Error rebuilding balances: ${err?.message}`);
+    } finally {
+      setIsRebuildingBalances(false);
+    }
+  };
+
+  const handleFlushSync = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    setIsFlushingSync(true);
+    try {
+      const res = await stockLedgerSyncEngine.syncPendingEvents(currentTenant.id, currentBranch.id);
+      alert(`🔄 Sync Flush Complete!\nSynced: ${res.syncedCount} events, Failed: ${res.failedCount}`);
+    } catch (err: any) {
+      alert(`Sync flush error: ${err?.message}`);
+    } finally {
+      setIsFlushingSync(false);
+    }
+  };
+
+  const renderStockSyncTab = () => {
+    const health = syncDiagnostics?.healthStatus || 'OPTIMAL';
+    const healthBadge = health === 'OPTIMAL' ? 'bg-emerald-500 text-white' : health === 'SYNCING' ? 'bg-blue-500 text-white' : health === 'PENDING_RETRY' ? 'bg-amber-500 text-white' : 'bg-red-500 text-white';
+
+    return (
+      <div className="space-y-6">
+        {/* Header Summary & Action Controls */}
+        <div className="p-6 bg-white dark:bg-darkbg-card border border-slate-200 dark:border-darkbg-border rounded-2xl shadow-xs space-y-6">
+          <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 border-b border-slate-100 dark:border-darkbg-border/30 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-extrabold text-slate-800 dark:text-white">Stock Ledger Synchronization Engine</h3>
+                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${healthBadge}`}>
+                  {health}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Event-driven stock sourcing engine. Raw stock balances are recalculated locally by replaying append-only ledger events with UUID idempotency.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleFlushSync}
+                disabled={isFlushingSync}
+                className="flex items-center gap-1.5"
+              >
+                <RefreshCw size={14} className={isFlushingSync ? 'spin' : ''} />
+                {isFlushingSync ? 'Syncing...' : 'Flush Pending Sync'}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleRebuildBalances}
+                disabled={isRebuildingBalances}
+                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700"
+              >
+                <Zap size={14} className={isRebuildingBalances ? 'spin' : ''} />
+                {isRebuildingBalances ? 'Rebuilding...' : 'Rebuild Balances from Ledger'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Diagnostic KPI Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="p-3 bg-slate-50 dark:bg-darkbg border border-slate-200 dark:border-darkbg-border rounded-xl">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Ledger Events</span>
+              <span className="text-base font-extrabold text-slate-800 dark:text-white mt-1 block">
+                {syncDiagnostics?.totalLedgerEvents ?? 0}
+              </span>
+            </div>
+            <div className="p-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/40 rounded-xl">
+              <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider block">Pending Sync</span>
+              <span className="text-base font-extrabold text-amber-700 dark:text-amber-300 mt-1 block">
+                {syncDiagnostics?.pendingSyncCount ?? 0}
+              </span>
+            </div>
+            <div className="p-3 bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/50 dark:border-emerald-900/40 rounded-xl">
+              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">Synced Events</span>
+              <span className="text-base font-extrabold text-emerald-700 dark:text-emerald-300 mt-1 block">
+                {syncDiagnostics?.syncedCount ?? 0}
+              </span>
+            </div>
+            <div className="p-3 bg-red-50/50 dark:bg-red-950/20 border border-red-200/50 dark:border-red-900/40 rounded-xl">
+              <span className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider block">Failed Sync</span>
+              <span className="text-base font-extrabold text-red-700 dark:text-red-300 mt-1 block">
+                {syncDiagnostics?.failedSyncCount ?? 0}
+              </span>
+            </div>
+            <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200/50 dark:border-indigo-900/40 rounded-xl">
+              <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block">Last Synced Ver.</span>
+              <span className="text-base font-extrabold text-indigo-700 dark:text-indigo-300 mt-1 block">
+                #{syncDiagnostics?.lastSyncedVersion ?? 0}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Idempotent Ledger Event Stream Audit Table */}
+        <div className="p-6 bg-white dark:bg-darkbg-card border border-slate-200 dark:border-darkbg-border rounded-2xl shadow-xs space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Idempotent Stock Ledger Events Audit Stream
+              </h4>
+              <p className="text-[11px] text-slate-400">Chronological immutable event ledger sorted by monotonically incrementing event versions.</p>
+            </div>
+            <Badge variant="outline">Top 100 Recent Events</Badge>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-darkbg-border bg-slate-50 dark:bg-darkbg text-[10px] uppercase font-bold text-slate-400">
+                  <th className="p-2.5">Ver / Time</th>
+                  <th className="p-2.5">Idempotency Key</th>
+                  <th className="p-2.5">Product ID</th>
+                  <th className="p-2.5">Movement</th>
+                  <th className="p-2.5 text-right">Change</th>
+                  <th className="p-2.5 text-right">After</th>
+                  <th className="p-2.5">Sync Status</th>
+                  <th className="p-2.5">Device</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/20">
+                {(syncEvents || []).map((evt) => {
+                  const isInc = INBOUND_MOVEMENT_TYPES.includes(evt.movement_type);
+                  return (
+                    <tr key={evt.id} className="hover:bg-slate-50/50 dark:hover:bg-darkbg/30">
+                      <td className="p-2.5 font-mono text-[10px] text-slate-500">
+                        <div>#{evt.event_version || 1}</div>
+                        <div className="text-[9px] text-slate-400">{new Date(evt.created_at).toLocaleTimeString()}</div>
+                      </td>
+                      <td className="p-2.5 font-mono text-[10px] text-indigo-600 dark:text-indigo-400">
+                        {evt.idempotency_key || evt.id}
+                      </td>
+                      <td className="p-2.5 font-mono text-[10px] text-slate-700 dark:text-slate-300">
+                        {evt.product_id}
+                        {evt.variant_id && <span className="text-slate-400 font-normal"> ({evt.variant_id})</span>}
+                      </td>
+                      <td className="p-2.5">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isInc ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400'}`}>
+                          {evt.movement_type.replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td className={`p-2.5 text-right font-bold font-mono ${evt.quantity_change > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                        {evt.quantity_change > 0 ? '+' : ''}{evt.quantity_change}
+                      </td>
+                      <td className="p-2.5 text-right font-mono font-bold text-slate-800 dark:text-white">
+                        {evt.quantity_after}
+                      </td>
+                      <td className="p-2.5">
+                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${evt.sync_status === 'SYNCED' || evt.synced ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400' : evt.sync_status === 'FAILED' ? 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400'}`}>
+                          {evt.sync_status || (evt.synced ? 'SYNCED' : 'PENDING')}
+                        </span>
+                      </td>
+                      <td className="p-2.5 font-mono text-[10px] text-slate-400">
+                        {evt.device_id || 'WEB-CLIENT'}
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {(!syncEvents || syncEvents.length === 0) && (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-slate-400 italic text-xs">
+                      No stock ledger events recorded yet. Perform inventory operations to view event stream.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ──────────────────────────────────────────────────────────────────────────
   // RENDER
   // ──────────────────────────────────────────────────────────────────────────
   const TOP_TABS: { id: InventoryTab; label: string; icon: React.ReactNode; badge?: number }[] = [
-    { id: 'dashboard',   label: 'Dashboard',    icon: <BarChart3 size={15}/>, },
-    { id: 'products',    label: 'Products',     icon: <Package size={15}/>,   badge: stats.total },
-    { id: 'categories',  label: 'Categories & Brands',   icon: <Tag size={15}/>,       badge: allCategories.length },
-    { id: 'adjustments', label: 'Adjustments',  icon: <Sliders size={15}/>,  },
-    { id: 'transfers',   label: 'Transfers',    icon: <ArrowLeftRight size={15}/>, badge: kpis?.pendingTransfers },
-    { id: 'alerts',      label: 'Stock Alerts', icon: <AlertTriangle size={15}/>,   badge: kpis?.lowStockCount },
-    { id: 'count',       label: 'Stock Count',  icon: <ClipboardList size={15}/>, badge: kpis?.pendingCounts },
-    { id: 'reports',     label: 'Reports',      icon: <FileText size={15}/>,  },
+    { id: 'dashboard',   label: 'Dashboard',        icon: <BarChart3 size={15}/>, },
+    { id: 'products',    label: 'Products',         icon: <Package size={15}/>,   badge: stats.total },
+    { id: 'ledger',      label: 'Ledger Drilldown', icon: <Activity size={15}/>, },
+    { id: 'adjustments', label: 'Adjustments',      icon: <Sliders size={15}/>,  },
+    { id: 'transfers',   label: 'Transfers',        icon: <ArrowLeftRight size={15}/>, badge: kpis?.pendingTransfers },
+    { id: 'alerts',      label: 'Stock Alerts',     icon: <AlertTriangle size={15}/>,   badge: kpis?.lowStockCount },
+    { id: 'count',       label: 'Stock Count',      icon: <ClipboardList size={15}/>, badge: kpis?.pendingCounts },
+    { id: 'reports',     label: 'Reports',          icon: <FileText size={15}/>,  },
     ...(activeModule === 'Bar' ? [
       { id: 'recipes' as any, label: 'Recipes & Pour Control', icon: <Activity size={15}/> },
       { id: 'wastage' as any, label: 'Wastage & Spillage', icon: <AlertTriangle size={15}/> }
-    ] : activeModule === 'Retail' ? [
-      { id: 'recipes' as any, label: 'Product Bundles & Kits', icon: <Layers size={15}/> }
     ] : [])
   ];
 
@@ -4353,6 +5740,8 @@ export const Inventory: React.FC = () => {
         {invTab === 'dashboard'   && renderDashboardTab()}
         {invTab === 'products'    && renderProductsTab()}
         {invTab === 'categories'  && renderCategoriesTab()}
+        {invTab === 'stockSync'   && renderStockSyncTab()}
+        {invTab === 'ledger'      && renderLedgerTab()}
         {invTab === 'adjustments' && renderAdjustmentsTab()}
         {invTab === 'transfers'   && renderTransfersTab()}
         {invTab === 'alerts'      && renderAlertsTab()}
@@ -4902,15 +6291,18 @@ export const Inventory: React.FC = () => {
                   </div>
                   <div className="flex items-center space-x-1">
                     <button
-                      title="Rename Category"
-                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition"
-                      onClick={() => handleRenameCategory(c.name)}
+                      title="Edit Category"
+                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-indigo-600 transition cursor-pointer"
+                      onClick={() => { setEditingCategory({ id: c.name, name: c.name }); setCatName(c.name); setCatDesc(''); setIsCategoryManagerOpen(false); setInvTab('categories'); }}
                     >
                       <Edit size={12} />
                     </button>
                     <button
-                      title="Delete Category"
-                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 hover:text-red-600 transition"
+                      title={c.count > 0 ? `Cannot delete: ${c.count} products assigned` : "Delete Category"}
+                      disabled={c.count > 0}
+                      className={`p-1 rounded transition ${
+                        c.count > 0 ? 'text-slate-300 dark:text-slate-700 cursor-not-allowed opacity-40' : 'text-slate-500 hover:text-red-600 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer'
+                      }`}
                       onClick={() => handleDeleteCategory(c.name)}
                     >
                       <Trash2 size={12} />
@@ -5029,6 +6421,118 @@ export const Inventory: React.FC = () => {
           </div>
         </div>
       </Dialog>
+
+      {/* ── Stock Ledger Drilldown Modal ─── */}
+      {isDrilldownOpen && ledgerDrilldownProduct && (
+        <div className="fixed inset-0 bg-black/65 z-[9999] flex items-center justify-center p-3 md:p-6 backdrop-blur-xs" onClick={() => setIsDrilldownOpen(false)}>
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col text-slate-900 dark:text-slate-100" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="p-5 px-6 border-b border-slate-200 dark:border-slate-800 flex items-start justify-between shrink-0 bg-slate-50/50 dark:bg-slate-900/50">
+              <div>
+                <h2 className="m-0 text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Activity className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+                  {ledgerDrilldownProduct.name}
+                </h2>
+                <div className="flex gap-2.5 marginTop-1.5 flex-wrap items-center mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  <span>SKU: <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-mono text-slate-700 dark:text-slate-300">{ledgerDrilldownProduct.sku}</code></span>
+                  <span>·</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-300">{ledgerDrilldownProduct.category}</span>
+                  {ledgerDrilldownProduct.variantId && (
+                    <span className="text-[11px] bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 px-2 py-0.5 rounded-full font-bold">
+                      Variant
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setIsDrilldownOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer text-xl leading-none"
+                title="Close"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Financial Summary Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-2.5 p-4 px-6 bg-slate-50 dark:bg-slate-950/60 border-b border-slate-200 dark:border-slate-800 shrink-0">
+              {[
+                { label: 'Current Qty', value: fmtNum(ledgerDrilldownProduct.currentQuantity), color:'#3b82f6' },
+                { label: 'Avg Cost', value: fmtCcy(ledgerDrilldownProduct.averageCostPrice), color:'#059669' },
+                { label: 'Selling Price', value: fmtCcy(ledgerDrilldownProduct.sellingPrice), color:'#10b981' },
+                { label: 'Buying Value', value: fmtCcy(ledgerDrilldownProduct.buyingValue), color:'#059669' },
+                { label: 'Selling Value', value: fmtCcy(ledgerDrilldownProduct.sellingValue), color:'#10b981' },
+                { label: 'Expected Profit', value: fmtCcy(ledgerDrilldownProduct.expectedProfit), color:'#8b5cf6' },
+                { label: 'Margin %', value: `${ledgerDrilldownProduct.profitPercent}%`, color:'#06b6d4' },
+                { label: 'Status', value: ledgerDrilldownProduct.stockStatus, color: ledgerDrilldownProduct.stockStatus === 'Out of Stock' ? '#ef4444' : ledgerDrilldownProduct.stockStatus === 'Low Stock' ? '#f59e0b' : '#10b981' },
+              ].map(c => (
+                <div key={c.label} className="rounded-xl p-2.5 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">{c.label}</div>
+                  <div className="text-xs sm:text-sm font-extrabold" style={{ color: c.color }}>{c.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Tier Prices */}
+            <div className="py-2.5 px-6 border-b border-slate-200 dark:border-slate-800 flex gap-4 shrink-0 flex-wrap text-xs text-slate-600 dark:text-slate-400 font-medium bg-white dark:bg-slate-900">
+              <span>💰 Retail: <strong className="text-slate-900 dark:text-white">{fmtCcy(ledgerDrilldownProduct.sellingPrice)}</strong></span>
+              <span>🏪 Wholesale: <strong className="text-slate-900 dark:text-white">{fmtCcy(ledgerDrilldownProduct.wholesalePrice)}</strong></span>
+              <span>⭐ VIP: <strong className="text-slate-900 dark:text-white">{fmtCcy(ledgerDrilldownProduct.vipPrice)}</strong></span>
+              <span>🌐 Online: <strong className="text-slate-900 dark:text-white">{fmtCcy(ledgerDrilldownProduct.onlinePrice)}</strong></span>
+              <span className="ml-auto text-slate-400">Stock Age: <strong className="text-slate-700 dark:text-slate-300">{ledgerDrilldownProduct.stockAgeDays}d</strong></span>
+            </div>
+
+            {/* Ledger Table */}
+            <div className="flex-1 overflow-y-auto p-4 px-6 bg-white dark:bg-slate-900">
+              <h4 className="m-0 mb-3 text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                <span>Stock Movement History ({ledgerDrilldownEntries.length} entries)</span>
+              </h4>
+              {ledgerDrilldownEntries.length === 0 ? (
+                <div className="text-center py-12 text-slate-400 dark:text-slate-500">
+                  <Activity size={32} className="mb-2 mx-auto opacity-40" />
+                  <p className="text-xs font-medium">No stock movements recorded yet for this product.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="inv-table min-w-[700px]">
+                    <thead>
+                      <tr>
+                        <th>Date & Time</th>
+                        <th>Movement</th>
+                        <th style={{textAlign:'right'}}>Change</th>
+                        <th style={{textAlign:'right'}}>After</th>
+                        <th style={{textAlign:'right'}}>Unit Cost</th>
+                        <th style={{textAlign:'right'}}>Total Cost</th>
+                        <th>Reference</th>
+                        <th>By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledgerDrilldownEntries.map(e => (
+                        <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
+                          <td style={{whiteSpace:'nowrap', fontSize:'0.72rem'}}>{fmtDateTime(e.created_at)}</td>
+                          <td>
+                            <span className={`inv-move-chip ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`} style={{fontSize:'0.68rem'}}>
+                              {e.movement_type.replace(/_/g, ' ')}
+                            </span>
+                          </td>
+                          <td style={{textAlign:'right', fontWeight:700, color: e.quantity_change > 0 ? '#10b981' : '#ef4444'}}>
+                            {e.quantity_change > 0 ? '+' : ''}{fmtNum(e.quantity_change)}
+                          </td>
+                          <td style={{textAlign:'right'}}>{fmtNum(e.quantity_after)}</td>
+                          <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{e.unit_cost ? fmtCcy(e.unit_cost) : '—'}</td>
+                          <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{e.total_cost ? fmtCcy(e.total_cost) : '—'}</td>
+                          <td style={{fontSize:'0.72rem', opacity:0.7}}>{e.reference_type || '—'}</td>
+                          <td style={{fontSize:'0.72rem', opacity:0.7}}>{e.user_id}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -11,7 +11,8 @@ import { db } from '../../db/dexie';
 import { supabase } from '../../db/supabaseClient';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Dialog, Button } from '../UI/custom-ui';
-import { tenantDemoService } from '../../services/tenantDemoService';
+
+import { tenantIdentifierService } from '../../services/tenantIdentifierService';
 
 interface TopBarProps {
   onOpenSearch: () => void;
@@ -200,9 +201,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     return user.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
   }, [user]);
 
-  const [showClearDemoDialog, setShowClearDemoDialog] = useState(false);
-  const [showActivateDialog, setShowActivateDialog] = useState(false);
-  const [isProcessingDemoAction, setIsProcessingDemoAction] = useState(false);
 
   // Live query to fetch all branch contexts resolved for this user
   const userContexts = useLiveQuery(async () => {
@@ -525,29 +523,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       )}
       
 
-      {/* Demo Workspace Warning Banner */}
-      {currentTenant.status?.toUpperCase() === 'DEMO' && (
-        <div className="bg-amber-500 text-white font-bold text-xs py-2 px-6 text-center select-none flex items-center justify-between z-50 shrink-0 sticky top-0 animate-in slide-in-from-top duration-200">
-          <div className="flex items-center space-x-2">
-            <span className="animate-pulse">⚠️</span>
-            <span>You are currently managing a <strong>Demo Workspace</strong> with trial sample records.</span>
-          </div>
-          <div className="flex items-center space-x-3">
-            <button 
-              onClick={() => setShowClearDemoDialog(true)}
-              className="bg-white/20 hover:bg-white/35 text-white px-3 py-1 rounded text-[10px] uppercase font-bold transition active:scale-95 shadow-sm"
-            >
-              Clear Sample Data
-            </button>
-            <button 
-              onClick={() => setShowActivateDialog(true)}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-[10px] uppercase font-bold transition active:scale-95 shadow-sm"
-            >
-              Activate Production Workspace
-            </button>
-          </div>
-        </div>
-      )}
 
       <header className="sticky top-0 z-40 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white/80 px-6 backdrop-blur-md dark:border-darkbg-border dark:bg-darkbg-card/85">
         {/* Brand Logo & Title */}
@@ -557,7 +532,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
           </div>
           <div className="hidden sm:block">
             <h1 className="text-base font-black tracking-tight text-slate-900 dark:text-white leading-none">DukaPos</h1>
-            <p className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 mt-0.5">{currentTenant.name}</p>
+            <p className="text-[9px] font-bold text-blue-600 dark:text-blue-400 mt-0.5 tracking-wider uppercase">Business Operating System</p>
           </div>
         </div>
 
@@ -949,8 +924,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                   </div>
                   <div className="flex justify-between items-center">
                     <span>Tenant ID</span>
-                    <span className="font-mono text-slate-500 dark:text-slate-400 truncate max-w-[120px]">
-                      {currentTenant.id}
+                    <span className="font-mono text-slate-500 dark:text-slate-400 font-bold">
+                      {tenantIdentifierService.getReadableTenantId(currentTenant)}
                     </span>
                   </div>
                 </div>
@@ -1023,114 +998,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
 
 
-      {/* Clear Demo Data Dialog */}
-      <Dialog
-        isOpen={showClearDemoDialog}
-        onClose={() => setShowClearDemoDialog(false)}
-        title="Confirm Sample Data Purge"
-      >
-        <div className="space-y-4 text-xs font-sans">
-          <p className="text-slate-500 leading-normal">
-            Are you sure you want to delete all demo and sample data? This will permanently wipe all products, variants, orders, stock movements, and customers created during the trial setup.
-          </p>
-          <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg text-amber-700 dark:text-amber-400">
-            <strong>Warning:</strong> This action cannot be undone. Configurations (settings, branches, roles, users) will be preserved.
-          </div>
-          <div className="flex justify-end space-x-2 pt-2">
-            <Button variant="outline" size="sm" onClick={() => setShowClearDemoDialog(false)} disabled={isProcessingDemoAction}>
-              Cancel
-            </Button>
-            <Button 
-              variant="danger" 
-              size="sm" 
-              disabled={isProcessingDemoAction}
-              onClick={async () => {
-                setIsProcessingDemoAction(true);
-                try {
-                  await tenantDemoService.createResetCommand(currentTenant.id, user?.id || 'system', 'DEMO_DATA');
-                  // Trigger local reload of data
-                  setTimeout(() => {
-                    window.location.reload();
-                  }, 1200);
-                } catch (err: any) {
-                  alert(`Purge failed: ${err.message}`);
-                } finally {
-                  setIsProcessingDemoAction(false);
-                  setShowClearDemoDialog(false);
-                }
-              }}
-            >
-              {isProcessingDemoAction ? 'Purging...' : 'Yes, Delete Sample Data'}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      {/* Activate Production Dialog */}
-      <Dialog
-        isOpen={showActivateDialog}
-        onClose={() => setShowActivateDialog(false)}
-        title="Activate Production Workspace"
-      >
-        <div className="space-y-4 text-xs font-sans">
-          <p className="text-slate-500 leading-normal">
-            Convert this demo tenant into a clean active production environment. All sample transactional records will be removed, and only setup configurations will be kept.
-          </p>
-          <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/30 rounded-lg text-emerald-700 dark:text-emerald-400">
-            <strong>Conversion details:</strong> Tenant status will transition to <strong>ACTIVE</strong>. Standard trial billing cycle and role mapping will be established.
-          </div>
-          <div className="flex justify-end space-x-2 pt-2">
-            <Button variant="outline" size="sm" onClick={() => setShowActivateDialog(false)} disabled={isProcessingDemoAction}>
-              Cancel
-            </Button>
-            <Button 
-              variant="primary" 
-              size="sm" 
-              disabled={isProcessingDemoAction}
-              onClick={async () => {
-                setIsProcessingDemoAction(true);
-                try {
-                  const result = await tenantDemoService.convertToProduction(currentTenant.id, user?.id || 'system');
-                  
-                  // Update active session in localStorage
-                  const sessionStr = localStorage.getItem('dukapos_session');
-                  if (sessionStr) {
-                    const session = JSON.parse(sessionStr);
-                    session.tenant.id = result.prodTenantId;
-                    session.tenant.status = 'Active';
-                    session.tenant.plan = result.plan;
-                    session.user.tenant_id = result.prodTenantId;
-                    
-                    if (session.branch) {
-                      session.branch.id = session.branch.id.replace(currentTenant.id, result.prodTenantId);
-                      session.branch.tenant_id = result.prodTenantId;
-                      session.user.branch_id = session.user.branch_id.replace(currentTenant.id, result.prodTenantId);
-                    }
-                    
-                    if (session.jwtClaims && session.jwtClaims.context) {
-                      session.jwtClaims.context.tenant_id = result.prodTenantId;
-                      session.jwtClaims.context.branch_id = session.jwtClaims.context.branch_id.replace(currentTenant.id, result.prodTenantId);
-                    }
-
-                    localStorage.setItem('dukapos_session', JSON.stringify(session));
-                  }
-
-                  setTimeout(() => {
-                    window.location.reload();
-                  }, 1200);
-                } catch (err: any) {
-                  alert(`Activation failed: ${err.message}`);
-                } finally {
-                  setIsProcessingDemoAction(false);
-                  setShowActivateDialog(false);
-                }
-              }}
-            >
-              {isProcessingDemoAction ? 'Activating...' : 'Confirm Activation'}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
 
       {/* Toast Notification Banner */}
       {toastMsg && (

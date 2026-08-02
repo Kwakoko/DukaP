@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ModuleProvider, useModule } from './context/ModuleContext';
 import { SyncProvider, useSyncState } from './context/SyncContext';
-import { seedDatabase, db } from './db/dexie';
+import { initProductionDatabase, db } from './db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 
 // Layout & Views
@@ -23,6 +23,9 @@ const AuthGateway = lazy(() => import('./components/Views/AuthGateway').then(m =
 const UsersRoles = lazy(() => import('./components/Views/UsersRoles').then(m => ({ default: m.UsersRoles })));
 const Expenses = lazy(() => import('./components/Views/Expenses').then(m => ({ default: m.Expenses })));
 const BusinessConsulting = lazy(() => import('./components/Views/BusinessConsulting').then(m => ({ default: m.BusinessConsulting })));
+const TechnicalCompany = lazy(() => import('./components/Views/TechnicalCompany').then(m => ({ default: m.TechnicalCompany })));
+const AIInsightsView = lazy(() => import('./components/Views/AIInsightsView').then(m => ({ default: m.AIInsightsView })));
+const CashDrawer = lazy(() => import('./components/Views/CashDrawer/CashDrawer').then(m => ({ default: m.CashDrawer })));
 import { useSubscription } from './hooks/useSubscription';
 import { Search, AlertTriangle, Lock } from 'lucide-react';
 import { Dialog, Badge } from './components/UI/custom-ui';
@@ -37,9 +40,9 @@ const DukaPosAppContent: React.FC = () => {
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [searchVal, setSearchVal] = useState('');
 
-  // Seed DB on mount
+  // Initialize production database on mount (idempotent — safe to call multiple times)
   useEffect(() => {
-    seedDatabase();
+    initProductionDatabase();
   }, []);
 
   // Bootstrap pull: whenever a user logs in, immediately fetch their products
@@ -103,6 +106,7 @@ const DukaPosAppContent: React.FC = () => {
       { key: 'SACCO', name: 'Switch to SACCO Module', action: () => { setActiveModule('SACCO'); setIsSearchModalOpen(false); } },
       { key: 'Bar', name: 'Switch to Bar & Beverage Module', action: () => { setActiveModule('Bar'); setIsSearchModalOpen(false); } },
       { key: 'BusinessConsultant', name: 'Switch to Business Consultant Module', action: () => { setActiveModule('BusinessConsultant'); setIsSearchModalOpen(false); } },
+      { key: 'TechnicalCompany', name: 'Switch to Technical & Engineering Module', action: () => { setActiveModule('TechnicalCompany'); setIsSearchModalOpen(false); } },
       { key: 'AlwaysShow', name: 'Toggle Dark / Light Theme', action: () => { toggleTheme(); setIsSearchModalOpen(false); } },
       { key: 'AlwaysShow', name: 'Launch POS Checkout Screen', action: () => { setActiveTab('POS'); setIsSearchModalOpen(false); } },
       { key: 'AlwaysShow', name: 'Switch to Users & Roles Settings', action: () => { setActiveTab('Users & Roles'); setIsSearchModalOpen(false); } }
@@ -202,6 +206,14 @@ const DukaPosAppContent: React.FC = () => {
       case 'Inventory':
       case 'Products':
       case 'Categories':
+      case 'Categories & Brands':
+      case 'Categories & brands':
+      case 'Stock Sync Engine':
+      case 'Stock Sync':
+      case 'Stock Ledger Sync':
+      case 'Product Bundles & Kits':
+      case 'Product Bundles':
+      case 'Bundles & Kits':
       case 'Stock Adjustment':
       case 'Stock Transfer':
       case 'Stock Alerts':
@@ -236,6 +248,11 @@ const DukaPosAppContent: React.FC = () => {
         return <Settings initialTab="devices" />;
       case 'Subscriptions & Billing':
         return <Settings initialTab="subscriptions" />;
+      case 'Developer Options':
+        return <Settings initialTab="developer" />;
+      case 'User Manual & Guide':
+      case 'User Manual':
+        return <Settings initialTab="manual" />;
       case 'Change Log':
         return <Settings initialTab="audit" />;
       case 'Plans & Pricing':
@@ -302,12 +319,55 @@ const DukaPosAppContent: React.FC = () => {
       case 'Happy Hour Rules':
       case 'Role Permissions':
         return <Settings />;
+      case 'Cash Drawer':
+      case 'Cash Management':
+      case 'Cash Shift':
+      case 'Shift & Active Register':
       case 'Cashier Shifts':
       case 'Counter Handover':
       case 'Float Management':
-      case 'Audit & Variance Logs':
       case 'Shift & Counter Management':
-        return <Dashboard />;
+        return <CashDrawer initialTab="shift" />;
+      case 'Cash Movement Ledger':
+      case 'Cash Ledger':
+        return <CashDrawer initialTab="ledger" />;
+      case 'Reconciliation & Variances':
+      case 'Drawer Reconciliation':
+      case 'Audit & Variance Logs':
+        return <CashDrawer initialTab="reconciliation" />;
+      case 'Safe & Bank Deposits':
+        return <CashDrawer initialTab="transfers" />;
+      case 'No Sale & Event Logs':
+        return <CashDrawer initialTab="events" />;
+      case '15 Financial Reports':
+        return <CashDrawer initialTab="reports" />;
+      case 'Security & RBAC Rules':
+        return <CashDrawer initialTab="security" />;
+      case 'AI Cash Advisor':
+        return <CashDrawer initialTab="ai" />;
+      // AI Insights Engine module routes
+      case 'AI Insights Engine':
+      case 'AI Insights':
+      case 'Business Health Score':
+        return <AIInsightsView initialTab="health" />;
+      case 'Sales Intelligence':
+        return <AIInsightsView initialTab="sales" />;
+      case 'Inventory Intelligence':
+        return <AIInsightsView initialTab="inventory" />;
+      case 'Profit & Pricing':
+        return <AIInsightsView initialTab="profit" />;
+      case 'Customer CLV':
+        return <AIInsightsView initialTab="customers" />;
+      case 'Cash Flow & Burn':
+        return <AIInsightsView initialTab="cashflow" />;
+      case 'Fraud & Security':
+        return <AIInsightsView initialTab="cashiers" />;
+      case 'Branch Comparison':
+        return <AIInsightsView initialTab="branches" />;
+      case 'Demand Forecast':
+        return <AIInsightsView initialTab="forecast" />;
+      case 'Vertical Advisory':
+        return <AIInsightsView initialTab="industry" />;
       // Business Consultant module routes
       case 'Clients':
       case 'Client Directory':
@@ -412,6 +472,96 @@ const DukaPosAppContent: React.FC = () => {
       case 'Integrations':
       case 'Audit Logs':
         return <BusinessConsulting />;
+      // Technical Company module routes
+      case 'Technical Company':
+      case 'Projects':
+      case 'Project List':
+      case 'Active Projects':
+      case 'Completed Projects':
+      case 'Milestones':
+      case 'Tasks':
+      case 'Project Calendar':
+      case 'Resource Allocation':
+      case 'Budget Tracking':
+      case 'Project Documents':
+      case 'Field Service':
+      case 'Service Requests':
+      case 'Work Orders':
+      case 'Site Visits':
+      case 'Maintenance Jobs':
+      case 'Installation Jobs':
+      case 'Emergency Calls':
+      case 'Technician Schedule':
+      case 'Job Completion Reports':
+      case 'Technical Services':
+      case 'Repairs':
+      case 'Installations':
+      case 'Preventive Maintenance':
+      case 'Equipment Inspection':
+      case 'Testing & Commissioning':
+      case 'Calibration':
+      case 'Troubleshooting':
+      case 'Service Checklists':
+      case 'Assets & Equipment':
+      case 'Company Equipment':
+      case 'Customer Equipment':
+      case 'Asset Register':
+      case 'Equipment Maintenance':
+      case 'Warranty Tracking':
+      case 'Asset History':
+      case 'Procurement':
+      case 'Supplier Management':
+      case 'RFQs':
+      case 'Purchase Requests':
+      case 'Supplier Performance':
+      case 'Workforce':
+      case 'Technicians':
+      case 'Engineers':
+      case 'Teams':
+      case 'Timesheets':
+      case 'Leave Management':
+      case 'Payroll Integration':
+      case 'Scheduling':
+      case 'Daily Schedule':
+      case 'Weekly Planner':
+      case 'Technician Assignment':
+      case 'Route Planning':
+      case 'Job Queue':
+      case 'Fleet Management':
+      case 'Company Vehicles':
+      case 'Driver Assignment':
+      case 'Fuel Usage':
+      case 'Vehicle Maintenance':
+      case 'GPS Tracking':
+      case 'Travel Logs':
+      case 'Finance':
+      case 'Income':
+      case 'Project Costing':
+      case 'Profit Analysis':
+      case 'Cash Flow':
+      case 'Accounts Receivable':
+      case 'Accounts Payable':
+      case 'General Ledger':
+      case 'Documents':
+      case 'Technical Drawings':
+      case 'Blueprints':
+      case 'Site Photos':
+      case 'Certificates':
+      case 'Compliance Documents':
+      case 'File Manager':
+        return <TechnicalCompany />;
+      // Dedicated AI Insights Engine Hub routes
+      case 'AI Insights':
+      case 'AI Insights Engine':
+      case 'AI Consultant':
+      case 'AI Assistant':
+      case 'Revenue Forecast':
+      case 'Predictive Maintenance':
+      case 'Inventory Forecast':
+      case 'Customer Insights':
+      case 'Project Risk Analysis':
+      case 'Smart Recommendations':
+        return <AIInsightsView />;
       // Expenses module routes
       case 'Expenses':
       case 'Feed Expenses':

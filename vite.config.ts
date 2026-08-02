@@ -189,8 +189,17 @@ export default defineConfig({
               writeDb(db)
             }
 
-            // 2. Parse multi-tenant headers
-            const reqTenantId = (req.headers['x-tenant-id'] as string) || ''
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+            res.setHeader('Pragma', 'no-cache')
+            res.setHeader('Expires', '0')
+
+            // 2. Parse multi-tenant headers case-insensitively or from search params
+            const reqTenantId = (req.headers['x-tenant-id'] as string) ||
+              (req.headers['X-Tenant-ID'] as string) ||
+              (req.headers['x-tenant-id'.toLowerCase()] as string) ||
+              url.searchParams.get('tenantId') ||
+              url.searchParams.get('tenant_id') ||
+              ''
 
             const isPlatformRoute = url.pathname === '/api/tenants' || url.pathname === '/api/users' || url.pathname === '/api/subscriptionPlans'
             const isPingRoute = url.pathname === '/api/ping'
@@ -198,8 +207,8 @@ export default defineConfig({
             // Enforce multi-tenant validation on request context
             if (!isPingRoute && reqTenantId !== 'tenant-admin-system') {
               if (!isPlatformRoute && !reqTenantId) {
-                res.statusCode = 403
-                res.end(JSON.stringify({ error: 'Access Denied: Missing tenant identification headers.' }))
+                res.statusCode = 400
+                res.end(JSON.stringify({ error: 'Explicit tenant context required.' }))
                 return
               }
             }
@@ -244,8 +253,72 @@ export default defineConfig({
               return;
             }
 
+            // ── Server-Side Inventory WAC & FIFO Valuation Endpoint ──
+            if (url.pathname === '/api/inventory/valuation' || url.pathname === '/api/v1/inventory/valuation') {
+              const tenantId = url.searchParams.get('tenantId') || url.searchParams.get('tenant_id') || reqTenantId;
+              const method = (url.searchParams.get('method') || 'WAC').toUpperCase();
+
+              const products = (db.products || []).filter((p: any) => {
+                const pTenant = p.tenantId || p.tenant_id;
+                const active = !p.deletedAt && !p.deleted_at && p.status !== 'Inactive';
+                return pTenant === tenantId && active;
+              });
+
+              const variants = (db.variants || db.productVariants || []).filter((v: any) => {
+                const vTenant = v.tenantId || v.tenant_id;
+                const active = !v.deletedAt && !v.deleted_at && v.status !== 'Inactive';
+                return vTenant === tenantId && active;
+              });
+
+              let totalValuation = 0;
+              let simpleProductsValuation = 0;
+              let variantProductsValuation = 0;
+              let itemCount = 0;
+
+              for (const p of products) {
+                if (p.hasVariants) {
+                  const prodVars = variants.filter((v: any) => v.productId === p.id || v.product_id === p.id);
+                  for (const v of prodVars) {
+                    const qty = Math.max(0, v.stock || 0);
+                    let unitCost = v.buyingPrice ?? v.costPrice ?? p.buyingPrice ?? p.costPrice ?? p.price ?? 0;
+                    if (unitCost <= 0 && p.sellingPrice > 0) {
+                      unitCost = Math.round(p.sellingPrice * 0.70 * 100) / 100; // Baseline 70% cost margin backfill
+                    }
+                    const val = Math.round((qty * unitCost) * 100) / 100;
+                    variantProductsValuation += val;
+                    itemCount += qty;
+                  }
+                } else {
+                  const qty = Math.max(0, p.stock || 0);
+                  let unitCost = p.buyingPrice ?? p.costPrice ?? p.price ?? 0;
+                  if (unitCost <= 0 && p.sellingPrice > 0) {
+                    unitCost = Math.round(p.sellingPrice * 0.70 * 100) / 100; // Baseline 70% cost margin backfill
+                  }
+                  const val = Math.round((qty * unitCost) * 100) / 100;
+                  simpleProductsValuation += val;
+                  itemCount += qty;
+                }
+              }
+
+              totalValuation = Math.round((simpleProductsValuation + variantProductsValuation) * 100) / 100;
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                tenantId,
+                method,
+                totalValuation,
+                simpleProductsValuation: Math.round(simpleProductsValuation * 100) / 100,
+                variantProductsValuation: Math.round(variantProductsValuation * 100) / 100,
+                productCount: products.length,
+                itemCount,
+                calculatedAt: Date.now()
+              }));
+              return;
+            }
+
             // Generic GET route mapping
-            const entityMatch = url.pathname.match(/^\/api\/([a-zA-Z_]+)$/)
+            const entityMatch = url.pathname.match(/^\/api\/(?:v1\/)?([a-zA-Z_]+)$/)
             if (entityMatch && req.method === 'GET') {
               const entityName = entityMatch[1]
               let table = db[entityName]
@@ -255,30 +328,19 @@ export default defineConfig({
                   table = table.filter((r: any) => r.deletedAt === undefined || r.deletedAt === null || r.deleted_at === undefined || r.deleted_at === null)
                 }
 
-                const tenantFilter = url.searchParams.get('tenantId') || url.searchParams.get('tenant_id')
+                const tenantFilter = url.searchParams.get('tenantId') || url.searchParams.get('tenant_id') || reqTenantId
                 const isAuthResolutionEntity = [
                   'tenants', 'users', 'subscriptionPlans', 'userBranchRoles',
                   'branches', 'tenantModules', 'tenantSettings', 'featureFlags',
                   'userSecurity', 'businessProfiles', 'tenantUsers', 'tenantUserBranches'
                 ].includes(entityName);
 
-                // If not system super admin and not an auth resolution entity, filter records by tenant header
-                if (reqTenantId !== 'tenant-admin-system' && !isAuthResolutionEntity) {
+                // Filter records strictly by tenant ID
+                if (reqTenantId !== 'tenant-admin-system' && !isAuthResolutionEntity && tenantFilter) {
                   table = table.filter((r: any) => {
                     const recordTenantId = r.tenantId || r.tenant_id || r.tenant
-                    return recordTenantId === reqTenantId
+                    return recordTenantId === tenantFilter
                   })
-                }
-
-                // Support tenant filters
-                if (tenantFilter) {
-                  table = table.filter((r: any) => (
-                    r.tenantId === tenantFilter ||
-                    r.tenant_id === tenantFilter ||
-                    r.tenant === tenantFilter ||
-                    r.user_id === tenantFilter ||
-                    r.id === tenantFilter
-                  ))
                 }
 
                 // Support username/email queries for authentication checking
@@ -287,6 +349,17 @@ export default defineConfig({
                   table = table.filter((r: any) => r.email?.toLowerCase() === emailFilter.toLowerCase())
                 }
 
+                // Support optional pagination parameters (page & limit)
+                const limitParam = url.searchParams.get('limit')
+                const pageParam = url.searchParams.get('page')
+                if (limitParam) {
+                  const limit = parseInt(limitParam, 10) || 50
+                  const page = parseInt(pageParam || '1', 10) || 1
+                  const offset = (page - 1) * limit
+                  table = table.slice(offset, offset + limit)
+                }
+
+                res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify(table))
                 return
               }
@@ -298,6 +371,67 @@ export default defineConfig({
             req.on('end', () => {
               try {
                 const parsedBody = body ? JSON.parse(body) : {}
+
+                // ── Batch Inventory Sync & Upsert Reconciliation Endpoint ──
+                if ((url.pathname === '/api/products/sync-batch' || url.pathname === '/api/v1/products/sync-batch') && req.method === 'POST') {
+                  const tenantId = reqTenantId || parsedBody.tenantId || parsedBody.tenant_id;
+                  const products = parsedBody.products;
+
+                  if (!tenantId || !Array.isArray(products)) {
+                    res.statusCode = 400;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(JSON.stringify({ error: "Invalid payload or missing tenant context." }));
+                    return;
+                  }
+
+                  if (!db.products) db.products = [];
+
+                  const results: any[] = [];
+                  const now = Date.now();
+
+                  for (const item of products) {
+                    const itemTenant = item.tenantId || item.tenant_id || tenantId;
+                    if (reqTenantId !== 'tenant-admin-system' && itemTenant !== tenantId) {
+                      continue; // Enforce tenant isolation
+                    }
+
+                    const index = db.products.findIndex((r: any) => r.id === item.id && (r.tenantId === tenantId || r.tenant_id === tenantId));
+                    if (index > -1) {
+                      db.products[index] = {
+                        ...db.products[index],
+                        ...item,
+                        tenantId,
+                        tenant_id: tenantId,
+                        updatedAt: now,
+                        updated_at: now,
+                        version: (db.products[index].version || 1) + 1,
+                      };
+                      results.push(db.products[index]);
+                    } else {
+                      const newItem = {
+                        ...item,
+                        tenantId,
+                        tenant_id: tenantId,
+                        createdAt: item.createdAt || item.created_at || now,
+                        updatedAt: now,
+                        status: item.status || 'Active',
+                        version: 1,
+                      };
+                      db.products.push(newItem);
+                      results.push(newItem);
+                    }
+                  }
+
+                  writeDb(db);
+                  res.statusCode = 200;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({
+                    message: "Inventory successfully reconciled.",
+                    syncedCount: results.length,
+                    products: results
+                  }));
+                  return;
+                }
 
                 // Generic POST route mapping (upsert)
                 const postMatch = url.pathname.match(/^\/api\/([a-zA-Z_]+)$/)

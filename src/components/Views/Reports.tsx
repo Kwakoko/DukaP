@@ -35,19 +35,38 @@ export const Reports: React.FC = () => {
   // --- IndexedDB Live Queries ---
   const products = useLiveQuery(() => 
     db.products.where('tenant_id').equals(currentTenant.id)
-      .and(p => p.branch_id === currentBranch.id && p.module === activeModule)
+      .and(p => {
+        if (p.deletedAt || (p as any).deleted_at || p.status === 'Inactive') return false;
+        const pMod = (p.module || 'Retail').toLowerCase();
+        const aMod = (activeModule || 'Retail').toLowerCase();
+        const matchMod = pMod === aMod || pMod === 'all' || !p.module;
+        const pBranch = p.branch_id || p.branchId;
+        const matchBranch = !pBranch || pBranch === currentBranch.id || pBranch === 'all' || pBranch.includes('hq') || pBranch === 'branch-dar-hq';
+        return matchMod && matchBranch;
+      })
       .toArray()
   , [currentTenant.id, currentBranch.id, activeModule]) || [];
 
   const productVariants = useLiveQuery(() =>
     db.productVariants.where('tenant_id').equals(currentTenant.id)
-      .and(v => v.branch_id === currentBranch.id)
+      .and(v => {
+        if (v.status === 'Inactive') return false;
+        const vBranch = v.branch_id || (v as any).branchId;
+        return !vBranch || vBranch === currentBranch.id || vBranch === 'all' || vBranch.includes('hq') || vBranch === 'branch-dar-hq';
+      })
       .toArray()
   , [currentTenant.id, currentBranch.id]) || [];
 
   const orders = useLiveQuery(() => 
     db.orders.where('tenant_id').equals(currentTenant.id)
-      .and(o => o.branch_id === currentBranch.id && o.module === activeModule)
+      .and(o => {
+        const oMod = (o.module || 'Retail').toLowerCase();
+        const aMod = (activeModule || 'Retail').toLowerCase();
+        const matchMod = oMod === aMod || oMod === 'all' || !o.module;
+        const oBranch = o.branch_id || (o as any).branchId;
+        const matchBranch = !oBranch || oBranch === currentBranch.id || oBranch === 'all' || oBranch.includes('hq') || oBranch === 'branch-dar-hq';
+        return matchMod && matchBranch;
+      })
       .toArray()
   , [currentTenant.id, currentBranch.id, activeModule]) || [];
 
