@@ -118,7 +118,7 @@ export const TenantManagement: React.FC = () => {
   const [selectedAuditTenant, setSelectedAuditTenant] = useState<any | null>(null);
 
   // Live Central Production Database Queries (cloudDb - Source of Truth)
-  const cloudTenants = useLiveQuery(() => cloudDb.cloud_tenants.filter(t => !t.deleted_at).toArray(), []) || [];
+  const cloudTenants = useLiveQuery(() => cloudDb.cloud_tenants.filter((t: any) => !t.deleted_at).toArray(), []) || [];
   const cloudBranches = useLiveQuery(() => cloudDb.cloud_branches.toArray(), []) || [];
   const cloudUsers = useLiveQuery(() => cloudDb.cloud_users.toArray(), []) || [];
   const cloudSubs = useLiveQuery(() => cloudDb.cloud_subscriptions.toArray(), []) || [];
@@ -192,9 +192,9 @@ export const TenantManagement: React.FC = () => {
   // Enriched Tenants with meta counts
   const enrichedTenants = useMemo(() => {
     return tenants.map(t => {
-      const tBranches = cloudBranches.filter(b => b.tenant_id === t.id);
-      const tUsers = cloudUsers.filter(u => u.tenant_id === t.id);
-      const tSub = cloudSubs.find(s => s.tenant_id === t.id);
+      const tBranches = cloudBranches.filter((b: any) => b.tenant_id === t.id);
+      const tUsers = cloudUsers.filter((u: any) => u.tenant_id === t.id);
+      const tSub = cloudSubs.find((s: any) => s.tenant_id === t.id);
       return {
         ...t,
         branchCount: tBranches.length || 1,

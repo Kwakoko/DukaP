@@ -248,6 +248,15 @@ export const Inventory: React.FC = () => {
   const canAdjust      = hasPermission('inventory.stock.adjust');
   const canTransfer    = hasPermission('inventory.stock.transfer');
 
+  // Toggle state for optional/advanced pricing fields (Wholesale, VIP, Online, Tax Rate) defaulting to false (OFF)
+  const [showAdvancedPricing, setShowAdvancedPricing] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dukapos_show_advanced_pricing') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   // Load ALL products for this tenant — branch filtering happens in the UI.
   // Removing the branch_id constraint here is critical: if Device B has a
   // different currentBranch than the one used on Device A, products synced
@@ -3608,29 +3617,93 @@ export const Inventory: React.FC = () => {
                   <label>Retail Selling Price (Tsh)</label>
                   <input className="inv-input" type="number" min="0" value={pSellingPrice} onChange={e => setPSellingPrice(Number(e.target.value))}/>
                 </div>
-                <div className="inv-field">
-                  <label>Wholesale Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
-                  <input className="inv-input" type="number" min="0" value={pWholesalePrice} onChange={e => setPWholesalePrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.85))}` : 'Optional'}/>
+
+                {/* Advanced Pricing Fields Toggle */}
+                <div className="inv-field full" style={{ marginTop: '4px', marginBottom: '4px' }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    background: 'var(--bg-slate-50, #f8fafc)',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color, #e2e8f0)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '32px', height: '32px', borderRadius: '8px',
+                        background: showAdvancedPricing ? 'rgba(99, 102, 241, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: showAdvancedPricing ? '#6366f1' : '#94a3b8',
+                        transition: 'all 0.2s'
+                      }}>
+                        <Sliders size={16} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-main, #1e293b)' }}>
+                          Enable Advanced Pricing Fields
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                          Show Wholesale Price, VIP/Member Price, Online Price & Tax Rate
+                        </div>
+                      </div>
+                    </div>
+                    <label style={{ position: 'relative', display: 'inline-block', width: '42px', height: '24px', margin: 0, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={showAdvancedPricing}
+                        onChange={(e) => {
+                          const val = e.target.checked;
+                          setShowAdvancedPricing(val);
+                          try { localStorage.setItem('dukapos_show_advanced_pricing', val ? 'true' : 'false'); } catch (_) {}
+                        }}
+                        style={{ opacity: 0, width: 0, height: 0 }}
+                      />
+                      <span style={{
+                        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                        backgroundColor: showAdvancedPricing ? '#6366f1' : '#cbd5e1',
+                        borderRadius: '24px', transition: '0.2s'
+                      }}>
+                        <span style={{
+                          position: 'absolute', content: '""', height: '18px', width: '18px',
+                          left: showAdvancedPricing ? '21px' : '3px', bottom: '3px',
+                          backgroundColor: 'white', borderRadius: '50%', transition: '0.2s',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+                        }} />
+                      </span>
+                    </label>
+                  </div>
                 </div>
-                <div className="inv-field">
-                  <label>VIP / Member Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
-                  <input className="inv-input" type="number" min="0" value={pVipPrice} onChange={e => setPVipPrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.90))}` : 'Optional'}/>
-                </div>
-                <div className="inv-field">
-                  <label>Online Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
-                  <input className="inv-input" type="number" min="0" value={pOnlinePrice} onChange={e => setPOnlinePrice(Number(e.target.value))} placeholder="Same as retail if not set"/>
-                </div>
-                <div className="inv-field">
-                  <label>Tax Rate (%)</label>
-                  <input className="inv-input" type="number" min="0" max="100" value={pTaxRate} onChange={e => setPTaxRate(Number(e.target.value))}/>
-                </div>
+
+                {/* Optional / Advanced pricing fields (Wholesale, VIP, Online, Tax Rate) */}
+                {showAdvancedPricing && (
+                  <>
+                    <div className="inv-field">
+                      <label>Wholesale Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                      <input className="inv-input" type="number" min="0" value={pWholesalePrice} onChange={e => setPWholesalePrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.85))}` : 'Optional'}/>
+                    </div>
+                    <div className="inv-field">
+                      <label>VIP / Member Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                      <input className="inv-input" type="number" min="0" value={pVipPrice} onChange={e => setPVipPrice(Number(e.target.value))} placeholder={pSellingPrice > 0 ? `Est. ${fmtCcy(Math.round(pSellingPrice*0.90))}` : 'Optional'}/>
+                    </div>
+                    <div className="inv-field">
+                      <label>Online Price (Tsh) <span style={{opacity:0.5, fontSize:'0.7rem'}}>optional</span></label>
+                      <input className="inv-input" type="number" min="0" value={pOnlinePrice} onChange={e => setPOnlinePrice(Number(e.target.value))} placeholder="Same as retail if not set"/>
+                    </div>
+                    <div className="inv-field">
+                      <label>Tax Rate (%)</label>
+                      <input className="inv-input" type="number" min="0" max="100" value={pTaxRate} onChange={e => setPTaxRate(Number(e.target.value))}/>
+                    </div>
+                  </>
+                )}
+
                 {pBuyingPrice > 0 && pSellingPrice > 0 && (
                   <div className="inv-field full">
                     <div className="inv-pricing-summary">
                       <div><span>Retail Margin:</span><strong style={{color:'#10b981'}}>{(((pSellingPrice - pBuyingPrice) / pSellingPrice) * 100).toFixed(1)}%</strong></div>
                       <div><span>Markup:</span><strong style={{color:'#6366f1'}}>{(((pSellingPrice - pBuyingPrice) / pBuyingPrice) * 100).toFixed(1)}%</strong></div>
                       <div><span>Unit Profit:</span><strong style={{color:'#f59e0b'}}>{fmtCcy(pSellingPrice - pBuyingPrice)}</strong></div>
-                      {pWholesalePrice > 0 && <div><span>Wholesale Margin:</span><strong style={{color:'#06b6d4'}}>{(((pWholesalePrice - pBuyingPrice) / pWholesalePrice) * 100).toFixed(1)}%</strong></div>}
+                      {showAdvancedPricing && pWholesalePrice > 0 && <div><span>Wholesale Margin:</span><strong style={{color:'#06b6d4'}}>{(((pWholesalePrice - pBuyingPrice) / pWholesalePrice) * 100).toFixed(1)}%</strong></div>}
                     </div>
                   </div>
                 )}

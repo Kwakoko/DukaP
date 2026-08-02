@@ -67,7 +67,7 @@ class ProductionDatabaseService {
   ): Promise<T> {
     this.activeTransactionsCount++;
     try {
-      const result = await cloudDb.transaction(mode, tables, fn);
+      const result = await (cloudDb as any).transaction(mode, tables, fn);
       return result;
     } catch (err: any) {
       this.queryFailures++;

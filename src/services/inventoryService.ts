@@ -20,6 +20,8 @@ import {
   type ExpiryAlert,
   type WastageLog,
   recordStockMovement,
+  getEffectiveVariantSellingPrice,
+  getEffectiveVariantBuyingPrice,
 } from '../db/dexie';
 
 // ─── Helper: generate a short prefixed UUID ────────────────────────────────
@@ -118,11 +120,11 @@ export async function getDashboardKPIs(
     totalUnitsInStock += qty;
 
     const bal = stockBalances.find(b => b.product_id === parent.id && b.variant_id === v.id);
-    let avgCost = bal ? bal.average_cost : (v.buyingPrice ?? parent.buyingPrice ?? (parent as any)?.costPrice ?? 0);
-    if (avgCost <= 0 && (v.sellingPrice || parent.sellingPrice)) {
-      avgCost = Math.round(((v.sellingPrice || parent.sellingPrice || 0) * 0.70) * 100) / 100;
+    let avgCost = bal ? bal.average_cost : getEffectiveVariantBuyingPrice(v, parent);
+    const sellingPrice = getEffectiveVariantSellingPrice(v, parent);
+    if (avgCost <= 0 && sellingPrice > 0) {
+      avgCost = Math.round((sellingPrice * 0.70) * 100) / 100;
     }
-    const sellingPrice = v.sellingPrice || parent.sellingPrice || parent.price || 0;
 
     inventoryBuyingValue += qty * avgCost;
     inventorySellingValue += qty * sellingPrice;
@@ -1007,8 +1009,8 @@ export async function getBranchValuationSummary(tenantId: string): Promise<{
         totalUnits += qty;
 
         const bal = balances.find(s => s.branch_id === b.id && s.product_id === parent.id && s.variant_id === v.id);
-        const cost = bal ? bal.average_cost : (v.buyingPrice ?? parent.buyingPrice ?? 0);
-        const price = v.sellingPrice || parent.sellingPrice || parent.price || 0;
+        const cost = bal ? bal.average_cost : getEffectiveVariantBuyingPrice(v, parent);
+        const price = getEffectiveVariantSellingPrice(v, parent);
 
         buyingVal += qty * cost;
         sellingVal += qty * price;

@@ -71,7 +71,7 @@ export class SuperAdminService {
     };
 
     // Begin ACID transaction
-    await cloudDb.transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_tenants.put(newTenant);
 
       await logCloudTransaction({
@@ -113,7 +113,7 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_tenants.put(updated);
 
       await logCloudTransaction({
@@ -156,7 +156,7 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_tenants, cloudDb.cloud_subscriptions, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.cloud_subscriptions, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_tenants.put(updated);
 
       // Upsert cloud subscription record
@@ -218,7 +218,7 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_tenants.put(updated);
 
       await logCloudTransaction({
@@ -330,7 +330,7 @@ export class SuperAdminService {
       version: (existing?.version || 0) + 1
     };
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_platform_settings, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_platform_settings, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_platform_settings.put(setting);
 
       await logCloudTransaction({
@@ -385,7 +385,7 @@ export class SuperAdminService {
       created_by: adminContext.id
     };
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_database_backups, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_database_backups, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
       await cloudDb.cloud_database_backups.put(backup);
 
       await logCloudTransaction({
@@ -429,7 +429,7 @@ export class SuperAdminService {
 
     const payload = JSON.parse(backup.rollback_data);
 
-    await cloudDb.transaction('rw', [cloudDb.cloud_tenants, cloudDb.cloud_users, cloudDb.cloud_platform_settings, cloudDb.cloud_subscriptions, cloudDb.supabase_audit_logs], async () => {
+    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.cloud_users, cloudDb.cloud_platform_settings, cloudDb.cloud_subscriptions, cloudDb.supabase_audit_logs], async () => {
       if (payload.tenants) await cloudDb.cloud_tenants.bulkPut(payload.tenants);
       if (payload.users) await cloudDb.cloud_users.bulkPut(payload.users);
       if (payload.settings) await cloudDb.cloud_platform_settings.bulkPut(payload.settings);

@@ -1575,6 +1575,48 @@ export interface DrawerAuditLog {
   timestamp: number;
 }
 
+// ── Enterprise Release Management & CI/CD Tables (v31) ──────────────────────
+export interface AppVersion {
+  id: string;
+  version: string;
+  major: number;
+  minor: number;
+  patch: number;
+  release_type: 'MAJOR' | 'MINOR' | 'PATCH';
+  git_tag: string;
+  commit_hash: string;
+  release_notes: string;
+  release_date: number;
+  deployment_status: 'SUCCESS' | 'FAILED' | 'ROLLED_BACK' | 'PENDING';
+  build_number: string;
+  created_by: string;
+  created_at: number;
+}
+
+export interface VersionChange {
+  id: string;
+  version_id: string;
+  module: string;
+  feature: string;
+  change_type: 'FEATURE' | 'BUG_FIX' | 'SECURITY' | 'PERFORMANCE' | 'BREAKING';
+  commit_hash: string;
+  developer: string;
+  created_at: number;
+}
+
+export interface DeploymentHistory {
+  id: string;
+  version: string;
+  environment: 'PRODUCTION' | 'STAGING' | 'PRE_PROD' | 'DEV';
+  deployment_start: number;
+  deployment_end: number;
+  duration_ms: number;
+  status: 'SUCCESS' | 'FAILED' | 'ROLLED_BACK';
+  rollback_reason?: string;
+  quality_gates_summary: Record<string, boolean>;
+  created_at: number;
+}
+
 class DukaPosDatabase extends Dexie {
   products!: Table<Product>;
   productVariants!: Table<ProductVariant>;
@@ -1680,6 +1722,11 @@ class DukaPosDatabase extends Dexie {
   drawerAssignments!: Table<DrawerAssignment>;
   drawerPermissions!: Table<DrawerPermission>;
   drawerAuditLogs!: Table<DrawerAuditLog>;
+
+  // ── Enterprise Release Management Tables (v31) ────────────────────────────
+  appVersions!: Table<AppVersion>;
+  versionChanges!: Table<VersionChange>;
+  deploymentHistory!: Table<DeploymentHistory>;
 
   constructor() {
     super('DukaPosDatabase');
@@ -2357,6 +2404,13 @@ class DukaPosDatabase extends Dexie {
       syncQueue: '++id, tenant_id, branch_id, entity, entity_id, operation, status, priority, created_at, last_attempt, sync_token, device_id, user_id, actionType, entityName, timestamp'
     });
 
+    // Version 31: Enterprise Release Management & Versioning Schema
+    this.version(31).stores({
+      appVersions: 'id, version, major, minor, patch, release_type, git_tag, commit_hash, deployment_status, release_date',
+      versionChanges: 'id, version_id, module, change_type, commit_hash, created_at',
+      deploymentHistory: 'id, version, environment, status, deployment_start, created_at'
+    });
+
     // Add hooks to dynamically set 'origin' based on tenant ID naming convention
     const tablesWithOrigin = [
       'products', 'productVariants', 'customers', 'orders',
@@ -2599,6 +2653,39 @@ export async function applyIdMappings(
   }
 }
 
+// Price Inheritance Helpers
+/**
+ * Resolves the effective selling price of a variant.
+ * Strict Rule: Variants ONLY inherit prices FROM the parent product.
+ * Variant prices NEVER apply to or overwrite the parent product's base price.
+ */
+export function getEffectiveVariantSellingPrice(
+  variant?: Partial<ProductVariant> | null,
+  parentProduct?: Partial<Product> | null
+): number {
+  if (!variant) return parentProduct?.sellingPrice || parentProduct?.price || 0;
+  if (variant.inheritSellingPrice === true || variant.sellingPrice === undefined || variant.sellingPrice === null) {
+    return parentProduct?.sellingPrice || parentProduct?.price || 0;
+  }
+  return variant.sellingPrice;
+}
+
+/**
+ * Resolves the effective buying price of a variant.
+ * Strict Rule: Variants ONLY inherit prices FROM the parent product.
+ * Variant prices NEVER apply to or overwrite the parent product's base price.
+ */
+export function getEffectiveVariantBuyingPrice(
+  variant?: Partial<ProductVariant> | null,
+  parentProduct?: Partial<Product> | null
+): number {
+  if (!variant) return parentProduct?.buyingPrice || parentProduct?.costPrice || 0;
+  if (variant.inheritBuyingPrice === true || variant.buyingPrice === undefined || variant.buyingPrice === null) {
+    return parentProduct?.buyingPrice || parentProduct?.costPrice || 0;
+  }
+  return variant.buyingPrice;
+}
+
 // Automatic Parent–Variant Stock Synchronization Service
 export async function syncParentStock(parentProductId: string): Promise<void> {
   if (!parentProductId) return;
@@ -2623,9 +2710,9 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
         ? 'LOW_STOCK'
         : 'IN_STOCK';
 
-    // 2. Price Range & Effective Selling Price Calculations
+    // 2. Price Range & Container Meta Calculations (for UI range display)
     const validPrices = activeVariants
-      .map(v => v.sellingPrice ?? (v as any).price)
+      .map(v => getEffectiveVariantSellingPrice(v, parent))
       .filter((p): p is number => typeof p === 'number' && p > 0);
 
     const minPrice = validPrices.length > 0 ? Math.min(...validPrices) : (parent.sellingPrice || parent.price || 0);
@@ -2640,13 +2727,13 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
     const earliestExpiry = validExpiries[0] || parent.expiryDate;
 
     // 4. Update Parent Product Container
+    // CRITICAL: Preserve parent.sellingPrice, parent.price, and parent.buyingPrice.
+    // Variant prices NEVER overwrite or propagate back to the parent container base price!
     const hasVariantsFlag = activeVariants.length > 0;
     const updatedProd: Product = {
       ...parent,
       hasVariants: hasVariantsFlag,
       stock: totalStock,
-      price: minPrice,
-      sellingPrice: minPrice,
       expiryDate: earliestExpiry,
       updatedAt: Date.now(),
       syncStatus: 'PENDING' as const,

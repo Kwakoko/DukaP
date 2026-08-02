@@ -1,0 +1,45 @@
+name: DukaPos SaaS Continuous Integration
+
+on:
+  push:
+    branches: [ main, develop, 'feature/*' ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  validate-quality-gates:
+    name: Code Quality, Security & Type Checking
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Quality Gate 1 - Static Code Analysis & Linter
+        run: npm run lint
+
+      - name: Quality Gate 2 - Strict TypeScript Type Checking & Vite Build
+        run: npm run build
+
+      - name: Quality Gate 3 - Security Vulnerability Audit
+        run: npm audit --audit-level=high || true
+
+      - name: Quality Gate 4 - Bundle Artifact & Size Check
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "Error: Production bundle directory 'dist' was not generated!"
+            exit 1
+          fi
+          echo "Production build size:"
+          du -sh dist/

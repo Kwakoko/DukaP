@@ -21,6 +21,7 @@ const superAdminSidebarItems: SidebarItem[] = [
   'Dashboard',
   'Tenant Management',
   'Production Readiness',
+  'Release Center',
   'Subscription Tiers',
   'Demo Data Engine',
   'Business Categories',

@@ -16,6 +16,7 @@ import { PersistenceTest } from './PersistenceTest';
 import { DemoDataEngine } from './DemoDataEngine';
 import { Subscriptions } from './Subscriptions';
 import { ProductionReadinessControl } from './ProductionReadinessControl';
+import { ReleaseCenter } from './ReleaseCenter';
 import { cloudDb } from '../../db/supabaseMock';
 import { useLiveQuery } from 'dexie-react-hooks';
 
@@ -29,13 +30,13 @@ export const SuperAdmin: React.FC = () => {
   };
 
   // Live real central production PostgreSQL queries (cloudDb - Exclusively Centralized)
-  const tenants = useLiveQuery(() => cloudDb.cloud_tenants.filter(t => !t.deleted_at).toArray()) || [];
+  const tenants = useLiveQuery(() => cloudDb.cloud_tenants.filter((t: any) => !t.deleted_at).toArray()) || [];
   const subscriptions = useLiveQuery(() => cloudDb.cloud_subscriptions.toArray()) || [];
   const branchesCount = useLiveQuery(() => cloudDb.cloud_branches.count()) || 0;
 
   const realMRR = useMemo(() => {
     let total = 0;
-    const activeSubs = subscriptions.filter(s => s.status === 'ACTIVE');
+    const activeSubs = subscriptions.filter((s: any) => s.status === 'ACTIVE');
     for (const sub of activeSubs) {
       const p = sub.plan_id.toLowerCase();
       let rate = 0;
@@ -49,7 +50,7 @@ export const SuperAdmin: React.FC = () => {
 
   const tenantsThisWeek = useMemo(() => {
     const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return tenants.filter(t => t.created_at && t.created_at > oneWeekAgo).length;
+    return tenants.filter((t: any) => t.created_at && t.created_at > oneWeekAgo).length;
   }, [tenants]);
 
   const growthChartData = useMemo(() => {
@@ -60,8 +61,8 @@ export const SuperAdmin: React.FC = () => {
       const monthName = d.toLocaleString('default', { month: 'short' });
       const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime();
       
-      const tenantsCount = tenants.filter(t => t.created_at && t.created_at <= monthEnd).length;
-      const activeSubsCount = subscriptions.filter(s => s.status === 'ACTIVE' && s.created_at && s.created_at <= monthEnd).length;
+      const tenantsCount = tenants.filter((t: any) => t.created_at && t.created_at <= monthEnd).length;
+      const activeSubsCount = subscriptions.filter((s: any) => s.status === 'ACTIVE' && s.created_at && s.created_at <= monthEnd).length;
       
       data.push({
         name: monthName,
@@ -76,12 +77,12 @@ export const SuperAdmin: React.FC = () => {
     const logs = [];
     if (tenants.length > 0) {
       logs.push(`[SYSTEM] SaaS DB cluster active. Registered tenants: ${tenants.length}.`);
-      const newestTenant = [...tenants].sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0];
+      const newestTenant = [...tenants].sort((a: any, b: any) => (b.created_at || 0) - (a.created_at || 0))[0];
       if (newestTenant) {
         logs.push(`[TENANT] Onboarded organization: "${newestTenant.name}" (Code: ${newestTenant.tenant_code || 'N/A'}).`);
       }
     }
-    const activeSubs = subscriptions.filter(s => s.status === 'ACTIVE');
+    const activeSubs = subscriptions.filter((s: any) => s.status === 'ACTIVE');
     if (activeSubs.length > 0) {
       logs.push(`[BILLING] Licensing verification active: ${activeSubs.length} accounts verified.`);
     }
@@ -155,7 +156,7 @@ export const SuperAdmin: React.FC = () => {
                   </div>
                   <div className="mt-3 flex items-baseline space-x-2">
                     <span className="text-2xl font-black text-slate-900 dark:text-white">
-                      {subscriptions.filter(s => s.status === 'ACTIVE').length}
+                      {subscriptions.filter((s: any) => s.status === 'ACTIVE').length}
                     </span>
                   </div>
                   <p className="mt-1 text-[10px] text-slate-400">Paid customer licenses</p>
@@ -297,7 +298,7 @@ export const SuperAdmin: React.FC = () => {
                 .map((key) => {
                   const m = MODULE_MANIFESTS[key as IndustryModule];
                   const state = moduleStates[key] || { enabled: true, version: 'v2.4.1' };
-                  const activeTenantCount = tenants.filter(t => (t.business_type || t.industry || 'Retail') === key).length;
+                  const activeTenantCount = tenants.filter((t: any) => (t.business_type || t.industry || 'Retail') === key).length;
 
                   return (
                     <div 
@@ -369,13 +370,15 @@ export const SuperAdmin: React.FC = () => {
 
       {activeTab === 'Production Readiness' && <ProductionReadinessControl />}
 
+      {(activeTab === 'Release Center' || activeTab === 'Release Management' || activeTab === 'Releases' || activeTab === 'CI/CD Pipeline') && <ReleaseCenter />}
+
       {activeTab === 'Users & Roles' && <UsersRoles />}
 
       {/* Integrated Persistence Auditor Test Panel */}
       {activeTab === 'Persistence Auditor' && <PersistenceTest />}
 
       {/* Other Super Admin Views Placeholder fallback */}
-      {activeTab !== 'Dashboard' && activeTab !== 'Tenant Management' && activeTab !== 'Subscription Tiers' && activeTab !== 'Billing & Finance' && activeTab !== 'Business Categories' && activeTab !== 'Users & Roles' && activeTab !== 'Persistence Auditor' && activeTab !== 'Demo Data Engine' && (
+      {activeTab !== 'Dashboard' && activeTab !== 'Tenant Management' && activeTab !== 'Subscription Tiers' && activeTab !== 'Billing & Finance' && activeTab !== 'Business Categories' && activeTab !== 'Users & Roles' && activeTab !== 'Persistence Auditor' && activeTab !== 'Demo Data Engine' && activeTab !== 'Production Readiness' && activeTab !== 'Release Center' && activeTab !== 'Release Management' && activeTab !== 'Releases' && activeTab !== 'CI/CD Pipeline' && (
         <Card>
           <CardHeader>
             <CardTitle>{activeTab}</CardTitle>

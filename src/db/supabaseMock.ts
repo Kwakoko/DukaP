@@ -1,4 +1,6 @@
 import Dexie, { type Table } from 'dexie';
+import type { AppVersion, VersionChange, DeploymentHistory } from './dexie';
+export type { AppVersion, VersionChange, DeploymentHistory };
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -290,6 +292,9 @@ class DukaPosCloudDatabase extends Dexie {
   cloud_super_admin_roles!: Table<CloudSuperAdminRole>;
   cloud_user_sessions!: Table<CloudUserSession>;
   cloud_stock_ledger!: Table<CloudStockLedgerEntry>;
+  cloud_app_versions!: Table<AppVersion>;
+  cloud_version_changes!: Table<VersionChange>;
+  cloud_deployment_history!: Table<DeploymentHistory>;
 
   constructor() {
     super('DukaPosCloudDatabase');
@@ -343,6 +348,11 @@ class DukaPosCloudDatabase extends Dexie {
     this.version(6).stores({
       cloud_user_sessions: 'id, userId, tenantId, status',
       cloud_stock_ledger: 'id, tenant_id, branch_id, product_id, created_at'
+    });
+    this.version(7).stores({
+      cloud_app_versions: 'id, version, deployment_status, release_date',
+      cloud_version_changes: 'id, version_id, module, change_type, created_at',
+      cloud_deployment_history: 'id, version, environment, status, created_at'
     });
   }
 }

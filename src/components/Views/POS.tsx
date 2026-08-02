@@ -4,7 +4,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useSyncState } from '../../context/SyncContext';
 import { 
   db, type Product, type ProductVariant, recordStockMovement, 
-  type PosShift, type HeldCart, type HeldCartItem, type Tab
+  type PosShift, type HeldCart, type HeldCartItem, type Tab,
+  getEffectiveVariantSellingPrice
 } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Button, Input, Dialog, Badge } from '../UI/custom-ui';
@@ -294,6 +295,13 @@ export const POS: React.FC = () => {
     return originalPrice;
   };
 
+  const getItemSellingPrice = (product: Product, variant?: ProductVariant): number => {
+    if (activeModule === 'Bar' && product.is_happy_hour_eligible) {
+      return getProductPrice(product);
+    }
+    return getEffectiveVariantSellingPrice(variant, product) || getProductPrice(product);
+  };
+
   const validateCartStock = (): boolean => {
     if (activeModule === 'SACCO') return true;
     for (const item of cart) {
@@ -310,7 +318,7 @@ export const POS: React.FC = () => {
     return true;
   };
 
-  const cartSubtotal = cart.reduce((sum, item) => sum + (item.variant?.sellingPrice || getProductPrice(item.product)) * item.quantity, 0);
+  const cartSubtotal = cart.reduce((sum, item) => sum + getItemSellingPrice(item.product, item.variant) * item.quantity, 0);
   const discountAmount = (cartSubtotal * discountPercent) / 100;
   const serviceCharge = activeModule === 'Restaurant' ? cartSubtotal * 0.05 : 0; // 5% Service Charge for restaurants
   const taxableAmount = cartSubtotal - discountAmount + serviceCharge;
@@ -631,10 +639,10 @@ export const POS: React.FC = () => {
       product_id: item.product.id,
       variant_id: item.variant?.id,
       quantity: item.quantity,
-      price: item.variant?.sellingPrice || getProductPrice(item.product)
+      price: getItemSellingPrice(item.product, item.variant)
     }));
 
-    const totalAmt = cart.reduce((sum, item) => sum + (item.variant?.sellingPrice || getProductPrice(item.product)) * item.quantity, 0);
+    const totalAmt = cart.reduce((sum, item) => sum + getItemSellingPrice(item.product, item.variant) * item.quantity, 0);
 
     if (activeTabId) {
       await db.tabs.update(activeTabId, {
@@ -830,7 +838,7 @@ export const POS: React.FC = () => {
       product: item.product,
       variant: item.variant,
       quantity: item.quantity,
-      price: item.variant?.sellingPrice || getProductPrice(item.product)
+      price: getItemSellingPrice(item.product, item.variant)
     }));
 
     const newHeld: HeldCart = {
@@ -1004,7 +1012,7 @@ export const POS: React.FC = () => {
         name: item.variant 
           ? `${item.product.name} (${Object.values(item.variant.attributes).join('/')})` 
           : item.product.name,
-        price: item.variant?.sellingPrice || getProductPrice(item.product),
+        price: getItemSellingPrice(item.product, item.variant),
         quantity: item.quantity
       }));
 

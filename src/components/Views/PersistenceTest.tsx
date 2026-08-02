@@ -509,7 +509,7 @@ export const PersistenceTest: React.FC = () => {
                   {transactionLogs.length === 0 ? (
                     <div className="p-8 text-center text-xs text-slate-400 italic">No transaction records logged.</div>
                   ) : (
-                    transactionLogs.map((tx) => (
+                    transactionLogs.map((tx: any) => (
                       <div key={tx.id} className="p-3.5 hover:bg-slate-50/40 dark:hover:bg-slate-800/10 transition-all space-y-1.5 text-[11px]">
                         <div className="flex items-center justify-between">
                           <span className="font-mono font-black text-indigo-600 dark:text-indigo-400 tracking-wider">
@@ -543,7 +543,7 @@ export const PersistenceTest: React.FC = () => {
                   {auditLogs.length === 0 ? (
                     <div className="p-8 text-center text-xs text-slate-405 italic">No security audits logged.</div>
                   ) : (
-                    auditLogs.map((aud) => (
+                    auditLogs.map((aud: any) => (
                       <div key={aud.id} className="p-3.5 hover:bg-slate-50/40 dark:hover:bg-slate-800/10 transition-all space-y-1 text-[11px]">
                         <div className="flex items-center justify-between">
                           <span className="font-black text-slate-700 dark:text-slate-350">
