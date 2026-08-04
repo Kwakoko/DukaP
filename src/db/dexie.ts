@@ -2478,8 +2478,12 @@ export async function saveProductAndVariants(
     const seenSigs = new Set<string>();
     const seenSkus = new Set<string>();
 
-    const parentShort = (finalProduct.name || 'PROD').replace(/\s+/g, '').slice(0, 4).toUpperCase();
-    const parentSku = finalProduct.sku || parentShort;
+    const parentShort = (finalProduct.name || 'PROD').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
+    if (!finalProduct.sku || finalProduct.sku === '—' || !finalProduct.sku.trim()) {
+      const pSeed = (finalProduct.id || '0000').slice(-4).toUpperCase();
+      finalProduct.sku = `SKU-${parentShort}-${pSeed}`;
+    }
+    const parentSku = finalProduct.sku;
 
     for (let idx = 0; idx < variants.length; idx++) {
       const v = variants[idx];

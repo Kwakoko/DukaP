@@ -32,9 +32,16 @@ import {
   RefreshCw, TrendingUp, TrendingDown, Archive, AlertCircle, Zap,
   ChevronRight, ChevronDown, Download, Barcode, Hash, Calendar, Target,
   Send, Check, Eye,
-  ShoppingCart, Activity, DollarSign, Shield, Camera, Upload,
+  ShoppingCart, Activity, DollarSign, Shield, Camera, Upload, Lock,
 } from 'lucide-react';
 import './Inventory.css';
+
+export function generateAutoSku(name?: string, category?: string, idOrSeed?: string): string {
+  const cleanName = (name || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'PROD';
+  const cleanCat  = (category || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() || 'GEN';
+  const seed = idOrSeed ? idOrSeed.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase() : Math.floor(1000 + Math.random() * 9000).toString();
+  return `SKU-${cleanName}-${cleanCat}-${seed}`;
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 type InventoryTab = 'dashboard' | 'products' | 'categories' | 'stockSync' | 'ledger' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
@@ -1177,7 +1184,8 @@ export const Inventory: React.FC = () => {
       setPExpiry(product.expiryDate || '');
       setPTaxRate((product as any).taxRate !== undefined ? (product as any).taxRate : 0);
       setPReorderLevel(5);
-      setPSku(product.sku || '');
+      const effectiveSku = (product.sku && product.sku !== '—' && product.sku.trim()) ? product.sku : generateAutoSku(product.name, product.category, product.id);
+      setPSku(effectiveSku);
       setPBarcode(product.barcode || '');
       setPImageUrl((product as any).image_url || '');
       setPImagePreview((product as any).image_url || '');
@@ -1249,7 +1257,8 @@ export const Inventory: React.FC = () => {
       setPExpiry(initialValues?.expiryDate || '');
       setPTaxRate(0);
       setPReorderLevel(5);
-      setPSku(initialValues?.sku || '');
+      const initSku = initialValues?.sku || generateAutoSku(initialValues?.name, initialValues?.category, newId);
+      setPSku(initSku);
       setPBarcode(initialValues?.barcode || '');
       setPImageUrl('');
       setPImagePreview('');
@@ -1259,6 +1268,13 @@ export const Inventory: React.FC = () => {
     setIsEditorOpen(true);
     setInvTab('products');
   }, [activeModule]);
+
+  // Live SKU Generation Effect when product name/category changes in editor
+  useEffect(() => {
+    if (isEditorOpen && pName && (!pSku || pSku === '—' || !pSku.trim())) {
+      setPSku(generateAutoSku(pName, pCategory, pId));
+    }
+  }, [pName, pCategory, isEditorOpen, pSku, pId]);
 
   // ──────────────────────────────────────────────────────────────────────────
   // TAB 1 — DASHBOARD
@@ -2439,7 +2455,7 @@ export const Inventory: React.FC = () => {
                         {p.hasVariants && <span style={{marginLeft:'4px', fontSize:'0.65rem', opacity:0.5}}>(variants)</span>}
                       </td>
                       <td><span className="inv-badge">{p.category}</span></td>
-                      <td><code style={{fontSize:'0.7rem'}}>{p.sku || '—'}</code></td>
+                      <td><code style={{fontSize:'0.7rem'}}>{(p.sku && p.sku !== '—' && p.sku.trim()) ? p.sku : generateAutoSku(p.name, p.category, p.id)}</code></td>
                       <td style={{textAlign:'right', fontWeight:700, color: qty <= 0 ? '#ef4444' : qty < 10 ? '#f59e0b' : undefined}}>{fmtNum(qty)}</td>
                       <td style={{textAlign:'right', color:'#64748b', fontSize:'0.8rem'}}>{fmtCcy(avgCost)}</td>
                       <td style={{textAlign:'right'}}>{fmtCcy(sellPrice)}</td>
@@ -2515,7 +2531,7 @@ export const Inventory: React.FC = () => {
               <span>🏪 Wholesale: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.wholesalePrice)}</strong></span>
               <span>⭐ VIP: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.vipPrice)}</strong></span>
               <span>🌐 Online: <strong className="text-slate-900 dark:text-white">{fmtCcy(metric.onlinePrice)}</strong></span>
-              <span className="ml-auto text-slate-400">SKU: <code className="font-mono bg-white dark:bg-darkbg px-1.5 py-0.5 rounded border border-slate-200 dark:border-darkbg-border text-slate-700 dark:text-slate-200">{metric.sku}</code></span>
+              <span className="ml-auto text-slate-400">SKU: <code className="font-mono bg-white dark:bg-darkbg px-1.5 py-0.5 rounded border border-slate-200 dark:border-darkbg-border text-slate-700 dark:text-slate-200">{(metric.sku && metric.sku !== '—' && metric.sku.trim()) ? metric.sku : generateAutoSku(metric.name, metric.category, metric.productId)}</code></span>
             </div>
           </div>
         )}
@@ -3478,8 +3494,18 @@ export const Inventory: React.FC = () => {
                 </div>
 
                 <div className="inv-field">
-                  <label className="text-xs font-bold mb-1 block">SKU</label>
-                  <input className="inv-input" value={pSku} onChange={e => setPSku(e.target.value)} placeholder="Auto-generated if empty"/>
+                  <label className="text-xs font-bold mb-1 flex items-center justify-between text-slate-700 dark:text-slate-200">
+                    <span>SKU</span>
+                    <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold flex items-center gap-1">
+                      <Lock className="h-3 w-3" /> Auto-Generated (Read-Only)
+                    </span>
+                  </label>
+                  <input
+                    className="inv-input bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 font-mono font-bold cursor-not-allowed border border-slate-200 dark:border-slate-700 select-all"
+                    value={pSku}
+                    readOnly
+                    placeholder="Auto-generated based on product name"
+                  />
                 </div>
 
                 <div className="inv-field">
@@ -6507,7 +6533,7 @@ export const Inventory: React.FC = () => {
                   {ledgerDrilldownProduct.name}
                 </h2>
                 <div className="flex gap-2.5 marginTop-1.5 flex-wrap items-center mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                  <span>SKU: <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-mono text-slate-700 dark:text-slate-300">{ledgerDrilldownProduct.sku}</code></span>
+                  <span>SKU: <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-mono text-slate-700 dark:text-slate-300 font-bold">{(ledgerDrilldownProduct.sku && ledgerDrilldownProduct.sku !== '—' && ledgerDrilldownProduct.sku.trim()) ? ledgerDrilldownProduct.sku : generateAutoSku(ledgerDrilldownProduct.name, ledgerDrilldownProduct.category, ledgerDrilldownProduct.productId)}</code></span>
                   <span>·</span>
                   <span className="font-medium text-slate-700 dark:text-slate-300">{ledgerDrilldownProduct.category}</span>
                   {ledgerDrilldownProduct.variantId && (

@@ -1104,7 +1104,7 @@ const PurchaseOrdersTab: React.FC<{ onViewGRNRequest: (po: PurchaseOrder) => voi
                 )}
               </div>
               <div className="col-span-2">
-                <Input label="SKU" value={newItem.sku || ''} onChange={e => setNewItem(p => ({ ...p, sku: e.target.value }))} />
+                <Input label="SKU (Auto-Generated)" value={newItem.sku || ''} readOnly className="bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono cursor-not-allowed" />
               </div>
               <div className="col-span-2">
                 <Input label="Quantity" type="number" min={1} value={newItem.qty_ordered || 1} onChange={e => setNewItem(p => ({ ...p, qty_ordered: Number(e.target.value) }))} />
