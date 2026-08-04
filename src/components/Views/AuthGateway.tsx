@@ -483,6 +483,12 @@ export const AuthGateway: React.FC = () => {
       let dbUser: any = null;
 
       try {
+        setMockAuthOverride({
+          tenant_id: 'tenant-admin-system',
+          user_id: 'usr-login-system',
+          user_name: 'Login System'
+        });
+
         // Attempt cloud search by email or username first
         const { data: cloudUsers, error: cloudErr } = await supabase.from('users').select().eq('email', normalizedEmail);
         if (!cloudErr && cloudUsers && cloudUsers.length > 0) {

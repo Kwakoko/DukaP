@@ -419,7 +419,20 @@ export function verifyRowLevelSecurity(
     return { allowed: true };
   }
 
-  if (tableName === 'cloud_tenants' && (action === 'SELECT' || action === 'INSERT')) {
+  if (action === 'SELECT' && (
+    tableName === 'cloud_tenants' ||
+    tableName === 'cloud_users' ||
+    tableName === 'cloud_user_security' ||
+    tableName === 'cloud_user_branch_roles' ||
+    tableName === 'cloud_branches' ||
+    tableName === 'cloud_tenant_modules' ||
+    tableName === 'cloud_tenant_settings' ||
+    tableName === 'cloud_feature_flags' ||
+    tableName === 'cloud_subscriptions' ||
+    tableName === 'cloud_subscription_plans' ||
+    tableName === 'cloud_tenant_users' ||
+    tableName === 'cloud_tenant_user_branches'
+  )) {
     return { allowed: true };
   }
 
