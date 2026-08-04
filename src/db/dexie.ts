@@ -3475,3 +3475,19 @@ export async function purgeAllDefaultsAndUsers(tenantId?: string): Promise<void>
     console.info('[DeveloperPurge] purgeAllDefaultsAndUsers completed successfully.');
   });
 }
+
+/**
+ * Safe Dexie table lookup that guards against undefined/null/empty string keys
+ * which throw TypeError: Invalid argument to table.get() in Dexie.
+ */
+export async function safeGet<T>(table: Table<T, any>, key: any): Promise<T | undefined> {
+  if (key === undefined || key === null || key === '' || key === 'undefined' || key === 'null') {
+    return undefined;
+  }
+  try {
+    return await table.get(key);
+  } catch (err) {
+    console.warn(`[Dexie safeGet] Caught invalid key lookup on table ${table?.name || 'unknown'}:`, key);
+    return undefined;
+  }
+}

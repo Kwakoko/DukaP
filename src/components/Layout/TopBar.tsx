@@ -7,7 +7,7 @@ import {
   ChevronDown, User, Layers, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
   Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check
 } from 'lucide-react';
-import { db } from '../../db/dexie';
+import { db, safeGet } from '../../db/dexie';
 import { supabase } from '../../db/supabaseClient';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Dialog, Button } from '../UI/custom-ui';
@@ -218,9 +218,9 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       role: UserRole;
     }> = [];
     for (const r of roles) {
-      const br = await db.branches.get(r.branch_id);
-      const ind = await db.industries.get(r.industry_id);
-      const t = await db.tenants.get(r.tenant_id);
+      const br = r.branch_id ? await safeGet(db.branches, r.branch_id) : null;
+      const ind = r.industry_id ? await safeGet(db.industries, r.industry_id) : null;
+      const t = r.tenant_id ? await safeGet(db.tenants, r.tenant_id) : null;
       list.push({
         id: r.id || '',
         tenant_id: r.tenant_id,
@@ -262,7 +262,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     const lowVariantsRaw = variants.filter(v => v.stock < (v.reorderLevel ?? 5));
 
     const lowVariantsWithNames = await Promise.all(lowVariantsRaw.map(async v => {
-      const parent = await db.products.get(v.productId);
+      const parent = v.productId ? await safeGet(db.products, v.productId) : null;
       const attrLabel = v.attributes ? Object.values(v.attributes).join(' / ') : '';
       const displayName = parent ? `${parent.name}${attrLabel ? ` (${attrLabel})` : ''}` : v.sku;
       return { ...v, displayName };
@@ -280,37 +280,37 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       products: lowProducts,
       totalCount: lowVariantsWithNames.length + lowProducts.length
     };
-  }, [currentTenant.id, currentBranch?.id, isSuperAdminView]) || { variants: [], products: [], totalCount: 0 };
+  }, [currentTenant?.id, currentBranch?.id, isSuperAdminView]) || { variants: [], products: [], totalCount: 0 };
 
   // 2. Pending (unpaid) expenses — suppressed in Super Admin view
   const pendingExpenses = useLiveQuery(async () => {
-    if (isSuperAdminView || !currentBranch?.id) return [];
+    if (isSuperAdminView || !currentBranch?.id || !currentTenant?.id) return [];
     return db.expenses
       .where('tenant_id').equals(currentTenant.id)
       .and(e => e.branch_id === currentBranch.id && e.status === 'Pending')
       .toArray();
-  }, [currentTenant.id, currentBranch?.id, isSuperAdminView]) || [];
+  }, [currentTenant?.id, currentBranch?.id, isSuperAdminView]) || [];
 
   // 3. Reorder rule violations — suppressed in Super Admin view
   const reorderAlertCount = useLiveQuery(async () => {
-    if (isSuperAdminView || !currentBranch?.id) return 0;
+    if (isSuperAdminView || !currentBranch?.id || !currentTenant?.id) return 0;
     const rules = await db.reorderRules
       .where('tenant_id').equals(currentTenant.id)
       .and(r => r.branch_id === currentBranch.id && r.is_active)
       .toArray();
     let count = 0;
     for (const rule of rules) {
-      const prod = await db.products.get(rule.product_id);
+      const prod = rule.product_id ? await safeGet(db.products, rule.product_id) : null;
       if (!prod) continue;
       const stock = rule.variant_id
-        ? (await db.productVariants.get(rule.variant_id))?.stock ?? 0
+        ? (await safeGet(db.productVariants, rule.variant_id))?.stock ?? 0
         : prod.stock;
       if (stock < rule.min_quantity) {
         count++;
       }
     }
     return count;
-  }, [currentTenant.id, currentBranch?.id, isSuperAdminView]) || 0;
+  }, [currentTenant?.id, currentBranch?.id, isSuperAdminView]) || 0;
 
   // 4. Negative stock balances — suppressed in Super Admin view
   const negativeStockCount = useLiveQuery(async () => {

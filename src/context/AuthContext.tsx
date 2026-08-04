@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { db, recalculateProductStock } from '../db/dexie';
+import { db, safeGet, recalculateProductStock } from '../db/dexie';
 import { supabase, setMockAuthOverride } from '../db/supabaseClient';
 import { ProductService } from '../services/productService';
 import { sessionService } from '../services/sessionService';
@@ -98,9 +98,11 @@ const AVAILABLE_BRANCHES: Branch[] = [];
  * 3. Returns null if neither source has the tenant
  */
 async function resolveTenantById(tenantId: string): Promise<Tenant | null> {
+  if (!tenantId || tenantId.trim() === '') return null;
+
   if (typeof window !== 'undefined' && localStorage.getItem('DUKAPOS_PRODUCTION_LOCKED') === 'true') {
     try {
-      const dbTenant = await db.tenants.get(tenantId);
+      const dbTenant = await safeGet(db.tenants, tenantId);
       if (dbTenant) {
         return {
           id: dbTenant.id,
@@ -114,7 +116,7 @@ async function resolveTenantById(tenantId: string): Promise<Tenant | null> {
   }
 
   try {
-    const dbTenant = await db.tenants.get(tenantId);
+    const dbTenant = await safeGet(db.tenants, tenantId);
     if (dbTenant) {
       return {
         id: dbTenant.id,
@@ -181,8 +183,8 @@ export const getPermissionsForRoleSlug = async (roleSlugOrName: string): Promise
 
   try {
     let roleObj = await db.roles.where('slug').equals(slug).first();
-    if (!roleObj) {
-      roleObj = await db.roles.get(roleSlugOrName);
+    if (!roleObj && roleSlugOrName) {
+      roleObj = await safeGet(db.roles, roleSlugOrName);
     }
 
     if (!roleObj) {
@@ -544,7 +546,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           // 1.5 Resolve branch from DB (covers all dynamically registered branches)
-          const resolvedBranch = await db.branches.get(newUser.branch_id);
+          const resolvedBranch = newUser.branch_id ? await safeGet(db.branches, newUser.branch_id) : null;
           if (resolvedBranch) {
             setCurrentBranchState(resolvedBranch);
           } else {

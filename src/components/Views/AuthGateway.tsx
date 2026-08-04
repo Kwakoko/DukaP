@@ -6,7 +6,7 @@ import {
   Shield, ChevronRight, MapPin, AlertTriangle, Landmark, Store, Pill, Utensils, Zap, Building2,
   Mail, Lock as LockIcon, Key as KeyIcon, Users, Wallet, Package, Calculator, Eye, EyeOff, ArrowRight, X, Loader
 } from 'lucide-react';
-import { db } from '../../db/dexie';
+import { db, safeGet } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { supabase, setMockAuthOverride } from '../../db/supabaseClient';
 import { cloudDb } from '../../db/supabaseMock';
@@ -359,9 +359,9 @@ export const AuthGateway: React.FC = () => {
 
       const resolvedList: ResolvedContext[] = [];
       for (const r of roles) {
-        const branch = await db.branches.get(r.branch_id);
-        const t = await db.tenants.get(r.tenant_id);
-        const ind = await db.industries.get(r.industry_id || '');
+        const branch = r.branch_id ? await safeGet(db.branches, r.branch_id) : null;
+        const t = r.tenant_id ? await safeGet(db.tenants, r.tenant_id) : null;
+        const ind = r.industry_id ? await safeGet(db.industries, r.industry_id) : null;
         const roleLabel = await resolveFriendlyRole(r.role_id, dbUser.role);
         
         resolvedList.push({
@@ -729,14 +729,14 @@ export const AuthGateway: React.FC = () => {
 
       // Retrieve default/active tenant — check local DB then recover from server/cloudDb
       const defaultTenantId = loginTenantId.trim() || dbUser.tenant_id || (roles[0] && roles[0].tenant_id);
-      let tenant: any = defaultTenantId ? await db.tenants.get(defaultTenantId) : null;
+      let tenant: any = defaultTenantId ? await safeGet(db.tenants, defaultTenantId) : null;
       if (!tenant && defaultTenantId) {
         console.log(`[Auth Login] Local tenant record missing for ${defaultTenantId}. Triggering server recovery...`);
         tenant = await tenantRecoveryService.validateAndRestoreTenantContext(defaultTenantId);
       }
       if (!tenant && defaultTenantId) {
         // Direct query to central production database cloudDb.cloud_tenants
-        const cloudT = await cloudDb.cloud_tenants.get(defaultTenantId);
+        const cloudT = await safeGet(cloudDb.cloud_tenants, defaultTenantId);
         if (cloudT) {
           tenant = {
             id: cloudT.id,
@@ -777,9 +777,9 @@ export const AuthGateway: React.FC = () => {
 
       const resolvedList: ResolvedContext[] = [];
       for (const r of roles) {
-        const br = await db.branches.get(r.branch_id);
-        const ind = await db.industries.get(r.industry_id);
-        const t = await db.tenants.get(r.tenant_id);
+        const br = r.branch_id ? await safeGet(db.branches, r.branch_id) : null;
+        const ind = r.industry_id ? await safeGet(db.industries, r.industry_id) : null;
+        const t = r.tenant_id ? await safeGet(db.tenants, r.tenant_id) : null;
         const roleLabel = await resolveFriendlyRole(r.role_id, dbUser.role);
         
         resolvedList.push({
