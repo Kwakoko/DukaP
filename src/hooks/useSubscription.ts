@@ -30,7 +30,7 @@ export interface UseSubscriptionReturn {
 
 export function useSubscription(): UseSubscriptionReturn {
   const { currentTenant } = useAuth();
-  const tenantId = currentTenant.id;
+  const tenantId = currentTenant?.id || '';
 
   const currentSub = useLiveQuery(
     () => db.tenantSubscriptions.where('tenant_id').equals(tenantId).first(),

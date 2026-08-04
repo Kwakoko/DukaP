@@ -243,8 +243,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
   // Live query to fetch enabled (subscribed) modules for this tenant
   const tenantModules = useLiveQuery(() => 
-    db.tenantModules.where('tenant_id').equals(currentTenant.id).and(m => m.enabled).toArray()
-  , [currentTenant.id]);
+    db.tenantModules.where('tenant_id').equals(currentTenant?.id || '').and(m => m.enabled).toArray()
+  , [currentTenant?.id]);
 
   // ─── Real-time Notification Queries ───
   // All queries are SCOPED to the current tenant's branch.
@@ -252,7 +252,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   // 1. Low stock alerts (checking both simple products and product variants)
   const lowStockStatus = useLiveQuery(async () => {
     // GUARD: Never show tenant notifications in Super Admin workspace
-    if (isSuperAdminView || !currentBranch?.id) return { variants: [], products: [], totalCount: 0 };
+    if (isSuperAdminView || !currentBranch?.id || !currentTenant?.id) return { variants: [], products: [], totalCount: 0 };
     
     // Low stock variants (stock < reorderLevel)
     const variants = await db.productVariants

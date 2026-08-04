@@ -188,7 +188,7 @@ const DukaPosAppContent: React.FC = () => {
             </div>
             
             <p className="text-[10px] text-slate-400 mt-4 font-mono">
-              Workspace ID: {currentTenant.id}
+              Workspace ID: {currentTenant?.id || 'N/A'}
             </p>
           </div>
         </div>

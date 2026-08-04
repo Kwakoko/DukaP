@@ -18,45 +18,52 @@ export const Dashboard: React.FC = () => {
   const { activeModule, setActiveTab } = useModule();
   const { currentBranch, currentTenant, role } = useAuth();
 
+  const tenantId = currentTenant?.id || '';
+  const branchId = currentBranch?.id || '';
+
   // --- Live Queries from IndexedDB ---
-  const products = useLiveQuery(() => 
-    db.products.where('tenant_id').equals(currentTenant.id)
+  const products = useLiveQuery(() => {
+    if (!tenantId) return [];
+    return db.products.where('tenant_id').equals(tenantId)
       .and(p => {
         if (p.deletedAt || (p as any).deleted_at || p.status === 'Inactive') return false;
         const pMod = (p.module || 'Retail').toLowerCase();
         const aMod = (activeModule || 'Retail').toLowerCase();
         const matchMod = pMod === aMod || pMod === 'all' || !p.module;
         const pBranch = p.branch_id || (p as any).branchId;
-        const matchBranch = !pBranch || pBranch === currentBranch.id || pBranch === 'all' || pBranch.includes('hq') || pBranch === 'branch-dar-hq' || pBranch === currentBranch.id;
+        const matchBranch = !pBranch || pBranch === branchId || pBranch === 'all' || pBranch.includes('hq') || pBranch === 'branch-dar-hq' || pBranch === branchId;
         return matchMod && matchBranch;
       })
-      .toArray()
-  , [currentTenant.id, currentBranch.id, activeModule]) || [];
+      .toArray();
+  }, [tenantId, branchId, activeModule]) || [];
 
-  const productVariants = useLiveQuery(() =>
-    db.productVariants.where('tenant_id').equals(currentTenant.id)
+  const productVariants = useLiveQuery(() => {
+    if (!tenantId) return [];
+    return db.productVariants.where('tenant_id').equals(tenantId)
       .and(v => {
         if (v.status === 'Inactive') return false;
         const vBranch = v.branch_id || (v as any).branchId;
-        return !vBranch || vBranch === currentBranch.id || vBranch === 'all' || vBranch.includes('hq') || vBranch === 'branch-dar-hq' || vBranch === currentBranch.id;
+        return !vBranch || vBranch === branchId || vBranch === 'all' || vBranch.includes('hq') || vBranch === 'branch-dar-hq' || vBranch === branchId;
       })
-      .toArray()
-  , [currentTenant.id, currentBranch.id]) || [];
+      .toArray();
+  }, [tenantId, branchId]) || [];
 
-  const orders = useLiveQuery(() => 
-    db.orders.where('tenant_id').equals(currentTenant.id)
+  const orders = useLiveQuery(() => {
+    if (!tenantId) return [];
+    return db.orders.where('tenant_id').equals(tenantId)
       .and(o => {
         const oMod = (o.module || 'Retail').toLowerCase();
         const aMod = (activeModule || 'Retail').toLowerCase();
         const matchMod = oMod === aMod || oMod === 'all' || !o.module;
         const oBranch = o.branch_id || (o as any).branchId;
-        const matchBranch = !oBranch || oBranch === currentBranch.id || oBranch === 'all' || oBranch.includes('hq') || oBranch === 'branch-dar-hq' || oBranch === currentBranch.id;
+        const matchBranch = !oBranch || oBranch === branchId || oBranch === 'all' || oBranch.includes('hq') || oBranch === 'branch-dar-hq' || oBranch === branchId;
         return matchMod && matchBranch;
       })
-      .toArray()
-  , [currentTenant.id, currentBranch.id, activeModule]) || [];
+      .toArray();
+  }, [tenantId, branchId, activeModule]) || [];
 
   const customers = useLiveQuery(() => {
+    if (!tenantId) return [];
     const typeMap: Record<string, string> = {
       Retail: 'Customer',
       Restaurant: 'Customer',
@@ -68,14 +75,15 @@ export const Dashboard: React.FC = () => {
       Hotel: 'Guest',
     };
     const targetType = typeMap[activeModule] || 'Customer';
-    return db.customers.where('tenant_id').equals(currentTenant.id)
-      .and(c => c.branch_id === currentBranch.id && c.type === targetType)
+    return db.customers.where('tenant_id').equals(tenantId)
+      .and(c => (!branchId || c.branch_id === branchId) && c.type === targetType)
       .toArray();
-  }) || [];
+  }, [tenantId, branchId, activeModule]) || [];
 
-  const suppliers = useLiveQuery(() => 
-    db.suppliers.where('tenant_id').equals(currentTenant.id).toArray()
-  ) || [];
+  const suppliers = useLiveQuery(() => {
+    if (!tenantId) return [];
+    return db.suppliers.where('tenant_id').equals(tenantId).toArray();
+  }, [tenantId]) || [];
 
   const isCleanTenant = products.length === 0 && orders.length === 0 && customers.length === 0 && suppliers.length === 0;
 
