@@ -4,7 +4,7 @@
  * Stock balances are dynamically calculated from ledger records rather than mutable stored totals.
  */
 
-import { db, type StockLedgerEntry } from '../db/dexie';
+import { db, safeGet, type StockLedgerEntry } from '../db/dexie';
 import { cloudDb } from '../db/supabaseMock';
 
 export interface StockMovementPayload {
@@ -69,7 +69,7 @@ class StockLedgerEngine {
     await db.transaction('rw', [db.stockLedger, db.products], async () => {
       await db.stockLedger.put(entry);
 
-      const p = await db.products.get(payload.productId);
+      const p = payload.productId ? await safeGet(db.products, payload.productId) : null;
       if (p) {
         await db.products.put({ ...p, stock: newStock, updatedAt: NOW });
       }

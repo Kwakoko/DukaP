@@ -3,7 +3,7 @@ import { useModule } from '../../context/ModuleContext';
 import { useAuth } from '../../context/AuthContext';
 import { useSyncState } from '../../context/SyncContext';
 import { 
-  db, type Product, type ProductVariant, recordStockMovement, 
+  db, safeGet, type Product, type ProductVariant, recordStockMovement, 
   type PosShift, type HeldCart, type HeldCartItem, type Tab,
   getEffectiveVariantSellingPrice
 } from '../../db/dexie';
@@ -687,11 +687,11 @@ export const POS: React.FC = () => {
   const handleResumeTab = async (tab: Tab) => {
     const loadedCart = [];
     for (const item of tab.items) {
-      const prod = await db.products.get(item.product_id);
+      const prod = item.product_id ? await safeGet(db.products, item.product_id) : null;
       if (prod) {
         let variant;
         if (item.variant_id) {
-          variant = await db.productVariants.get(item.variant_id);
+          variant = await safeGet(db.productVariants, item.variant_id);
         }
         loadedCart.push({
           product: prod,
@@ -862,7 +862,7 @@ export const POS: React.FC = () => {
   };
 
   const handleResumeCart = async (heldId: string) => {
-    const held = await db.heldCarts.get(heldId);
+    const held = heldId ? await safeGet(db.heldCarts, heldId) : null;
     if (!held) return;
 
     const restoredCart: CartItem[] = held.items.map(item => ({
@@ -882,7 +882,7 @@ export const POS: React.FC = () => {
   const handleLoadOrderToReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!returnOrderId) return;
-    const order = await db.orders.get(returnOrderId);
+    const order = returnOrderId ? await safeGet(db.orders, returnOrderId) : null;
     if (order) {
       setSelectedOrderToReturn(order);
       const initialQtys: Record<string, number> = {};
@@ -1061,7 +1061,7 @@ export const POS: React.FC = () => {
             closed_at: orderTime
           });
 
-          const currentTab = await db.tabs.get(activeTabId);
+          const currentTab = activeTabId ? await safeGet(db.tabs, activeTabId) : null;
           if (currentTab && currentTab.table_id) {
             const matchingTable = barTables.find(t => t.name === currentTab.table_id);
             if (matchingTable) {

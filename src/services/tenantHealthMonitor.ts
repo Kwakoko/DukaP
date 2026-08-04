@@ -1,4 +1,4 @@
-import { db } from '../db/dexie';
+import { db, safeGet } from '../db/dexie';
 import { cloudDb } from '../db/supabaseMock';
 import { tenantRecoveryService } from './tenantRecoveryService';
 
@@ -113,14 +113,14 @@ export const tenantHealthMonitor = {
     }
 
     try {
-      let tenant = await db.tenants.get(tenantId);
-      if (!tenant) {
+      let tenant = tenantId ? await safeGet(db.tenants, tenantId) : null;
+      if (!tenant && tenantId) {
         console.warn(`[Startup Integrity] Local tenant ${tenantId} missing. Invoking server recovery...`);
         const recovered = await tenantRecoveryService.validateAndRestoreTenantContext(tenantId);
         if (!recovered) {
           return { ok: true, message: `Tenant restored via fallback.` };
         }
-        tenant = await db.tenants.get(tenantId);
+        tenant = tenantId ? await safeGet(db.tenants, tenantId) : null;
       }
 
       if (tenant?.status === 'ARCHIVED' || tenant?.status === 'Archived' || tenant?.deleted_at || tenant?.deletedAt) {
@@ -163,7 +163,7 @@ export const tenantHealthMonitor = {
   async calculateTenantHealth(tenantId: string): Promise<HealthReport> {
     try {
       // 1. Database Health
-      const tenantExists = await db.tenants.get(tenantId);
+      const tenantExists = tenantId ? await safeGet(db.tenants, tenantId) : null;
       const dbScore = tenantExists ? 100 : 0;
 
       // 2. Sync Health (based on pending syncQueue items)
@@ -282,7 +282,7 @@ export const tenantHealthMonitor = {
     
     const interval = setInterval(async () => {
       try {
-        const localTenant = await db.tenants.get(tenantId);
+        const localTenant = tenantId ? await safeGet(db.tenants, tenantId) : null;
         
         // 1. Verify existence of the tenant in local database
         if (!localTenant) {
