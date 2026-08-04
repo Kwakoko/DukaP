@@ -251,13 +251,13 @@ export const AuthGateway: React.FC = () => {
             let tRes: any, bRes: any, ubrRes: any, mRes: any, sRes: any, fRes: any, secRes: any;
             try {
               [tRes, bRes, ubrRes, mRes, sRes, fRes, secRes] = await Promise.all([
-                supabase.from('tenants').select().eq('id', tenantId),
-                supabase.from('branches').select().eq('tenant_id', tenantId),
-                supabase.from('userBranchRoles').select().eq('tenant_id', tenantId),
-                supabase.from('tenantModules').select().eq('tenant_id', tenantId),
-                supabase.from('tenantSettings').select().eq('tenant_id', tenantId),
-                supabase.from('featureFlags').select().eq('tenant_id', tenantId),
-                supabase.from('userSecurity').select().eq('user_id', dbUser.id)
+                supabase.from('tenants').select().eq('id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('branches').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('userBranchRoles').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('tenantModules').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('tenantSettings').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('featureFlags').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('userSecurity').select().eq('user_id', dbUser.id).catch(() => ({ data: [] }))
               ]);
             } finally {
               setMockAuthOverride(null);
@@ -519,15 +519,15 @@ export const AuthGateway: React.FC = () => {
             let tRes: any, bRes: any, ubrRes: any, mRes: any, sRes: any, fRes: any, secRes: any, tuRes: any, tubRes: any;
             try {
               [tRes, bRes, ubrRes, mRes, sRes, fRes, secRes, tuRes, tubRes] = await Promise.all([
-                supabase.from('tenants').select().eq('id', tenantId),
-                supabase.from('branches').select().eq('tenant_id', tenantId),
-                supabase.from('userBranchRoles').select().eq('tenant_id', tenantId),
-                supabase.from('tenantModules').select().eq('tenant_id', tenantId),
-                supabase.from('tenantSettings').select().eq('tenant_id', tenantId),
-                supabase.from('featureFlags').select().eq('tenant_id', tenantId),
-                supabase.from('userSecurity').select().eq('user_id', dbUser.id),
-                supabase.from('tenantUsers').select().eq('tenant_id', tenantId),
-                supabase.from('tenantUserBranches').select().eq('tenant_id', tenantId)
+                supabase.from('tenants').select().eq('id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('branches').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('userBranchRoles').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('tenantModules').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('tenantSettings').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('featureFlags').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('userSecurity').select().eq('user_id', dbUser.id).catch(() => ({ data: [] })),
+                supabase.from('tenantUsers').select().eq('tenant_id', tenantId).catch(() => ({ data: [] })),
+                supabase.from('tenantUserBranches').select().eq('tenant_id', tenantId).catch(() => ({ data: [] }))
               ]);
             } finally {
               setMockAuthOverride(null);

@@ -53,6 +53,9 @@ export interface SupabaseQueryBuilder {
     onfulfilled?: ((value: any) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
   ): Promise<TResult1 | TResult2>;
+  catch<TResult = never>(
+    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null
+  ): Promise<any>;
   execute(): Promise<any>;
 }
 
@@ -127,6 +130,12 @@ export const supabase: SupabaseClient = {
         }
       },
 
+      async catch<TResult = never>(
+        onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null
+      ): Promise<any> {
+        return this.then(null, onrejected);
+      },
+
       async execute() {
         // Resolve auth lazily so that mockAuthOverride set after from() is respected
         const auth = getAuthContext();
@@ -191,6 +200,14 @@ export const supabase: SupabaseClient = {
           displayTableName = 'cloud_subscription_plans';
           apiPath = '/api/subscriptionPlans';
           table = cloudDb.cloud_subscription_plans;
+        } else if (tableName === 'tenantUsers') {
+          displayTableName = 'cloud_tenant_users';
+          apiPath = '/api/tenantUsers';
+          table = cloudDb.cloud_tenant_users;
+        } else if (tableName === 'tenantUserBranches') {
+          displayTableName = 'cloud_tenant_user_branches';
+          apiPath = '/api/tenantUserBranches';
+          table = cloudDb.cloud_tenant_user_branches;
         }
 
         if (!table) {
@@ -209,8 +226,18 @@ export const supabase: SupabaseClient = {
         try {
           // ─── SELECT ────────────────────────────────────────────────────────
           if (this.action === 'SELECT') {
+            // Build URL query string from filter parameters
+            const queryParams = new URLSearchParams();
+            for (const [k, v] of Object.entries(this.filters)) {
+              if (v !== undefined && v !== null) {
+                queryParams.append(k, String(v));
+              }
+            }
+            const queryString = queryParams.toString();
+            const fetchUrl = queryString ? `${apiPath}?${queryString}` : apiPath;
+
             // 1. Fetch from shared Vite API server
-            const res = await fetch(apiPath, { headers });
+            const res = await fetch(fetchUrl, { headers });
             if (!res.ok) {
               throw new Error(`DevServer HTTP error ${res.status}`);
             }

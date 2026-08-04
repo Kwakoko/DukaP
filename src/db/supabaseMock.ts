@@ -295,6 +295,8 @@ class DukaPosCloudDatabase extends Dexie {
   cloud_app_versions!: Table<AppVersion>;
   cloud_version_changes!: Table<VersionChange>;
   cloud_deployment_history!: Table<DeploymentHistory>;
+  cloud_tenant_users!: Table<any>;
+  cloud_tenant_user_branches!: Table<any>;
 
   constructor() {
     super('DukaPosCloudDatabase');
@@ -354,6 +356,10 @@ class DukaPosCloudDatabase extends Dexie {
       cloud_version_changes: 'id, version_id, module, change_type, created_at',
       cloud_deployment_history: 'id, version, environment, status, created_at'
     });
+    this.version(8).stores({
+      cloud_tenant_users: 'id, tenant_id, user_id',
+      cloud_tenant_user_branches: 'id, tenant_id, user_id, branch_id'
+    });
   }
 }
 
@@ -400,7 +406,9 @@ export function verifyRowLevelSecurity(
     tableName === 'cloud_user_security' ||
     tableName === 'cloud_tenants' ||
     tableName === 'cloud_subscription_plans' ||
-    tableName === 'cloud_business_profiles'
+    tableName === 'cloud_business_profiles' ||
+    tableName === 'cloud_tenant_users' ||
+    tableName === 'cloud_tenant_user_branches'
   )) {
     return { allowed: true };
   }
