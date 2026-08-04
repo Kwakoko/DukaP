@@ -483,10 +483,15 @@ export const AuthGateway: React.FC = () => {
       let dbUser: any = null;
 
       try {
-        // Attempt cloud search by email first
+        // Attempt cloud search by email or username first
         const { data: cloudUsers, error: cloudErr } = await supabase.from('users').select().eq('email', normalizedEmail);
         if (!cloudErr && cloudUsers && cloudUsers.length > 0) {
           dbUser = cloudUsers[0];
+        } else {
+          const { data: cloudUsernames } = await supabase.from('users').select().eq('username', normalizedEmail);
+          if (cloudUsernames && cloudUsernames.length > 0) {
+            dbUser = cloudUsernames[0];
+          }
         }
 
         // If email lookup yielded no user, try server-side identifier search (phone, business_code, tenant ID)

@@ -46,11 +46,13 @@ export const tenantRecoveryService = {
 
       let userMatch: any = undefined;
 
-      // 3. Match via user email or phone if tenant direct match not found
+      // 3. Match via user email, username, phone, or user_code if tenant direct match not found
       if (!tenantMatch) {
         userMatch = users.find(u => 
           (u.email && u.email.toLowerCase() === clean) ||
-          (u.phone && u.phone.replace(/\D/g, '') === clean.replace(/\D/g, ''))
+          (u.username && u.username.toLowerCase() === clean) ||
+          (u.user_code && u.user_code.toLowerCase() === clean) ||
+          (clean.length >= 4 && u.phone && u.phone.replace(/\D/g, '') === clean.replace(/\D/g, ''))
         );
 
         if (userMatch && userMatch.tenant_id) {
