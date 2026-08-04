@@ -26,7 +26,7 @@ function getAuthContext() {
           user_name: session.user.name
         };
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   // No valid session — return empty strings so RLS/header checks reject the request
   // rather than silently scoping data to the wrong tenant.
@@ -139,11 +139,11 @@ export const supabase: SupabaseClient = {
       async execute() {
         // Resolve auth lazily so that mockAuthOverride set after from() is respected
         const auth = getAuthContext();
-        
+
         let displayTableName = 'cloud_' + tableName;
         let apiPath = `/api/${tableName}`;
         let table = (cloudDb as any)[displayTableName];
-        
+
         if (tableName === 'products') {
           displayTableName = 'cloud_products';
           apiPath = '/api/products';
@@ -251,7 +251,7 @@ export const supabase: SupabaseClient = {
             }
 
             let records: any[] = await table.toArray();
-            
+
             // Filter out soft deleted records (for products, variants, and tenants)
             if (tableName === 'products' || tableName === 'product_variants' || tableName === 'tenants') {
               records = records.filter(r => r.deletedAt === undefined || r.deletedAt === null || r.deleted_at === undefined || r.deleted_at === null);
@@ -298,7 +298,7 @@ export const supabase: SupabaseClient = {
             for (const item of dataToInsert) {
               const recordTenantId = item.tenantId || item.tenant_id || (tableName === 'tenants' ? item.id : auth.tenant_id);
               const recordBranchId = item.branchId || item.branch_id || 'branch-dar-hq';
-              
+
               // Validate schema and required properties
               if (tableName === 'products' && (!item.id || !item.name)) {
                 throw new Error(`Validation Error: Missing required product fields (id, name) on table '${displayTableName}'.`);
@@ -494,7 +494,7 @@ export const supabase: SupabaseClient = {
           throw new Error('Unsupported database action.');
         } catch (err: any) {
           console.error(`[PostgreSQL/Supabase Error] Code: 42501. Message: ${err.message}`);
-          
+
           await logCloudTransaction({
             operation: (this.action === 'UPSERT' ? 'INSERT' : this.action) as 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'BEGIN' | 'COMMIT',
             table_name: displayTableName,
