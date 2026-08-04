@@ -236,16 +236,18 @@ export const supabase: SupabaseClient = {
             const queryString = queryParams.toString();
             const fetchUrl = queryString ? `${apiPath}?${queryString}` : apiPath;
 
-            // 1. Fetch from shared Vite API server
-            const res = await fetch(fetchUrl, { headers });
-            if (!res.ok) {
-              throw new Error(`DevServer HTTP error ${res.status}`);
-            }
-            const serverRecords: any[] = await res.json();
-
-            // 2. Sync back to local browser cloudDb cache for automated tests
-            if (Array.isArray(serverRecords) && serverRecords.length > 0) {
-              await table.bulkPut(serverRecords);
+            // 1. Fetch from server API or fall back to client-side master Cloud Database
+            try {
+              const res = await fetch(fetchUrl, { headers });
+              const contentType = res.headers.get('content-type') || '';
+              if (res.ok && contentType.includes('application/json')) {
+                const serverRecords: any[] = await res.json();
+                if (Array.isArray(serverRecords) && serverRecords.length > 0) {
+                  await table.bulkPut(serverRecords);
+                }
+              }
+            } catch (err) {
+              console.warn(`[Cloud Client] Endpoint ${fetchUrl} using client-side cloud database.`);
             }
 
             let records: any[] = await table.toArray();

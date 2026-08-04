@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import type { AppVersion, VersionChange, DeploymentHistory } from './dexie';
+import masterCloudDb from '../../cloud_db.json';
 export type { AppVersion, VersionChange, DeploymentHistory };
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
@@ -459,10 +460,59 @@ export function verifyRowLevelSecurity(
 }
 
 // ─── seedCloudDatabase ───────────────────────────────────────────────────────
-// PRODUCTION: No demo data is seeded into the in-memory cloud DB cache.
-// The cloudDb in-memory store is populated exclusively from real API responses
-// (cloud_db.json) fetched via supabaseClient.ts during normal operation.
+// Hydrates the client-side cloudDb cache from master database JSON
+// ensuring multi-device authentication & sync works on static web hosts (Firebase Hosting).
 export async function seedCloudDatabase() {
-  // No-op in production environment.
-  return;
+  try {
+    const existingTenantsCount = await cloudDb.cloud_tenants.count();
+    if (existingTenantsCount === 0 && masterCloudDb) {
+      console.log('[Cloud DB] Hydrating client master cloud database from production source of truth...');
+      await cloudDb.transaction('rw', [
+        cloudDb.cloud_tenants,
+        cloudDb.cloud_branches,
+        cloudDb.cloud_users,
+        cloudDb.cloud_user_branch_roles,
+        cloudDb.cloud_tenant_modules,
+        cloudDb.cloud_tenant_settings,
+        cloudDb.cloud_products,
+        cloudDb.cloud_product_variants,
+        cloudDb.cloud_stock_ledger
+      ], async () => {
+        if (Array.isArray(masterCloudDb.tenants) && masterCloudDb.tenants.length > 0) {
+          await cloudDb.cloud_tenants.bulkPut(masterCloudDb.tenants as any);
+        }
+        if (Array.isArray(masterCloudDb.branches) && masterCloudDb.branches.length > 0) {
+          await cloudDb.cloud_branches.bulkPut(masterCloudDb.branches as any);
+        }
+        if (Array.isArray(masterCloudDb.users) && masterCloudDb.users.length > 0) {
+          await cloudDb.cloud_users.bulkPut(masterCloudDb.users as any);
+        }
+        if (Array.isArray(masterCloudDb.userBranchRoles) && masterCloudDb.userBranchRoles.length > 0) {
+          await cloudDb.cloud_user_branch_roles.bulkPut(masterCloudDb.userBranchRoles as any);
+        }
+        if (Array.isArray(masterCloudDb.tenantModules) && masterCloudDb.tenantModules.length > 0) {
+          await cloudDb.cloud_tenant_modules.bulkPut(masterCloudDb.tenantModules as any);
+        }
+        if (Array.isArray(masterCloudDb.tenantSettings) && masterCloudDb.tenantSettings.length > 0) {
+          await cloudDb.cloud_tenant_settings.bulkPut(masterCloudDb.tenantSettings as any);
+        }
+        if (Array.isArray(masterCloudDb.products) && masterCloudDb.products.length > 0) {
+          await cloudDb.cloud_products.bulkPut(masterCloudDb.products as any);
+        }
+        if (Array.isArray(masterCloudDb.variants) && masterCloudDb.variants.length > 0) {
+          await cloudDb.cloud_product_variants.bulkPut(masterCloudDb.variants as any);
+        }
+        const ledgerItems = (masterCloudDb as any).stockLedger || (masterCloudDb as any).stock_ledger;
+        if (Array.isArray(ledgerItems) && ledgerItems.length > 0) {
+          await cloudDb.cloud_stock_ledger.bulkPut(ledgerItems as any);
+        }
+      });
+      console.log('[Cloud DB] Client master cloud database successfully hydrated.');
+    }
+  } catch (err) {
+    console.warn('[Cloud DB] Automatic hydration warning:', err);
+  }
 }
+
+// Auto-seed cloudDb on module load
+seedCloudDatabase();

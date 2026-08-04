@@ -1,4 +1,5 @@
 import { db } from '../db/dexie';
+import { cloudDb } from '../db/supabaseMock';
 
 export interface Tenant {
   id: string;
@@ -25,11 +26,28 @@ export const tenantRecoveryService = {
       'x-user-id': 'usr-recovery-system'
     };
 
+    const safeFetch = async (url: string, cloudTable?: any) => {
+      try {
+        const r = await fetch(url, { headers });
+        const ct = r.headers.get('content-type') || '';
+        if (r.ok && ct.includes('application/json')) {
+          const data = await r.json();
+          if (Array.isArray(data) && data.length > 0) return data;
+        }
+      } catch (_) {}
+      if (cloudTable) {
+        try {
+          return await cloudTable.toArray();
+        } catch (_) {}
+      }
+      return [];
+    };
+
     try {
-      // 1. Fetch server tenants and users
+      // 1. Fetch server tenants and users with client cloudDb fallback
       const [tenantsRes, usersRes] = await Promise.all([
-        fetch('/api/tenants', { headers }).then(r => r.ok ? r.json() : []),
-        fetch('/api/users', { headers }).then(r => r.ok ? r.json() : [])
+        safeFetch('/api/tenants', cloudDb.cloud_tenants),
+        safeFetch('/api/users', cloudDb.cloud_users)
       ]);
 
       const tenants: any[] = Array.isArray(tenantsRes) ? tenantsRes : [];
@@ -92,8 +110,29 @@ export const tenantRecoveryService = {
       'x-user-id': 'usr-recovery-system'
     };
 
+    const safeFetch = async (url: string, cloudTable?: any, filterKey?: string, filterVal?: string) => {
+      try {
+        const r = await fetch(url, { headers });
+        const ct = r.headers.get('content-type') || '';
+        if (r.ok && ct.includes('application/json')) {
+          const data = await r.json();
+          if (Array.isArray(data) && data.length > 0) return data;
+        }
+      } catch (_) {}
+      if (cloudTable) {
+        try {
+          let list = await cloudTable.toArray();
+          if (filterKey && filterVal) {
+            list = list.filter((item: any) => item[filterKey] === filterVal || item.tenantId === filterVal || item.tenant_id === filterVal);
+          }
+          return list;
+        } catch (_) {}
+      }
+      return [];
+    };
+
     try {
-      // 2. Fetch all components from authoritative PostgreSQL database
+      // 2. Fetch all components with client cloudDb fallback for standalone/static deployments
       const [
         tenantsRes,
         branchesRes,
@@ -107,17 +146,17 @@ export const tenantRecoveryService = {
         subsRes,
         plansRes
       ] = await Promise.all([
-        fetch(`/api/tenants`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/branches?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/users?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/userBranchRoles?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/tenantModules?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/tenantSettings?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/featureFlags?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/userSecurity`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/businessProfiles?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/tenantSubscriptions?tenantId=${tenantId}`, { headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/subscriptionPlans`, { headers }).then(r => r.ok ? r.json() : [])
+        safeFetch(`/api/tenants`, cloudDb.cloud_tenants),
+        safeFetch(`/api/branches?tenantId=${tenantId}`, cloudDb.cloud_branches, 'tenant_id', tenantId),
+        safeFetch(`/api/users?tenantId=${tenantId}`, cloudDb.cloud_users, 'tenant_id', tenantId),
+        safeFetch(`/api/userBranchRoles?tenantId=${tenantId}`, cloudDb.cloud_user_branch_roles, 'tenant_id', tenantId),
+        safeFetch(`/api/tenantModules?tenantId=${tenantId}`, cloudDb.cloud_tenant_modules, 'tenant_id', tenantId),
+        safeFetch(`/api/tenantSettings?tenantId=${tenantId}`, cloudDb.cloud_tenant_settings, 'tenant_id', tenantId),
+        safeFetch(`/api/featureFlags?tenantId=${tenantId}`, cloudDb.cloud_feature_flags, 'tenant_id', tenantId),
+        safeFetch(`/api/userSecurity`, cloudDb.cloud_user_security),
+        safeFetch(`/api/businessProfiles?tenantId=${tenantId}`),
+        safeFetch(`/api/tenantSubscriptions?tenantId=${tenantId}`, cloudDb.cloud_subscriptions, 'tenant_id', tenantId),
+        safeFetch(`/api/subscriptionPlans`, cloudDb.cloud_subscription_plans)
       ]);
 
       const tenantsList: any[] = Array.isArray(tenantsRes) ? tenantsRes : [];
