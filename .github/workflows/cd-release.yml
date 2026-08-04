@@ -29,6 +29,7 @@ jobs:
         run: npm ci
 
       - name: Execute SemVer & Changelog Release Engine
+        id: release
         run: node scripts/release-engine.js
 
       - name: Commit Updated Version & Changelog

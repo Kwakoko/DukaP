@@ -191,6 +191,11 @@ function run() {
   const outputPath = path.join(rootDir, 'release-metadata.json');
   fs.writeFileSync(outputPath, JSON.stringify(releaseOutput, null, 2));
   console.log(`[Release Engine] Generated release-metadata.json`);
+
+  if (process.env.GITHUB_OUTPUT) {
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${nextVersion}\n`);
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=v${nextVersion}\n`);
+  }
 }
 
 run();
