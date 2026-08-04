@@ -4,6 +4,7 @@ import { db, type SyncOperation } from '../db/dexie';
 import { mapProductToLocal, recoverUnsyncedProducts } from '../services/productService';
 import { createSyncEvent } from '../services/syncEventGenerator';
 import { productionSyncEngine } from '../services/productionSyncEngine';
+import { stockLedgerSyncEngine } from '../services/stockLedgerSyncEngine';
 
 export interface SyncProgress {
   current: number;
@@ -125,6 +126,9 @@ export function useSync() {
         await recoverUnsyncedProducts(currentTenantId);
       }
 
+      const syncKey = `dukapos_last_sync_${currentTenantId || 'global'}`;
+      const lastSyncTs = localStorage.getItem(syncKey) || '0';
+
       const headers: Record<string, string> = {
         'x-tenant-id': currentTenantId || '',
         'X-Tenant-ID': currentTenantId || '',
@@ -135,102 +139,123 @@ export function useSync() {
       };
 
       const cacheBust = `_t=${Date.now()}`;
-      const url = currentTenantId
-        ? `/api/products?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
-        : `/api/products?${cacheBust}`;
-      const res = await fetch(url, { method: 'GET', headers });
+      const syncUrl = currentTenantId
+        ? `/api/sync?tenantId=${encodeURIComponent(currentTenantId)}&since=${lastSyncTs}&${cacheBust}`
+        : `/api/sync?since=${lastSyncTs}&${cacheBust}`;
+
+      const res = await fetch(syncUrl, { method: 'GET', headers });
       if (!res.ok) return 0;
 
-      const rawProducts: any = await res.json();
-      const serverProducts: any[] = Array.isArray(rawProducts) ? rawProducts : (rawProducts.products || []);
-      let syncedCount = 0;
-      if (Array.isArray(serverProducts)) {
-        for (const sp of serverProducts) {
-          if (sp.deletedAt || sp.deleted_at) continue; // Skip soft-deleted
+      const data: any = await res.json();
+      const changes = data.changes || {};
+      let totalDownloaded = 0;
 
-          // Never overwrite locally-pending (offline-created) records with server data
+      // 1. Ingest Products (handling soft deletes and pending locks)
+      if (Array.isArray(changes.products)) {
+        for (const sp of changes.products) {
+          if (sp.deletedAt || sp.deleted_at || sp.is_deleted) {
+            await db.products.delete(sp.id);
+            continue;
+          }
           const existing = await db.products.get(sp.id);
           if (existing && existing.syncStatus === 'PENDING') continue;
-
-          const localFormat = mapProductToLocal({ ...sp, syncStatus: 'SYNCED' });
-          await db.products.put(localFormat);
-          syncedCount++;
+          await db.products.put(mapProductToLocal({ ...sp, syncStatus: 'SYNCED' }));
+          totalDownloaded++;
         }
       }
 
-      // Pull variants
-      const varUrl = currentTenantId
-        ? `/api/variants?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
-        : `/api/variants?${cacheBust}`;
-      const varRes = await fetch(varUrl, { method: 'GET', headers });
-      if (varRes.ok) {
-        const rawVariants: any = await varRes.json();
-        const serverVariants: any[] = Array.isArray(rawVariants) ? rawVariants : (rawVariants.variants || []);
-        if (Array.isArray(serverVariants)) {
-          for (const sv of serverVariants) {
-            if (sv.deletedAt || sv.deleted_at) continue;
-            const existing = await db.productVariants.get(sv.id);
-            if (!existing || existing.syncStatus !== 'PENDING') {
-              await db.productVariants.put({ ...sv, syncStatus: 'SYNCED', isSynced: 1 });
-            }
+      // 2. Ingest Variants
+      if (Array.isArray(changes.variants)) {
+        for (const sv of changes.variants) {
+          if (sv.deletedAt || sv.deleted_at || sv.is_deleted) {
+            await db.productVariants.delete(sv.id);
+            continue;
           }
+          const existing = await db.productVariants.get(sv.id);
+          if (!existing || existing.syncStatus !== 'PENDING') {
+            await db.productVariants.put({ ...sv, syncStatus: 'SYNCED', isSynced: 1 });
+          }
+        }
+      }
 
-          // Recalculate parent product stock from variants
+      // 3. Ingest Categories
+      if (Array.isArray(changes.categories)) {
+        for (const cat of changes.categories) {
+          if (cat.deletedAt || cat.deleted_at || cat.is_deleted) {
+            await db.categories.delete(cat.id);
+            continue;
+          }
+          await db.categories.put({ ...cat, syncStatus: 'SYNCED' } as any);
+        }
+      }
+
+      // 4. Ingest Customers
+      if (Array.isArray(changes.customers)) {
+        for (const sc of changes.customers) {
+          if (sc.deletedAt || sc.deleted_at || sc.is_deleted) {
+            await db.customers.delete(sc.id);
+            continue;
+          }
+          const existing = await db.customers.get(sc.id) as any;
+          if (!existing || existing.syncStatus !== 'PENDING') {
+            await db.customers.put({ ...sc, syncStatus: 'SYNCED' } as any);
+          }
+        }
+      }
+
+      // 5. Ingest Suppliers
+      if (Array.isArray(changes.suppliers)) {
+        for (const sup of changes.suppliers) {
+          if (sup.deletedAt || sup.deleted_at || sup.is_deleted) {
+            await db.suppliers.delete(sup.id);
+            continue;
+          }
+          const existing = await db.suppliers.get(sup.id);
+          if (!existing || (existing as any).syncStatus !== 'PENDING') {
+            await db.suppliers.put({ ...sup, syncStatus: 'SYNCED' } as any);
+          }
+        }
+      }
+
+      // 6. Ingest Orders
+      if (Array.isArray(changes.orders)) {
+        for (const so of changes.orders) {
+          if (so.deletedAt || so.deleted_at || so.is_deleted) {
+            await db.orders.delete(so.id);
+            continue;
+          }
+          const existing = await db.orders.get(so.id);
+          if (!existing || existing.syncStatus !== 'Pending') {
+            await db.orders.put({ ...so, syncStatus: 'Synced' });
+          }
+        }
+      }
+
+      // 7. Ingest Stock Ledger & Recalculate Stock Balances (Requirement #15)
+      if (Array.isArray(changes.stockLedger) && changes.stockLedger.length > 0) {
+        for (const sle of changes.stockLedger) {
+          await db.stockLedger.put({ ...sle, synced: true, sync_status: 'SYNCED' });
+        }
+        if (currentTenantId) {
           const allProds = await db.products.toArray();
           for (const p of allProds) {
-            if (p.hasVariants) {
-              const vars = await db.productVariants.where('productId').equals(p.id).toArray();
-              const totalStock = vars.reduce((sum, v) => sum + (v.stock || 0), 0);
-              if (p.stock !== totalStock) {
-                await db.products.update(p.id, { stock: totalStock });
-              }
-            }
+            await stockLedgerSyncEngine.recalculateStockFromEvents(
+              currentTenantId,
+              p.branchId || p.branch_id || 'main-branch',
+              p.id
+            ).catch(() => {});
           }
         }
       }
 
-      // Pull customers
-      const custUrl = currentTenantId
-        ? `/api/customers?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
-        : `/api/customers?${cacheBust}`;
-      const custRes = await fetch(custUrl, { method: 'GET', headers });
-      if (custRes.ok) {
-        const rawCust: any = await custRes.json();
-        const serverCustomers: any[] = Array.isArray(rawCust) ? rawCust : (rawCust.customers || []);
-        if (Array.isArray(serverCustomers)) {
-          for (const sc of serverCustomers) {
-            if (sc.deletedAt || sc.deleted_at) continue;
-            const existing = await db.customers.get(sc.id) as any;
-            if (!existing || existing.syncStatus !== 'PENDING') {
-              await db.customers.put({ ...sc, syncStatus: 'SYNCED' } as any);
-            }
-          }
-        }
+      if (data.serverTime) {
+        localStorage.setItem(syncKey, String(data.serverTime));
       }
 
-      // Pull orders
-      const orderUrl = currentTenantId
-        ? `/api/orders?tenantId=${encodeURIComponent(currentTenantId)}&${cacheBust}`
-        : `/api/orders?${cacheBust}`;
-      const orderRes = await fetch(orderUrl, { method: 'GET', headers });
-      if (orderRes.ok) {
-        const rawOrders: any = await orderRes.json();
-        const serverOrders: any[] = Array.isArray(rawOrders) ? rawOrders : (rawOrders.orders || []);
-        if (Array.isArray(serverOrders)) {
-          for (const so of serverOrders) {
-            if (so.deletedAt || so.deleted_at) continue;
-            const existing = await db.orders.get(so.id);
-            if (!existing || existing.syncStatus !== 'Pending') {
-              await db.orders.put({ ...so, syncStatus: 'Synced' });
-            }
-          }
-        }
+      if (totalDownloaded > 0) {
+        addLog(`↓ Master Incremental Sync: Downloaded ${totalDownloaded} record(s) from server.`);
       }
-
-      if (syncedCount > 0) {
-        addLog(`↓ Downloaded ${syncedCount} product(s) from server.`);
-      }
-      return syncedCount;
+      return totalDownloaded;
     } catch (err: any) {
       addLog(`Server pull failed: ${err.message}`);
       return 0;

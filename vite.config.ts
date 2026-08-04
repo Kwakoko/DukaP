@@ -220,6 +220,52 @@ export default defineConfig({
               return
             }
 
+            // ── GET /api/sync — Master Incremental Sync Endpoint ──
+            if (url.pathname === '/api/sync' && req.method === 'GET') {
+              const tenantId = url.searchParams.get('tenantId') || url.searchParams.get('tenant_id') || reqTenantId;
+              const sinceRaw = url.searchParams.get('since') || '0';
+              let sinceTs = 0;
+              if (sinceRaw.includes('-') || sinceRaw.includes('T')) {
+                sinceTs = new Date(sinceRaw).getTime() || 0;
+              } else {
+                sinceTs = parseInt(sinceRaw, 10) || 0;
+              }
+
+              const collections = [
+                'products', 'variants', 'categories', 'customers', 'suppliers',
+                'orders', 'purchases', 'payments', 'expenses', 'stockLedger',
+                'branches', 'tenantSettings', 'users', 'userDevices'
+              ];
+
+              const serverTime = Date.now();
+              const changes: Record<string, any[]> = {};
+
+              for (const coll of collections) {
+                const rawTable = (db[coll] || []);
+                const filtered = rawTable.filter((item: any) => {
+                  const itemTenant = item.tenantId || item.tenant_id || item.tenant;
+                  if (reqTenantId !== 'tenant-admin-system' && itemTenant !== tenantId) return false;
+                  
+                  const updatedTs = item.updatedAt || item.updated_at || item.createdAt || item.created_at || 0;
+                  const deletedTs = item.deletedAt || item.deleted_at || 0;
+                  const maxTs = Math.max(updatedTs, deletedTs);
+
+                  return sinceTs === 0 || maxTs > sinceTs;
+                });
+
+                changes[coll] = filtered;
+              }
+
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                tenantId,
+                since: sinceTs,
+                serverTime,
+                changes
+              }));
+              return;
+            }
+
             // ── POST /api/production-cleanup — Production Clean System disk purge ──
             if (url.pathname === '/api/production-cleanup' && req.method === 'POST') {
               const NOW_CLEAN = Date.now();
@@ -250,6 +296,135 @@ export default defineConfig({
               writeDb(cleanDbState);
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, message: 'Production Clean System applied to disk database cloud_db.json' }));
+              return;
+            }
+
+            // ── POST /api/sync/push — Batch Queue Push Endpoint ──
+            if (url.pathname === '/api/sync/push' && req.method === 'POST') {
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', () => {
+                try {
+                  const parsedBody = body ? JSON.parse(body) : {};
+                  const tenantId = reqTenantId || parsedBody.tenantId || parsedBody.tenant_id;
+                  const operations = parsedBody.operations || parsedBody.batch || [];
+                  const deviceId = (req.headers['x-device-id'] as string) || parsedBody.deviceId || 'unknown-device';
+
+                  if (!Array.isArray(operations)) {
+                    res.statusCode = 400;
+                    res.end(JSON.stringify({ error: 'Invalid payload: operations array required' }));
+                    return;
+                  }
+
+                  const now = Date.now();
+                  const processedIds: string[] = [];
+                  const conflicts: any[] = [];
+
+                  for (const op of operations) {
+                    const entityName = op.entity || op.entityName || 'products';
+                    const payload = op.payload || {};
+                    const recordId = payload.id || op.entity_id;
+                    const action = op.operation || op.actionType || 'UPDATE';
+
+                    if (!recordId) continue;
+                    if (!db[entityName]) db[entityName] = [];
+
+                    const table = db[entityName];
+                    const index = table.findIndex((r: any) => r.id === recordId);
+
+                    if (action === 'DELETE') {
+                      if (index > -1) {
+                        table[index].deleted_at = now;
+                        table[index].deletedAt = now;
+                        table[index].is_deleted = true;
+                        table[index].updated_at = now;
+                        table[index].updatedAt = now;
+                        table[index].version = (table[index].version || 1) + 1;
+                      }
+                      processedIds.push(op.id || recordId);
+                    } else {
+                      if (index > -1) {
+                        const existing = table[index];
+                        const clientVer = payload.version || 1;
+                        const serverVer = existing.version || 1;
+
+                        if (clientVer < serverVer && payload.updated_at < existing.updated_at) {
+                          conflicts.push({ recordId, resolution: 'SERVER_WINS', serverRecord: existing });
+                          continue;
+                        }
+
+                        table[index] = {
+                          ...existing,
+                          ...payload,
+                          tenant_id: tenantId,
+                          tenantId: tenantId,
+                          device_id: deviceId,
+                          updated_at: now,
+                          updatedAt: now,
+                          version: serverVer + 1,
+                          sync_version: (existing.sync_version || 0) + 1,
+                          sync_status: 'SYNCED'
+                        };
+                      } else {
+                        const newItem = {
+                          ...payload,
+                          id: recordId,
+                          tenant_id: tenantId,
+                          tenantId: tenantId,
+                          device_id: deviceId,
+                          created_at: payload.created_at || now,
+                          createdAt: payload.createdAt || now,
+                          updated_at: now,
+                          updatedAt: now,
+                          version: 1,
+                          sync_version: 1,
+                          sync_status: 'SYNCED'
+                        };
+                        table.push(newItem);
+                      }
+                      processedIds.push(op.id || recordId);
+                    }
+                  }
+
+                  writeDb(db);
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({
+                    success: true,
+                    processedCount: processedIds.length,
+                    processedIds,
+                    conflicts,
+                    serverTime: now
+                  }));
+                } catch (err: any) {
+                  res.statusCode = 500;
+                  res.end(JSON.stringify({ error: err?.message }));
+                }
+              });
+              return;
+            }
+
+            // ── POST /api/userDevices — Device Registration ──
+            if (url.pathname === '/api/userDevices' && req.method === 'POST') {
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', () => {
+                try {
+                  const deviceInfo = body ? JSON.parse(body) : {};
+                  if (!db.userDevices) db.userDevices = [];
+                  const idx = db.userDevices.findIndex((d: any) => d.device_id === deviceInfo.device_id);
+                  if (idx > -1) {
+                    db.userDevices[idx] = { ...db.userDevices[idx], ...deviceInfo, last_seen: Date.now() };
+                  } else {
+                    db.userDevices.push({ ...deviceInfo, last_seen: Date.now() });
+                  }
+                  writeDb(db);
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({ success: true, device: deviceInfo }));
+                } catch (err: any) {
+                  res.statusCode = 500;
+                  res.end(JSON.stringify({ error: err?.message }));
+                }
+              });
               return;
             }
 

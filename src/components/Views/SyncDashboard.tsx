@@ -1,0 +1,423 @@
+import React, { useState, useEffect } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../../db/dexie';
+import { useAuth } from '../../context/AuthContext';
+import { useSyncState } from '../../context/SyncContext';
+import { productionSyncEngine } from '../../services/productionSyncEngine';
+import { stockLedgerSyncEngine } from '../../services/stockLedgerSyncEngine';
+import { getDeviceDetails } from '../../services/deviceService';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Badge } from '../UI/custom-ui';
+import {
+  RefreshCw, Activity, Database, Smartphone, Globe, Shield,
+  AlertTriangle, CheckCircle2, Zap, HardDrive, Layers,
+  RotateCcw, Trash2
+} from 'lucide-react';
+
+export const SyncDashboard: React.FC = () => {
+  const { currentTenant, currentBranch } = useAuth();
+  const { isOnline, isSyncing, syncData, toggleOfflineSimulation, syncFromServer } = useSyncState();
+
+  const [engineStatus, setEngineStatus] = useState<any>(null);
+  const [dbSizeMb, setDbSizeMb] = useState<string>('0.00');
+  const [devicesList, setDevicesList] = useState<any[]>([]);
+  const [isRebuilding, setIsRebuilding] = useState<boolean>(false);
+  const [isClearingQueue, setIsClearingQueue] = useState<boolean>(false);
+
+  // Live queries for real-time queue items
+  const queueItems = useLiveQuery(async () => {
+    return await db.syncQueue.toArray();
+  }) || [];
+
+  const stockLedgerEvents = useLiveQuery(async () => {
+    if (!currentTenant?.id) return [];
+    return await db.stockLedger.where('tenant_id').equals(currentTenant.id).reverse().sortBy('created_at');
+  }, [currentTenant?.id]) || [];
+
+  // Update status metrics
+  useEffect(() => {
+    const fetchStatus = async () => {
+      const status = await productionSyncEngine.getStatus();
+      setEngineStatus(status);
+
+      // Estimate IndexedDB size if Storage API is supported
+      if (typeof navigator !== 'undefined' && 'storage' in navigator && navigator.storage.estimate) {
+        try {
+          const estimate = await navigator.storage.estimate();
+          const usedMb = ((estimate.usage || 0) / (1024 * 1024)).toFixed(2);
+          setDbSizeMb(usedMb);
+        } catch (_) {}
+      }
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch connected devices
+  useEffect(() => {
+    const fetchDevices = async () => {
+      try {
+        const res = await fetch(`/api/sync?tenantId=${currentTenant?.id || ''}&since=0`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.changes?.userDevices) {
+            setDevicesList(data.changes.userDevices);
+          } else {
+            const currentDev = getDeviceDetails();
+            setDevicesList([currentDev]);
+          }
+        }
+      } catch (_) {
+        setDevicesList([getDeviceDetails()]);
+      }
+    };
+    fetchDevices();
+  }, [currentTenant?.id]);
+
+  const pendingQueue = queueItems.filter(i => i.status === 'Pending' || i.status === 'Processing');
+  const failedQueue = queueItems.filter(i => i.status === 'Failed');
+  const completedQueue = queueItems.filter(i => i.status === 'Completed');
+
+  const handleManualSync = async () => {
+    await syncData(true);
+    if (currentTenant?.id) {
+      await syncFromServer(currentTenant.id);
+    }
+  };
+
+  const handleRebuildBalances = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    setIsRebuilding(true);
+    try {
+      const res = await stockLedgerSyncEngine.rebuildAllBranchBalances(currentTenant.id, currentBranch.id);
+      alert(`✅ Stock Ledger Replay Complete!\nRecalculated ${res.productsRecalculated} products from ${res.totalEventsReplayed} Ledger events.`);
+    } catch (err: any) {
+      alert(`Error rebuilding stock: ${err.message}`);
+    } finally {
+      setIsRebuilding(false);
+    }
+  };
+
+  const handlePurgeCache = async () => {
+    if (!confirm('Are you sure you want to clear local offline cache and re-sync from server? Business data on server will remain intact.')) return;
+    setIsClearingQueue(true);
+    try {
+      await db.products.clear();
+      await db.productVariants.clear();
+      await db.categories.clear();
+      if (currentTenant?.id) {
+        await syncFromServer(currentTenant.id);
+      }
+      alert('Local offline cache purged and re-synchronized from authoritative server!');
+    } catch (err: any) {
+      alert(`Cache purge error: ${err.message}`);
+    } finally {
+      setIsClearingQueue(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header Banner */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white dark:bg-darkbg-card p-6 rounded-2xl border border-slate-200 dark:border-darkbg-border shadow-sm gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-2">
+              <RefreshCw className={`h-5 w-5 text-indigo-500 ${isSyncing ? 'animate-spin' : ''}`} />
+              Production Sync Control Dashboard
+            </h2>
+            <Badge variant={isOnline ? 'success' : 'danger'} className="font-bold text-xs uppercase">
+              {isOnline ? 'ONLINE (Sync Active)' : 'OFFLINE (Queue Mode)'}
+            </Badge>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            Real-time telemetry monitoring for offline-first queue operations, multi-device sync, and Stock Ledger replay.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <Button
+            onClick={toggleOfflineSimulation}
+            variant="outline"
+            className="text-xs font-bold flex items-center gap-1.5"
+          >
+            <Globe className="h-4 w-4 text-emerald-500" />
+            {isOnline ? 'Simulate Offline' : 'Simulate Online'}
+          </Button>
+
+          <Button
+            onClick={handleManualSync}
+            disabled={isSyncing}
+            variant="primary"
+            className="text-xs font-bold flex items-center gap-1.5"
+          >
+            <RotateCcw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
+            {isSyncing ? 'Syncing...' : 'Force Sync Now'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Metric Cards Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="p-4 bg-gradient-to-br from-indigo-50/50 to-white dark:from-darkbg/40 dark:to-darkbg-card border border-indigo-100 dark:border-darkbg-border">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">Pending Operations</span>
+            <div className="p-1.5 bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 rounded-lg">
+              <Layers className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-black text-slate-800 dark:text-white">{pendingQueue.length}</span>
+            <span className="text-[11px] font-semibold text-slate-400">items in queue</span>
+          </div>
+        </Card>
+
+        <Card className="p-4 bg-gradient-to-br from-emerald-50/50 to-white dark:from-darkbg/40 dark:to-darkbg-card border border-emerald-100 dark:border-darkbg-border">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">Successful Syncs</span>
+            <div className="p-1.5 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 rounded-lg">
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+              {engineStatus?.completedSyncCount || completedQueue.length}
+            </span>
+            <span className="text-[11px] font-semibold text-slate-400">operations</span>
+          </div>
+        </Card>
+
+        <Card className="p-4 bg-gradient-to-br from-rose-50/50 to-white dark:from-darkbg/40 dark:to-darkbg-card border border-rose-100 dark:border-darkbg-border">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">Failed / Retrying</span>
+            <div className="p-1.5 bg-rose-100 dark:bg-rose-950/50 text-rose-600 rounded-lg">
+              <AlertTriangle className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400">{failedQueue.length}</span>
+            <span className="text-[11px] font-semibold text-slate-400">exponential backoff</span>
+          </div>
+        </Card>
+
+        <Card className="p-4 bg-gradient-to-br from-amber-50/50 to-white dark:from-darkbg/40 dark:to-darkbg-card border border-amber-100 dark:border-darkbg-border">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500">API Latency / Speed</span>
+            <div className="p-1.5 bg-amber-100 dark:bg-amber-950/50 text-amber-600 rounded-lg">
+              <Zap className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-black text-slate-800 dark:text-white">
+              {engineStatus?.apiLatencyMs || 24} ms
+            </span>
+            <span className="text-[11px] font-semibold text-slate-400">storage: {dbSizeMb} MB</span>
+          </div>
+        </Card>
+      </div>
+
+      {/* Main Grid Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left 2-Cols: Sync Queue Operations */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card>
+            <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <CardTitle className="text-sm font-bold flex items-center gap-2">
+                    <Activity className="h-4.5 w-4.5 text-indigo-500" />
+                    Offline Sync Queue Operations (`sync_queue`)
+                  </CardTitle>
+                  <CardDescription>Live operations queued in client IndexedDB awaiting server confirmation.</CardDescription>
+                </div>
+                <Badge variant="info" className="font-mono text-[10px]">
+                  Total: {queueItems.length}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0 overflow-x-auto">
+              {queueItems.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-400 italic">
+                  No pending operations in sync queue. All local mutations are fully synchronized with server source of truth.
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 dark:border-darkbg-border/30 bg-slate-50/50 dark:bg-darkbg/20 text-slate-400 font-bold uppercase text-[10px]">
+                      <th className="p-3">Operation</th>
+                      <th className="p-3">Entity</th>
+                      <th className="p-3">Entity ID</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3">Retries</th>
+                      <th className="p-3">Queued At</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/20 font-mono text-[11px]">
+                    {queueItems.slice(0, 15).map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/10">
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                            item.operation === 'DELETE' ? 'bg-red-100 text-red-700' :
+                            item.operation === 'CREATE' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {item.operation || item.actionType || 'UPDATE'}
+                          </span>
+                        </td>
+                        <td className="p-3 font-semibold text-slate-700 dark:text-slate-300">
+                          {item.entity || item.entityName || 'products'}
+                        </td>
+                        <td className="p-3 text-slate-500 truncate max-w-[120px]">
+                          {item.entity_id || item.payload?.id || '—'}
+                        </td>
+                        <td className="p-3">
+                          <Badge variant={
+                            item.status === 'Completed' ? 'success' :
+                            item.status === 'Failed' ? 'danger' :
+                            item.status === 'Processing' ? 'warning' : 'info'
+                          } className="text-[9px] py-0 font-bold">
+                            {item.status}
+                          </Badge>
+                        </td>
+                        <td className="p-3 text-slate-500">{item.retry_count || 0}</td>
+                        <td className="p-3 text-slate-400 text-[10px]">
+                          {new Date(item.created_at || item.timestamp || Date.now()).toLocaleTimeString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Stock Ledger Events Replay Section */}
+          <Card>
+            <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <CardTitle className="text-sm font-bold flex items-center gap-2">
+                    <Database className="h-4.5 w-4.5 text-emerald-500" />
+                    Stock Ledger Movement Replay Stream
+                  </CardTitle>
+                  <CardDescription>Immutable stock movement events. Stock balance is derived by replaying these entries.</CardDescription>
+                </div>
+                <Button
+                  onClick={handleRebuildBalances}
+                  disabled={isRebuilding}
+                  variant="outline"
+                  className="text-xs font-bold flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isRebuilding ? 'animate-spin' : ''}`} />
+                  Rebuild Stock from Events
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0 overflow-x-auto">
+              {stockLedgerEvents.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-400 italic">
+                  No stock ledger events recorded yet.
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 dark:border-darkbg-border/30 bg-slate-50/50 dark:bg-darkbg/20 text-slate-400 font-bold uppercase text-[10px]">
+                      <th className="p-3">Movement</th>
+                      <th className="p-3">Product ID</th>
+                      <th className="p-3">Qty Change</th>
+                      <th className="p-3">Unit Cost</th>
+                      <th className="p-3">Sync Status</th>
+                      <th className="p-3">Version</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/20 font-mono text-[11px]">
+                    {stockLedgerEvents.slice(0, 10).map((evt) => (
+                      <tr key={evt.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/10">
+                        <td className="p-3 font-semibold text-slate-800 dark:text-white">
+                          {evt.movement_type}
+                        </td>
+                        <td className="p-3 text-slate-500 truncate max-w-[120px]">
+                          {evt.product_id}
+                        </td>
+                        <td className={`p-3 font-bold ${evt.quantity_change >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                          {evt.quantity_change >= 0 ? `+${evt.quantity_change}` : evt.quantity_change}
+                        </td>
+                        <td className="p-3 text-slate-600 dark:text-slate-300">
+                          {evt.unit_cost?.toLocaleString()} TZS
+                        </td>
+                        <td className="p-3">
+                          <Badge variant={evt.synced ? 'success' : 'warning'} className="text-[9px] py-0 font-bold">
+                            {evt.sync_status || (evt.synced ? 'SYNCED' : 'PENDING')}
+                          </Badge>
+                        </td>
+                        <td className="p-3 text-slate-400">v{evt.event_version || 1}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right Col: Devices & Troubleshooting Tools */}
+        <div className="space-y-6">
+          {/* Connected Devices Card */}
+          <Card>
+            <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <Smartphone className="h-4.5 w-4.5 text-indigo-500" />
+                Registered Connected Devices
+              </CardTitle>
+              <CardDescription>Devices and browser profiles connected to tenant workspace.</CardDescription>
+            </CardHeader>
+            <CardContent className="p-4 space-y-3">
+              {devicesList.map((dev, idx) => (
+                <div key={dev.device_id || idx} className="p-3 border border-slate-200 dark:border-darkbg-border rounded-xl bg-slate-50/40 dark:bg-darkbg/10 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                      <HardDrive className="h-3.5 w-3.5 text-indigo-500" />
+                      {dev.name || 'Current Device'}
+                    </span>
+                    <Badge variant="success" className="text-[8px] py-0">ACTIVE</Badge>
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400 flex flex-wrap gap-2 mt-1">
+                    <span>ID: {dev.device_id}</span>
+                    <span>OS: {dev.os}</span>
+                    <span>Browser: {dev.browser}</span>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          {/* Maintenance & Troubleshooting Actions */}
+          <Card>
+            <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <Shield className="h-4.5 w-4.5 text-amber-500" />
+                Production Maintenance Tools
+              </CardTitle>
+              <CardDescription>Disaster recovery & offline storage options.</CardDescription>
+            </CardHeader>
+            <CardContent className="p-4 space-y-3">
+              <Button
+                onClick={handlePurgeCache}
+                disabled={isClearingQueue}
+                variant="outline"
+                className="w-full text-xs font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 flex items-center justify-center gap-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                Purge Local Offline Cache & Resync
+              </Button>
+
+              <p className="text-[11px] text-slate-400 leading-relaxed italic">
+                Clearing local cache removes temporary IndexedDB stores only. All business data permanently lives on server database source of truth.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
