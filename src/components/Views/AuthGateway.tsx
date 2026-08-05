@@ -135,7 +135,7 @@ const featurePool = [
 ];
 
 export const AuthGateway: React.FC = () => {
-  const { setUser, setTenant, syncFromCloudOnLogin, setIsSuperAdminView } = useAuth();
+  const { setUser, setTenant, syncFromCloudOnLogin } = useAuth();
   const { setActiveModule, setActiveTab, enabledModules } = useModule();
 
   // Active view mode
@@ -1146,39 +1146,6 @@ export const AuthGateway: React.FC = () => {
               </button>
             </div>
 
-            {/* Quick 1-Click Super Admin Access */}
-            <button
-              type="button"
-              onClick={async (e) => {
-                e.preventDefault();
-                setAdminEmail('admin@dukapos.com');
-                setAdminPassword('admin123');
-                setAdminMfa('123456');
-                // Trigger super admin session setup
-                try {
-                  const adminUser: User = {
-                    id: 'usr-superadmin',
-                    name: 'Platform Super Admin',
-                    email: 'admin@dukapos.com',
-                    phone: '+255700000000',
-                    role: 'Super Admin',
-                    tenant_id: 'tenant-superadmin-hq',
-                    branch_id: 'branch-superadmin-hq',
-                    industry_id: 'ind-retail'
-                  };
-                  setUser(adminUser);
-                  setIsSuperAdminView(true);
-                  setActiveTab('Dashboard');
-                } catch (err: any) {
-                  setErrorMsg(`Login failed: ${err.message}`);
-                }
-              }}
-              className="w-full py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 dark:text-indigo-300 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border border-indigo-200/60 dark:border-indigo-800/40 shadow-sm"
-            >
-              <Shield className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>⚡ Quick Sign In as Super Admin (admin@dukapos.com)</span>
-            </button>
-
             {/* Error Message Box */}
             {errorMsg && (
               <div className="p-3 bg-red-50 border border-red-200 dark:bg-red-950/20 dark:border-red-900/30 text-red-600 dark:text-red-400 text-xs font-bold rounded-lg flex items-start space-x-2">
@@ -1186,6 +1153,7 @@ export const AuthGateway: React.FC = () => {
                 <span>{errorMsg}</span>
               </div>
             )}
+
 
             {/* 1. BUSINESS TENANT OWNER / STAFF LOGIN */}
             {(authMode === 'tenant-login' || authMode === 'select') && (
