@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import type { AppVersion, VersionChange, DeploymentHistory } from './dexie';
-import masterCloudDb from '../../cloud_db.json';
+import { PRODUCTION_SEED_DATA as masterCloudDb } from './productionSeedData';
 export type { AppVersion, VersionChange, DeploymentHistory };
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
@@ -477,53 +477,31 @@ export function verifyRowLevelSecurity(
 // ensuring multi-device authentication & sync works on static web hosts (Firebase Hosting).
 export async function seedCloudDatabase() {
   try {
-    const existingTenantsCount = await cloudDb.cloud_tenants.count();
-    if (existingTenantsCount === 0 && masterCloudDb) {
-      console.log('[Cloud DB] Hydrating client master cloud database from production source of truth...');
+    const existingUsersCount = await cloudDb.cloud_users.count();
+    if (existingUsersCount === 0) {
+      console.log('[Cloud DB] Seeding production defaults (Super Admin + subscription plans)...');
       await cloudDb.transaction('rw', [
-        cloudDb.cloud_tenants,
-        cloudDb.cloud_branches,
         cloudDb.cloud_users,
-        cloudDb.cloud_user_branch_roles,
-        cloudDb.cloud_tenant_modules,
-        cloudDb.cloud_tenant_settings,
-        cloudDb.cloud_products,
-        cloudDb.cloud_product_variants,
-        cloudDb.cloud_stock_ledger
+        cloudDb.cloud_user_security,
+        cloudDb.cloud_subscription_plans
       ], async () => {
-        if (Array.isArray(masterCloudDb.tenants) && masterCloudDb.tenants.length > 0) {
-          await cloudDb.cloud_tenants.bulkPut(masterCloudDb.tenants as any);
+        // Seed Super Admin user
+        if (masterCloudDb.users.length > 0) {
+          await cloudDb.cloud_users.bulkPut([...masterCloudDb.users] as any);
         }
-        if (Array.isArray(masterCloudDb.branches) && masterCloudDb.branches.length > 0) {
-          await cloudDb.cloud_branches.bulkPut(masterCloudDb.branches as any);
+        // Seed user security records
+        if (masterCloudDb.userSecurity.length > 0) {
+          await cloudDb.cloud_user_security.bulkPut([...masterCloudDb.userSecurity] as any);
         }
-        if (Array.isArray(masterCloudDb.users) && masterCloudDb.users.length > 0) {
-          await cloudDb.cloud_users.bulkPut(masterCloudDb.users as any);
-        }
-        if (Array.isArray(masterCloudDb.userBranchRoles) && masterCloudDb.userBranchRoles.length > 0) {
-          await cloudDb.cloud_user_branch_roles.bulkPut(masterCloudDb.userBranchRoles as any);
-        }
-        if (Array.isArray(masterCloudDb.tenantModules) && masterCloudDb.tenantModules.length > 0) {
-          await cloudDb.cloud_tenant_modules.bulkPut(masterCloudDb.tenantModules as any);
-        }
-        if (Array.isArray(masterCloudDb.tenantSettings) && masterCloudDb.tenantSettings.length > 0) {
-          await cloudDb.cloud_tenant_settings.bulkPut(masterCloudDb.tenantSettings as any);
-        }
-        if (Array.isArray(masterCloudDb.products) && masterCloudDb.products.length > 0) {
-          await cloudDb.cloud_products.bulkPut(masterCloudDb.products as any);
-        }
-        if (Array.isArray(masterCloudDb.variants) && masterCloudDb.variants.length > 0) {
-          await cloudDb.cloud_product_variants.bulkPut(masterCloudDb.variants as any);
-        }
-        const ledgerItems = (masterCloudDb as any).stockLedger || (masterCloudDb as any).stock_ledger;
-        if (Array.isArray(ledgerItems) && ledgerItems.length > 0) {
-          await cloudDb.cloud_stock_ledger.bulkPut(ledgerItems as any);
+        // Seed subscription plans
+        if (masterCloudDb.subscriptionPlans.length > 0) {
+          await cloudDb.cloud_subscription_plans.bulkPut([...masterCloudDb.subscriptionPlans] as any);
         }
       });
-      console.log('[Cloud DB] Client master cloud database successfully hydrated.');
+      console.log('[Cloud DB] Production seed applied: Super Admin ready. Tenants must register.');
     }
   } catch (err) {
-    console.warn('[Cloud DB] Automatic hydration warning:', err);
+    console.warn('[Cloud DB] Seed warning:', err);
   }
 }
 
