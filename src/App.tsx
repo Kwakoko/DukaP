@@ -27,7 +27,7 @@ const TechnicalCompany = lazy(() => import('./components/Views/TechnicalCompany'
 const AIInsightsView = lazy(() => import('./components/Views/AIInsightsView').then(m => ({ default: m.AIInsightsView })));
 const CashDrawer = lazy(() => import('./components/Views/CashDrawer/CashDrawer').then(m => ({ default: m.CashDrawer })));
 import { useSubscription } from './hooks/useSubscription';
-import { Search, AlertTriangle, Lock } from 'lucide-react';
+import { Search, Lock } from 'lucide-react';
 import { Dialog, Badge } from './components/UI/custom-ui';
 
 const DukaPosAppContent: React.FC = () => {
@@ -582,11 +582,22 @@ const DukaPosAppContent: React.FC = () => {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-darkbg select-none">
-      {/* Offline Alert Sync Indicator Banner */}
+      {/* Offline Status Bar */}
       {!isOnline && (
-        <div className="bg-gradient-to-r from-red-600 to-amber-600 text-white text-center py-1.5 px-4 text-xs font-bold tracking-wide flex items-center justify-center space-x-1.5 shadow-sm animate-pulse z-50">
-          <AlertTriangle className="h-4 w-4" />
-          <span>Offline-first mode active. Sales & products are saved to local IndexedDB and will sync when online.</span>
+        <div className="bg-slate-900 text-slate-200 border-b border-amber-500/30 py-1.5 px-4 text-xs font-medium flex items-center justify-between shadow-md z-50 transition-all">
+          <div className="flex items-center space-x-2.5 mx-auto sm:mx-0">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+            <span className="font-semibold text-amber-400 tracking-wide uppercase text-[11px]">Offline Mode Active</span>
+            <span className="hidden sm:inline text-slate-400">•</span>
+            <span className="hidden sm:inline text-slate-300">Transactions & inventory changes saved locally to workspace</span>
+          </div>
+          <div className="hidden sm:flex items-center space-x-2 text-[11px]">
+            <span className="text-slate-400">Auto-sync queue active</span>
+            <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-mono text-[10px] border border-amber-500/30 font-semibold">Offline Protected</span>
+          </div>
         </div>
       )}
 
