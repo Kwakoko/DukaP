@@ -19,6 +19,7 @@ import { decreaseInventoryForSale } from '../../services/inventoryService';
 import { sessionService } from '../../services/sessionService';
 import { DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../../services/settingsService';
 import { cashDrawerService } from '../../services/cashDrawerService';
+import { getShortBranchName } from '../../utils/mobileFormatters';
 
 // Local POS Cart item interface
 interface CartItem {
@@ -32,6 +33,7 @@ export const POS: React.FC = () => {
   const { currentBranch, currentTenant, user, isOfflineLocked, setIsOfflineLocked, hasBranchAccess } = useAuth();
   const [bypassPasscode, setBypassPasscode] = useState('');
   const { queueOperation } = useSyncState();
+  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
 
   const securitySetting = useLiveQuery(() =>
     db.appSettings.where('[tenantId+namespace]').equals([currentTenant.id, 'SECURITY']).first()
@@ -1284,44 +1286,49 @@ export const POS: React.FC = () => {
   return (
     <div className="pos-root space-y-4">
       {/* Header bar: status indicators, shift management */}
-      <div className="pos-header-bar">
-        <div className="flex-1 flex items-center gap-4">
-          <h2 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
-            <Calculator className="h-4 w-4 text-primary" />
-            <span>POS TERMINAL</span>
+      <div className="pos-header-bar flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 p-3 bg-white dark:bg-darkbg-card rounded-xl border border-slate-200 dark:border-darkbg-border shadow-sm">
+        <div className="flex-1 flex items-center gap-2 sm:gap-3 min-w-0">
+          <h2 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white flex items-center gap-1.5 shrink-0">
+            <Calculator className="h-4 w-4 text-primary shrink-0" />
+            <span className="hidden sm:inline">POS TERMINAL</span>
+            <span className="sm:hidden">POS</span>
+            <span className="text-[10px] text-slate-400 font-semibold truncate max-w-[80px] sm:max-w-none">
+              ({getShortBranchName(currentBranch?.name)})
+            </span>
             <Badge variant={activeShift ? 'success' : 'danger'}>
-              {activeShift ? 'Shift Active' : 'Shift Closed'}
+              {activeShift ? 'Active' : 'Closed'}
             </Badge>
           </h2>
 
           {activeShift && (
-            <div className="hidden md:flex text-xs text-slate-500 dark:text-slate-400 gap-3 border-l pl-3 border-slate-200">
+            <div className="hidden lg:flex text-xs text-slate-500 dark:text-slate-400 gap-3 border-l pl-3 border-slate-200 dark:border-darkbg-border truncate">
               <span>Cashier: <strong>{activeShift.cashier_name}</strong></span>
               <span>Expected Cash: <strong>Tsh. {(activeShift.opening_float + activeShift.cash_sales + activeShift.cash_in - activeShift.cash_out).toLocaleString()}</strong></span>
             </div>
           )}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0 max-w-full">
           {activeShift ? (
             <>
               <Button size="xs" variant="secondary" onClick={() => setIsCashInOutModalOpen(true)}>
-                <ArrowLeftRight className="h-3 w-3 mr-1" /> Cash In/Out
+                <ArrowLeftRight className="h-3 w-3 sm:mr-1 shrink-0" /> <span className="hidden sm:inline">Cash In/Out</span>
               </Button>
               <Button size="xs" variant="secondary" onClick={() => setIsShiftCloseModalOpen(true)}>
-                Reconcile & Close Shift
+                <span className="hidden sm:inline">Reconcile & Close Shift</span>
+                <span className="sm:hidden">Close Shift</span>
               </Button>
             </>
           ) : (
             <Button size="xs" variant="primary" onClick={() => setIsShiftOpenModalOpen(true)}>
-              Open New Shift
+              Open Shift
             </Button>
           )}
           <Button size="xs" variant="secondary" onClick={() => setIsReturnsModalOpen(true)}>
-            Returns/Refunds
+            Refunds
           </Button>
           <Button size="xs" variant="secondary" onClick={() => setIsShiftHistoryDashboardOpen(true)}>
-            Shift Dashboard
+            Dashboard
           </Button>
           <Button size="xs" variant="secondary" onClick={() => setIsShortcutsHelpOpen(true)}>
             <HelpCircle className="h-3 w-3" />
@@ -1584,7 +1591,7 @@ export const POS: React.FC = () => {
       )}
 
         {/* Right side: Shopping Cart & checkout trigger */}
-        <div className="flex w-full flex-col border border-slate-200 bg-white rounded-xl shadow-sm dark:border-darkbg-border dark:bg-darkbg-card lg:w-96 overflow-hidden">
+        <div className={`flex w-full flex-col border border-slate-200 bg-white rounded-xl shadow-sm dark:border-darkbg-border dark:bg-darkbg-card lg:w-96 overflow-hidden ${isMobileCartOpen ? 'flex' : 'hidden lg:flex'}`}>
           <div className="flex items-center justify-between border-b border-slate-100 p-4 dark:border-darkbg-border/30">
             <div className="flex items-center space-x-2">
               <ShoppingCart className="h-4 w-4 text-primary" />
@@ -1853,6 +1860,56 @@ export const POS: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Floating Mobile Cart Bar */}
+      {cart.length > 0 && (
+        <div className="lg:hidden fixed bottom-4 left-4 right-4 z-40 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl flex items-center justify-between border border-slate-700 animate-in slide-in-from-bottom duration-200">
+          <div className="flex items-center space-x-3">
+            <div className="relative">
+              <ShoppingCart className="h-6 w-6 text-primary" />
+              <span className="absolute -top-2 -right-2 bg-primary text-white text-[10px] font-black h-4 w-4 rounded-full flex items-center justify-center">
+                {cart.reduce((sum, item) => sum + item.quantity, 0)}
+              </span>
+            </div>
+            <div>
+              <div className="text-xs font-black text-white">Tsh. {cartTotal.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400">
+                {cart.reduce((sum, item) => sum + item.quantity, 0)} item(s) in cart
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setIsMobileCartOpen(!isMobileCartOpen)}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold text-slate-200"
+            >
+              {isMobileCartOpen ? 'Hide' : 'View Cart'}
+            </button>
+            <button
+              onClick={() => {
+                if (!activeShift) {
+                  alert('Cannot process sale without an active shift. Please open a shift first.');
+                  setIsShiftOpenModalOpen(true);
+                  return;
+                }
+                if (!validateCartStock()) return;
+                setCashReceived(cartTotal);
+                setSplitAmounts({
+                  Cash: cartTotal,
+                  MobileMoney: 0,
+                  Card: 0,
+                  Bank: 0,
+                  StoreCredit: 0
+                });
+                setIsCheckoutOpen(true);
+              }}
+              className="px-4 py-1.5 bg-primary hover:bg-primary/90 text-white rounded-xl text-xs font-black shadow-lg active:scale-95 transition"
+            >
+              Checkout
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Held Carts resuming button display */}
       {heldCarts.length > 0 && (

@@ -655,12 +655,29 @@ interface ModuleContextType {
   toggleModuleState: (moduleKey: string) => void;
   enabledModules: IndustryModule[];
   isModuleEnabled: (moduleKey: string) => boolean;
+  isMobileSidebarOpen: boolean;
+  setIsMobileSidebarOpen: (open: boolean) => void;
 }
 
-const ModuleContext = createContext<ModuleContextType | undefined>(undefined);
+const defaultModuleContext: ModuleContextType = {
+  activeModule: 'Retail',
+  setActiveModule: () => {},
+  manifest: MODULE_MANIFESTS['Retail'],
+  activeTab: 'Dashboard',
+  setActiveTab: () => {},
+  moduleStates: {},
+  toggleModuleState: () => {},
+  enabledModules: Object.keys(MODULE_MANIFESTS) as IndustryModule[],
+  isModuleEnabled: () => true,
+  isMobileSidebarOpen: false,
+  setIsMobileSidebarOpen: () => {}
+};
+
+const ModuleContext = createContext<ModuleContextType>(defaultModuleContext);
 
 export const ModuleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeModule, setActiveModuleState] = useState<IndustryModule>('Retail');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('Dashboard');
 
   const [moduleStates, setModuleStates] = useState<Record<string, ModuleState>>(() => {
@@ -835,7 +852,9 @@ export const ModuleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       moduleStates,
       toggleModuleState,
       enabledModules,
-      isModuleEnabled
+      isModuleEnabled,
+      isMobileSidebarOpen,
+      setIsMobileSidebarOpen
     }}>
       {children}
     </ModuleContext.Provider>
@@ -844,8 +863,5 @@ export const ModuleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
 export const useModule = () => {
   const context = useContext(ModuleContext);
-  if (!context) {
-    throw new Error('useModule must be used within a ModuleProvider');
-  }
-  return context;
+  return context || defaultModuleContext;
 };

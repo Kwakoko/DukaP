@@ -12,8 +12,9 @@ import {
   Egg, Heart, Footprints, Activity, Database,
   Truck, ShoppingCart, ClipboardList, Receipt,
   Calendar, Clock, Target, MessageSquare,
-  GlassWater, UserCheck, Wallet
+  GlassWater, UserCheck, Wallet, X, LogOut, Sun, Moon, MapPin
 } from 'lucide-react';
+import { getShortModuleName, getShortBranchName } from '../../utils/mobileFormatters';
 
 interface SidebarProps {}
 
@@ -43,13 +44,18 @@ const superAdminSidebarItems: SidebarItem[] = [
 ];
 
 export const Sidebar: React.FC<SidebarProps> = () => {
-  const { manifest, activeTab, setActiveTab } = useModule();
-  const { role, isSuperAdminView, hasPermission, jwtClaims } = useAuth();
+  const { manifest, activeTab, setActiveTab, isMobileSidebarOpen, setIsMobileSidebarOpen } = useModule();
+  const { role, isSuperAdminView, hasPermission, jwtClaims, user, logout, currentBranch, toggleTheme, theme } = useAuth();
   
   // Track expanded parent menus
   const [expandedMenus, setExpandedMenus] = useState<Record<string, boolean>>({});
 
   const rawSidebarItems = isSuperAdminView ? superAdminSidebarItems : manifest.sidebar;
+
+  const userInitials = useMemo(() => {
+    if (!user?.name) return 'U';
+    return user.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
+  }, [user]);
 
   const hasSidebarItemPermission = (item: SidebarItem): boolean => {
     if (isSuperAdminView) return true;
@@ -247,6 +253,11 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     setExpandedMenus((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
+  const handleNavClick = (tabName: string) => {
+    setActiveTab(tabName);
+    setIsMobileSidebarOpen(false);
+  };
+
   // Icon mapping helper
   const getIcon = (name: string) => {
     const n = name.toLowerCase();
@@ -344,7 +355,7 @@ export const Sidebar: React.FC<SidebarProps> = () => {
       return (
         <button
           key={item}
-          onClick={() => setActiveTab(item)}
+          onClick={() => handleNavClick(item)}
           className={`flex w-full items-center space-x-3 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
             isActive
               ? 'bg-primary text-white shadow-sm dark:bg-primary-dark font-bold'
@@ -392,7 +403,7 @@ export const Sidebar: React.FC<SidebarProps> = () => {
               return (
                 <button
                   key={sub}
-                  onClick={() => setActiveTab(sub)}
+                  onClick={() => handleNavClick(sub)}
                   className={`flex w-full items-center space-x-2 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
                     isSubActive
                       ? 'text-primary font-bold bg-primary/5 dark:text-primary-dark dark:bg-primary-dark/10'
@@ -410,26 +421,102 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     );
   };
 
-  return (
-    <aside className="hidden h-[calc(100vh-4rem)] w-64 flex-col border-r border-slate-200 bg-white dark:border-darkbg-border dark:bg-darkbg-card md:flex shadow-sm shrink-0 overflow-hidden">
+  const navContent = (
+    <>
       {/* Module Title info */}
-      <div className="flex items-center space-x-2.5 border-b border-slate-100 p-4 dark:border-darkbg-border/30 shrink-0">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white p-0.5 shadow-sm border border-slate-200/70 dark:border-darkbg-border overflow-hidden shrink-0">
-          <img src="/dukapos-logo.png" alt="DukaPos Logo" className="h-full w-full object-contain" />
+      <div className="flex items-center justify-between border-b border-slate-100 p-4 dark:border-darkbg-border/30 shrink-0">
+        <div className="flex items-center space-x-2.5 min-w-0">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white p-0.5 shadow-sm border border-slate-200/70 dark:border-darkbg-border overflow-hidden shrink-0">
+            <img src="/dukapos-logo.png" alt="DukaPos Logo" className="h-full w-full object-contain" />
+          </div>
+          <div className="truncate">
+            <h2 className="text-xs font-black text-slate-900 dark:text-white truncate leading-tight">
+              {isSuperAdminView ? 'SaaS Control Plane' : getShortModuleName(manifest.name)}
+            </h2>
+            <p className="text-[10px] font-semibold text-slate-400 capitalize truncate mt-0.5">{role.toLowerCase()}</p>
+          </div>
         </div>
-        <div className="truncate">
-          <h2 className="text-xs font-black text-slate-900 dark:text-white truncate leading-tight">
-            {isSuperAdminView ? 'SaaS Control Plane' : manifest.name}
-          </h2>
-          <p className="text-[10px] font-semibold text-slate-400 capitalize truncate mt-0.5">{role.toLowerCase()}</p>
+        
+        {/* Mobile Close Button */}
+        <button
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          title="Close Navigation"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      {/* User Profile Card inside Mobile Sidebar */}
+      <div className="lg:hidden p-3 bg-slate-50 dark:bg-darkbg/60 rounded-xl border border-slate-200/60 dark:border-darkbg-border/60 mx-3 my-2 space-y-2 shrink-0">
+        <div className="flex items-center space-x-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-indigo-500 text-white font-black text-xs shadow-sm shrink-0">
+            {userInitials}
+          </div>
+          <div className="truncate flex-1">
+            <div className="font-bold text-slate-800 dark:text-white text-xs truncate">{user?.name || 'Operator'}</div>
+            <div className="text-[10px] text-slate-400 truncate">{user?.email || 'user@dukapos.com'}</div>
+          </div>
+        </div>
+        <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-slate-200/40 dark:border-darkbg-border/30">
+          <span className="font-bold px-2 py-0.5 rounded bg-primary/10 text-primary dark:bg-primary-dark/20 dark:text-primary-dark">
+            {user?.role || role}
+          </span>
+          <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1 font-semibold">
+            <MapPin className="h-3 w-3 text-slate-400" />
+            {getShortBranchName(currentBranch?.name)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between pt-1 border-t border-slate-200/40 dark:border-darkbg-border/30 text-xs">
+          <button
+            onClick={toggleTheme}
+            className="flex items-center space-x-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition py-1 px-2 rounded-lg bg-white dark:bg-darkbg border border-slate-200 dark:border-darkbg-border text-[11px] font-semibold"
+          >
+            <Sun className="h-3.5 w-3.5 dark:hidden text-amber-500" />
+            <Moon className="h-3.5 w-3.5 hidden dark:block text-indigo-400" />
+            <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+          </button>
+          <button
+            onClick={() => {
+              setIsMobileSidebarOpen(false);
+              logout();
+            }}
+            className="flex items-center space-x-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition py-1 px-2.5 rounded-lg text-[11px] font-bold"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span>Logout</span>
+          </button>
         </div>
       </div>
 
       {/* Dynamic Nav List Scrollable */}
-      <nav className="flex-1 space-y-1.5 px-3 py-4 overflow-y-auto scrollbar-thin">
+      <nav className="flex-1 space-y-1.5 px-3 py-3 overflow-y-auto scrollbar-thin">
         {sidebarItems.map((item) => renderSidebarItem(item))}
       </nav>
+    </>
+  );
 
-    </aside>
+  return (
+    <>
+      {/* Desktop Sidebar (hidden on mobile/tablet) */}
+      <aside className="hidden lg:flex h-[calc(100vh-4rem)] w-64 flex-col border-r border-slate-200 bg-white dark:border-darkbg-border dark:bg-darkbg-card shadow-sm shrink-0 overflow-hidden">
+        {navContent}
+      </aside>
+
+      {/* Mobile / Tablet Sliding Overlay Drawer Sidebar */}
+      {isMobileSidebarOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          {/* Backdrop Blur */}
+          <div 
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" 
+            onClick={() => setIsMobileSidebarOpen(false)} 
+          />
+          {/* Drawer Panel */}
+          <aside className="relative flex w-80 max-w-[85vw] flex-col bg-white dark:bg-darkbg-card shadow-2xl animate-in slide-in-from-left duration-200 z-50 h-full overflow-hidden">
+            {navContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 };

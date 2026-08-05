@@ -17,6 +17,7 @@ import { DemoDataEngine } from './DemoDataEngine';
 import { Subscriptions } from './Subscriptions';
 import { ProductionReadinessControl } from './ProductionReadinessControl';
 import { ReleaseCenter } from './ReleaseCenter';
+import { AppVersionFooter } from '../Layout/AppVersionFooter';
 import { cloudDb } from '../../db/supabaseMock';
 import { useLiveQuery } from 'dexie-react-hooks';
 
@@ -403,6 +404,8 @@ export const SuperAdmin: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      <AppVersionFooter className="mt-8" />
     </div>
   );
 };

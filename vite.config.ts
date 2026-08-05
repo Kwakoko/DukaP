@@ -8,139 +8,62 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const dbPath = path.resolve(__dirname, 'cloud_db.json')
+const dbExamplePath = path.resolve(__dirname, 'cloud_db.json.example')
 
-// Seed default data if database file does not exist or is empty
+
+// Bootstrap cloud_db.json from cloud_db.json.example if it does not exist.
+// cloud_db.json is gitignored — all development tenant data stays local only.
+// Production tenants must register through the app; they are never seeded here.
 function ensureDbSeeded() {
-  let dbExists = fs.existsSync(dbPath)
-  let needSeed = false
-  let db: any = { products: [], variants: [] }
-
+  const dbExists = fs.existsSync(dbPath)
   if (!dbExists) {
-    needSeed = true
-  } else {
-    try {
-      const content = fs.readFileSync(dbPath, 'utf-8').trim()
-      if (!content || content === '{}') {
-        needSeed = true
-      } else {
-        db = JSON.parse(content)
-        if (db.isProductionLocked) {
-          needSeed = false
-        } else if (!db.products || !db.tenants || !db.users) {
-          needSeed = true
-        }
+    // Auto-create from committed example template
+    if (fs.existsSync(dbExamplePath)) {
+      try {
+        const example = fs.readFileSync(dbExamplePath, 'utf-8')
+        const seed = JSON.parse(example)
+        // Stamp cleanedAt with current time so it's always fresh
+        seed.cleanedAt = Date.now()
+        delete seed._comment
+        fs.writeFileSync(dbPath, JSON.stringify(seed, null, 2), 'utf-8')
+        console.log('[DevServer] cloud_db.json bootstrapped from cloud_db.json.example (clean slate — no dev tenants).')
+      } catch (e) {
+        console.error('[DevServer] Failed to bootstrap cloud_db.json from example:', e)
       }
-    } catch (e) {
-      needSeed = true
+    } else {
+      // Fallback: write minimal clean state if example is also missing
+      const fallback = {
+        isProductionLocked: true,
+        cleanedAt: Date.now(),
+        tenants: [], branches: [], users: [
+          { id: 'usr-superadmin', email: 'admin@dukapos.com', password_hash: 'admin123',
+            is_super_admin: true, name: 'System Platform Owner', phone: '+255799999999',
+            tenant_id: 'tenant-admin-system', role: 'Super Admin', status: 'Active' }
+        ],
+        products: [], variants: [], orders: [], stockLedger: [], customers: [],
+        userBranchRoles: [], tenantModules: [], tenantSettings: [], featureFlags: [],
+        userSecurity: [{ user_id: 'usr-superadmin', pin_hash: '0000', failed_attempts: 0, two_factor_enabled: false }],
+        subscriptionPlans: [], subscriptions: [], auditLogs: []
+      }
+      fs.writeFileSync(dbPath, JSON.stringify(fallback, null, 2), 'utf-8')
+      console.log('[DevServer] cloud_db.json created with minimal fallback (Super Admin only).')
     }
+    return
   }
 
-  if (needSeed) {
-    const NOW = Date.now();
-
-    const cleanProductionDbData = {
-      isProductionLocked: true,
-      cleanedAt: NOW,
-      products: [],
-      variants: [],
-      tenants: [],
-      branches: [],
-      users: [
-        {
-          id: 'usr-superadmin',
-          email: 'admin@dukapos.com',
-          password_hash: 'admin123',
-          is_super_admin: true,
-          name: 'System Platform Owner',
-          phone: '+255799999999',
-          tenant_id: 'tenant-admin-system',
-          created_at: NOW
-        }
-      ],
-      userBranchRoles: [],
-      tenantModules: [],
-      tenantSettings: [],
-      featureFlags: [],
-      userSecurity: [
-        { user_id: 'usr-superadmin', pin_hash: '0000', failed_attempts: 0, two_factor_enabled: false }
-      ],
-      subscriptionPlans: [
-        {
-          id: 'plan-trial',
-          name: 'Free Trial',
-          code: 'TRIAL',
-          description: '14-day full platform access trial for new business evaluation.',
-          price: 0,
-          currency: 'TZS',
-          billing_cycle: 'monthly',
-          max_users: 2,
-          max_branches: 1,
-          max_products: 100,
-          max_storage_mb: 100,
-          is_trial: true,
-          is_active: true,
-          created_at: NOW,
-          updated_at: NOW
-        },
-        {
-          id: 'plan-starter',
-          name: 'Starter Plan',
-          code: 'STARTER',
-          description: 'For small single-shop businesses looking to start digitization.',
-          price: 12000,
-          currency: 'TZS',
-          billing_cycle: 'monthly',
-          max_users: 3,
-          max_branches: 1,
-          max_products: 1000,
-          max_storage_mb: 500,
-          is_trial: false,
-          is_active: true,
-          created_at: NOW,
-          updated_at: NOW
-        },
-        {
-          id: 'plan-business',
-          name: 'Business Plan',
-          code: 'BUSINESS',
-          description: 'Perfect for retail stores with multiple branches and staff teams.',
-          price: 16000,
-          currency: 'TZS',
-          billing_cycle: 'monthly',
-          max_users: 10,
-          max_branches: 5,
-          max_products: 50000,
-          max_storage_mb: 2000,
-          is_trial: false,
-          is_active: true,
-          created_at: NOW,
-          updated_at: NOW
-        },
-        {
-          id: 'plan-enterprise',
-          name: 'Enterprise Plan',
-          code: 'ENTERPRISE',
-          description: 'Custom setups, infinite scale, and offline micro-service sync.',
-          price: 30000,
-          currency: 'TZS',
-          billing_cycle: 'monthly',
-          max_users: 9999,
-          max_branches: 9999,
-          max_products: 999999,
-          max_storage_mb: 50000,
-          is_trial: false,
-          is_active: true,
-          created_at: NOW,
-          updated_at: NOW
-        }
-      ],
-      subscriptions: [],
-      auditLogs: []
-    };
-    fs.writeFileSync(dbPath, JSON.stringify(cleanProductionDbData, null, 2), 'utf-8');
-    console.log('[DevServer API] Initialized pristine production cloud_db.json (0 demo data).');
+  // Validate existing db is not corrupted
+  try {
+    const content = fs.readFileSync(dbPath, 'utf-8').trim()
+    if (!content || content === '{}') {
+      // Corrupt or empty — remove and let next call recreate
+      fs.unlinkSync(dbPath)
+      console.warn('[DevServer] cloud_db.json was empty/corrupt — deleted. Will recreate on next request.')
+    }
+  } catch (e) {
+    // ignore read errors
   }
 }
+
 
 // Helper to read database
 function readDb() {

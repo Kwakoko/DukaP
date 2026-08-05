@@ -5,7 +5,7 @@ import { useSyncState } from '../../context/SyncContext';
 import { 
   Search, Sun, Moon, Wifi, WifiOff, RefreshCw, 
   ChevronDown, User, Layers, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
-  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check
+  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check, Menu
 } from 'lucide-react';
 import { db, safeGet } from '../../db/dexie';
 import { supabase } from '../../db/supabaseClient';
@@ -13,6 +13,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { Dialog, Button } from '../UI/custom-ui';
 
 import { tenantIdentifierService } from '../../services/tenantIdentifierService';
+import { getShortModuleName, getShortBranchName } from '../../utils/mobileFormatters';
 
 interface TopBarProps {
   onOpenSearch: () => void;
@@ -34,7 +35,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     currentIndustry,
     switchContext
   } = useAuth();
-  const { activeModule, setActiveModule } = useModule();
+  const { activeModule, setActiveModule, isMobileSidebarOpen, setIsMobileSidebarOpen } = useModule();
   const { isOnline, isSyncing, syncProgress, pendingCount, toggleOfflineSimulation, syncLogs, syncData } = useSyncState();
 
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
@@ -524,10 +525,19 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       
 
 
-      <header className="sticky top-0 z-40 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white/80 px-6 backdrop-blur-md dark:border-darkbg-border dark:bg-darkbg-card/85">
-        {/* Brand Logo & Title */}
-        <div className="flex items-center space-x-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white p-0.5 shadow-md border border-slate-200/80 dark:border-darkbg-border overflow-hidden shrink-0">
+      <header className="sticky top-0 z-40 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white/80 px-4 sm:px-6 backdrop-blur-md dark:border-darkbg-border dark:bg-darkbg-card/85">
+        {/* Brand Logo & Title with Mobile Hamburger Toggle */}
+        <div className="flex items-center space-x-2 sm:space-x-3">
+          <button
+            onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+            className="lg:hidden p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition border border-slate-200/60 dark:border-darkbg-border shrink-0"
+            title="Toggle Sidebar Menu"
+            aria-label="Toggle Sidebar Menu"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+
+          <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-white p-0.5 shadow-md border border-slate-200/80 dark:border-darkbg-border overflow-hidden shrink-0">
             <img src="/dukapos-logo.png" alt="DukaPos Logo" className="h-full w-full object-contain" />
           </div>
           <div className="hidden sm:block">
@@ -549,7 +559,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
         </div>
 
         {/* Right Actions */}
-        <div className="flex items-center space-x-2 sm:space-x-4">
+        <div className="flex items-center space-x-1.5 sm:space-x-3">
           {/* Industry Module Selector (Hidden in Super Admin View) */}
           {!isSuperAdminView && (
             displayedModules.length > 1 ? (
@@ -560,11 +570,12 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                     setShowBranchDropdown(false);
                     setShowSyncDropdown(false);
                   }}
-                  className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  className="flex items-center space-x-1 sm:space-x-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
                 >
-                  <Layers className="h-3.5 w-3.5 text-slate-400" />
-                  <span className="hidden sm:inline">Module: {MODULE_MANIFESTS[activeModule]?.name || activeModule}</span>
-                  <ChevronDown className="h-3 w-3" />
+                  <Layers className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                  <span className="hidden sm:inline">Module: {getShortModuleName(activeModule)}</span>
+                  <span className="sm:hidden font-bold">{getShortModuleName(activeModule)}</span>
+                  <ChevronDown className="h-3 w-3 shrink-0" />
                 </button>
                 
                 {showModuleDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowModuleDropdown(false)} />}
@@ -620,9 +631,9 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 )}
               </div>
             ) : (
-              <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-3 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
+              <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-2.5 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
                 <Layers className="h-3.5 w-3.5 text-slate-400" />
-                <span>{MODULE_MANIFESTS[activeModule]?.name || activeModule}</span>
+                <span>{getShortModuleName(activeModule)}</span>
               </div>
             )
           )}
@@ -642,11 +653,12 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                   setShowModuleDropdown(false);
                   setShowSyncDropdown(false);
                 }}
-                className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm"
+                className="flex items-center space-x-1 sm:space-x-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm"
               >
-                <MapPin className="h-3.5 w-3.5 text-slate-400" />
-                <span className="hidden lg:inline">{currentBranch.name} ({currentIndustry?.name || 'Retail'})</span>
-                <ChevronDown className="h-3 w-3" />
+                <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                <span className="hidden lg:inline">{currentBranch.name} ({getShortModuleName(currentIndustry?.name || 'Retail')})</span>
+                <span className="lg:hidden">{getShortBranchName(currentBranch.name)}</span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
               </button>
               
               {showBranchDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowBranchDropdown(false)} />}
@@ -672,7 +684,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                       <div className="flex items-center justify-between w-full">
                         <span className="truncate">{ctx.branchName}</span>
                         <span className="text-[8px] font-bold bg-slate-100 dark:bg-darkbg px-1.5 py-0.5 rounded text-slate-500 shrink-0 font-mono">
-                          {ctx.industryName}
+                          {getShortModuleName(ctx.industryName)}
                         </span>
                       </div>
                       <span className="text-[9px] text-slate-400 mt-0.5">{ctx.role}</span>
@@ -682,9 +694,10 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
               )}
             </div>
           ) : (
-            <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-3 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
-              <MapPin className="h-3.5 w-3.5 text-slate-400" />
-              <span>{currentBranch.name} ({currentIndustry?.name || 'Retail'})</span>
+            <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-2.5 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
+              <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+              <span className="hidden sm:inline">{currentBranch.name} ({getShortModuleName(currentIndustry?.name || 'Retail')})</span>
+              <span className="sm:hidden">{getShortBranchName(currentBranch.name)}</span>
             </div>
           )}
 

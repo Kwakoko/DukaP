@@ -27,6 +27,7 @@ import {
 } from '../../services/settingsService';
 import { Subscriptions } from './Subscriptions';
 import { BusinessProfile } from './BusinessProfile';
+import { AppVersionFooter } from '../Layout/AppVersionFooter';
 
 export const Settings: React.FC<{ initialTab?: string }> = ({ initialTab }) => {
   const { currentTenant, currentBranch, role, branches, user } = useAuth();
@@ -1554,6 +1555,8 @@ const UserManualSection: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <AppVersionFooter className="mt-8" />
     </div>
   );
 };

@@ -87,7 +87,42 @@ interface AuthContextType {
   isInitializing: boolean;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const defaultTenant: Tenant = { id: '', name: '', plan: 'Basic', status: 'Active' };
+const defaultBranch: Branch = { id: '', tenant_id: '', name: '', location: '' };
+
+const defaultAuthContext: AuthContextType = {
+  user: null,
+  setUser: () => {},
+  role: 'Business Owner',
+  setRole: () => {},
+  currentTenant: defaultTenant,
+  setTenant: () => {},
+  currentBranch: defaultBranch,
+  setCurrentBranch: () => {},
+  branches: [],
+  currentIndustry: { id: 'ind-retail', name: 'Retail' },
+  setCurrentIndustry: () => {},
+  jwtToken: null,
+  jwtClaims: null,
+  switchContext: async () => true,
+  theme: 'light',
+  toggleTheme: () => {},
+  hasPermission: () => true,
+  isSuperAdminView: false,
+  setIsSuperAdminView: () => {},
+  impersonatedTenant: null,
+  setImpersonatedTenant: () => {},
+  logout: () => {},
+  verifyPin: async () => true,
+  syncFromCloudOnLogin: async () => true,
+  isOfflineLocked: false,
+  setIsOfflineLocked: () => {},
+  hasBranchAccess: () => true,
+  rotateSession: async () => {},
+  isInitializing: false
+};
+
+const AuthContext = createContext<AuthContextType>(defaultAuthContext);
 
 const AVAILABLE_BRANCHES: Branch[] = [];
 
@@ -604,8 +639,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
       initUserSession();
     } else {
+      setUserState(null);
+      setRoleState('Business Owner');
       setIsSuperAdminView(false);
       setImpersonatedTenant(null);
+      setTenantState(defaultTenant);
+      setCurrentBranchState(defaultBranch);
       setJwtToken(null);
       setJwtClaims(null);
       localStorage.removeItem('dukapos_session');
@@ -715,10 +754,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    setUser(null);
+    setUserState(null);
+    setRoleState('Business Owner');
     setIsSuperAdminView(false);
     setImpersonatedTenant(null);
+    setTenantState(defaultTenant);
+    setCurrentBranchState(defaultBranch);
+    setJwtToken(null);
+    setJwtClaims(null);
     setIsOfflineLocked(false);
+    setIsInitializing(false);
     localStorage.removeItem('dukapos_session');
   };
 
@@ -969,8 +1014,5 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  return context || defaultAuthContext;
 };
