@@ -77,8 +77,14 @@ const validateVrn = (vrn?: string): { valid: boolean; text: string; color: strin
 
 const SuppliersTab: React.FC = () => {
   const { currentTenant, currentBranch } = useAuth();
-  const suppliers = useLiveQuery(() => db.suppliers.where('tenant_id').equals(currentTenant.id).toArray()) || [];
-  const contacts = useLiveQuery(() => db.supplierContacts.where('tenant_id').equals(currentTenant.id).toArray()) || [];
+  const suppliers = useLiveQuery(
+    () => currentTenant?.id ? db.suppliers.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
+  const contacts = useLiveQuery(
+    () => currentTenant?.id ? db.supplierContacts.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
 
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -711,10 +717,22 @@ const SuppliersTab: React.FC = () => {
 
 const PurchaseOrdersTab: React.FC<{ onViewGRNRequest: (po: PurchaseOrder) => void }> = ({ onViewGRNRequest }) => {
   const { currentTenant, currentBranch } = useAuth();
-  const allPOs = useLiveQuery(() => db.purchaseOrders.where('tenant_id').equals(currentTenant.id).toArray()) || [];
-  const suppliers = useLiveQuery(() => db.suppliers.where('tenant_id').equals(currentTenant.id).toArray()) || [];
-  const products = useLiveQuery(() => db.products.where('tenant_id').equals(currentTenant.id).toArray()) || [];
-  const variants = useLiveQuery(() => db.productVariants.where('tenant_id').equals(currentTenant.id).toArray()) || [];
+  const allPOs = useLiveQuery(
+    () => currentTenant?.id ? db.purchaseOrders.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
+  const suppliers = useLiveQuery(
+    () => currentTenant?.id ? db.suppliers.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
+  const products = useLiveQuery(
+    () => currentTenant?.id ? db.products.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
+  const variants = useLiveQuery(
+    () => currentTenant?.id ? db.productVariants.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
@@ -1668,7 +1686,10 @@ const GoodsReceivingTab: React.FC<{
 
 const PaymentsLedgerTab: React.FC = () => {
   const { currentTenant, currentBranch } = useAuth();
-  const suppliers = useLiveQuery(() => db.suppliers.where('tenant_id').equals(currentTenant.id).toArray()) || [];
+  const suppliers = useLiveQuery(
+    () => currentTenant?.id ? db.suppliers.where('tenant_id').equals(currentTenant.id).toArray() : [],
+    [currentTenant?.id]
+  ) || [];
   const invoices = useLiveQuery(() => db.supplierInvoices.where('tenant_id').equals(currentTenant.id).toArray()) || [];
   const payments = useLiveQuery(() => db.supplierPayments.where('tenant_id').equals(currentTenant.id).toArray()) || [];
   const ledger = useLiveQuery(() => db.supplierLedger.where('tenant_id').equals(currentTenant.id).toArray()) || [];

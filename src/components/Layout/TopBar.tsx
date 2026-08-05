@@ -254,11 +254,19 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const lowStockStatus = useLiveQuery(async () => {
     // GUARD: Never show tenant notifications in Super Admin workspace
     if (isSuperAdminView || !currentBranch?.id || !currentTenant?.id) return { variants: [], products: [], totalCount: 0 };
-    
-    // Low stock variants (stock < reorderLevel)
+
+    // Fetch all active (non-deleted) products for this tenant/branch — used to
+    // cross-check variants so deleted products don't pollute stock alerts.
+    const activeProducts = await db.products
+      .where('tenant_id').equals(currentTenant.id)
+      .and(p => p.branch_id === currentBranch.id && !p.deletedAt && p.status !== 'Inactive')
+      .toArray();
+    const activeProductIds = new Set(activeProducts.map(p => p.id));
+
+    // Low stock variants (stock < reorderLevel) — only for active parent products
     const variants = await db.productVariants
       .where('tenant_id').equals(currentTenant.id)
-      .and(v => v.branch_id === currentBranch.id)
+      .and(v => v.branch_id === currentBranch.id && activeProductIds.has(v.productId))
       .toArray();
     const lowVariantsRaw = variants.filter(v => v.stock < (v.reorderLevel ?? 5));
 
@@ -269,12 +277,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       return { ...v, displayName };
     }));
 
-    // Low stock products without variants (stock < 10)
-    const products = await db.products
-      .where('tenant_id').equals(currentTenant.id)
-      .and(p => p.branch_id === currentBranch.id && !p.hasVariants)
-      .toArray();
-    const lowProducts = products.filter(p => p.stock < 10);
+    // Low stock simple products without variants (stock < 10) — active only
+    const lowProducts = activeProducts.filter(p => !p.hasVariants && p.stock < 10);
 
     return {
       variants: lowVariantsWithNames,

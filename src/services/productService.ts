@@ -363,6 +363,17 @@ export class ProductService {
     const mappedLocal = mapProductToLocal(deletedProd);
     await db.products.put(mappedLocal);
 
+    // CASCADE: Hard-delete all product variants so stock alerts don't show
+    // stale entries for products the user has already removed.
+    const variantsToDelete = await db.productVariants.where('productId').equals(id).toArray();
+    for (const v of variantsToDelete) {
+      await db.productVariants.delete(v.id);
+      // Also clean up associated stock balance rows
+      await db.stockBalance.where('variant_id').equals(v.id).delete();
+    }
+    // Clean orphaned stock balance rows for the product itself (simple products)
+    await db.stockBalance.where('product_id').equals(id).delete();
+
     await db.securityAuditLogs.put({
       id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
       tenant_id: user.tenant_id,
@@ -370,7 +381,7 @@ export class ProductService {
       user_id: user.id,
       action: 'PRODUCT_DELETED',
       created_at: now,
-      details: `Soft deleted product '${existing.name}' (${id})`,
+      details: `Soft deleted product '${existing.name}' (${id}), cascade-removed ${variantsToDelete.length} variant(s)`,
     } as any);
 
     await db.syncQueue.add({
@@ -408,6 +419,13 @@ export class ProductService {
 
     for (const cp of cloudProducts) {
       if (cp.deletedAt || (cp as any).deleted_at || (cp as any).status === 'Inactive') {
+        // Cascade-delete variants before removing the product record
+        const orphanVariants = await db.productVariants.where('productId').equals(cp.id).toArray();
+        for (const v of orphanVariants) {
+          await db.productVariants.delete(v.id);
+          await db.stockBalance.where('variant_id').equals(v.id).delete();
+        }
+        await db.stockBalance.where('product_id').equals(cp.id).delete();
         await db.products.delete(cp.id);
         continue;
       }
