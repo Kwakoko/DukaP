@@ -446,10 +446,10 @@ export function useSync() {
     isSimulatedRef.current = true;
 
     if (nextState) {
-      addLog('SIMULATION: Online mode activated.');
+      addLog('NETWORK: Online mode manually activated.');
       setTimeout(() => syncData(true), 200);
     } else {
-      addLog('SIMULATION: Offline mode activated.');
+      addLog('NETWORK: Offline mode manually activated.');
     }
   };
 

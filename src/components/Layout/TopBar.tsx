@@ -732,7 +732,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                     onClick={toggleOfflineSimulation}
                     className="rounded bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-200 dark:bg-darkbg-border dark:text-slate-300"
                   >
-                    Simulate {isOnline ? 'Offline' : 'Online'}
+                    Switch to {isOnline ? 'Offline' : 'Online'}
                   </button>
                 </div>
                 

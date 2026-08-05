@@ -143,7 +143,7 @@ export const SyncDashboard: React.FC = () => {
             className="text-xs font-bold flex items-center gap-1.5"
           >
             <Globe className="h-4 w-4 text-emerald-500" />
-            {isOnline ? 'Simulate Offline' : 'Simulate Online'}
+            {isOnline ? 'Switch to Offline' : 'Switch to Online'}
           </Button>
 
           <Button
