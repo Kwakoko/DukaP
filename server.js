@@ -722,19 +722,15 @@ const server = http.createServer(async (req, res) => {
       // 17. GET /api/sync (Master Incremental Sync from Neon PostgreSQL)
       if (pathname === '/api/sync' && req.method === 'GET') {
         const since = parseInt(fullUrl.searchParams.get('since') || '0', 10);
-        const targetTenant = tenantId || fullUrl.searchParams.get('tenantId') || '';
-
-        if (!targetTenant) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'Missing tenantId parameter for sync' }));
-          return;
-        }
+        const sinceVersion = parseInt(fullUrl.searchParams.get('sinceVersion') || '0', 10);
+        const targetTenant = tenantId || fullUrl.searchParams.get('tenantId') || 'tenant-101';
+        const filterSince = Math.max(since, sinceVersion);
 
         const [prods, vars, cats, brds, ledger, brs, settings, modules, flags, devList] = await Promise.all([
           sql`SELECT * FROM products WHERE tenant_id = ${targetTenant} AND (updated_at > ${since} OR created_at > ${since})`,
           sql`SELECT * FROM product_variants WHERE tenant_id = ${targetTenant} AND (updated_at > ${since} OR created_at > ${since})`,
-          sql`SELECT * FROM categories WHERE tenant_id = ${targetTenant}`,
-          sql`SELECT * FROM brands WHERE tenant_id = ${targetTenant}`,
+          sql`SELECT * FROM categories WHERE tenant_id = ${targetTenant} AND (updated_at > ${filterSince} OR created_at > ${filterSince} OR sync_version > ${sinceVersion})`,
+          sql`SELECT * FROM brands WHERE tenant_id = ${targetTenant} AND (updated_at > ${filterSince} OR created_at > ${filterSince} OR sync_version > ${sinceVersion})`,
           sql`SELECT * FROM stock_ledger WHERE tenant_id = ${targetTenant} AND created_at > ${since}`,
           sql`SELECT * FROM branches WHERE tenant_id = ${targetTenant}`,
           sql`SELECT * FROM tenant_settings WHERE tenant_id = ${targetTenant}`,
@@ -761,6 +757,26 @@ const server = http.createServer(async (req, res) => {
             userDevices: devList
           }
         }));
+        return;
+      }
+
+      // 17.1 GET /api/sync/categories (Incremental Categories Sync Endpoint)
+      if (pathname === '/api/sync/categories' && req.method === 'GET') {
+        const sinceVersion = parseInt(fullUrl.searchParams.get('sinceVersion') || '0', 10);
+        const targetTenant = tenantId || fullUrl.searchParams.get('tenantId') || 'tenant-101';
+        const serverCategories = await sql`SELECT * FROM categories WHERE tenant_id = ${targetTenant} AND (sync_version > ${sinceVersion} OR updated_at > ${sinceVersion} OR ${sinceVersion} = 0)`;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, serverCategories }));
+        return;
+      }
+
+      // 17.2 GET /api/sync/brands (Incremental Brands Sync Endpoint)
+      if (pathname === '/api/sync/brands' && req.method === 'GET') {
+        const sinceVersion = parseInt(fullUrl.searchParams.get('sinceVersion') || '0', 10);
+        const targetTenant = tenantId || fullUrl.searchParams.get('tenantId') || 'tenant-101';
+        const serverBrands = await sql`SELECT * FROM brands WHERE tenant_id = ${targetTenant} AND (sync_version > ${sinceVersion} OR updated_at > ${sinceVersion} OR ${sinceVersion} = 0)`;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, serverBrands }));
         return;
       }
 
