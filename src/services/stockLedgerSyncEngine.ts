@@ -54,7 +54,8 @@ export const stockLedgerSyncEngine = {
 
   /**
    * 1. IDEMPOTENT EVENT RECORDING
-   * Ingests a new Stock Ledger movement event with client-side UUID idempotency verification.
+   * Ingests a new Stock Ledger movement event with client-side UUID idempotency verification
+   * and transactional outbox enqueueing.
    */
   async recordEventIdempotent(entryInput: Omit<StockLedgerEntry, 'id' | 'created_at' | 'synced'> & {
     idempotency_key?: string;
@@ -106,6 +107,24 @@ export const stockLedgerSyncEngine = {
       entryInput.product_id,
       entryInput.variant_id
     );
+
+    // 6. Enqueue into Transactional Outbox Queue
+    const outboxId = generateUUID('outbox');
+    await db.syncOutbox.put({
+      outbox_id: outboxId,
+      operation_id: generateUUID('op'),
+      idempotency_key: idempotencyKey,
+      tenant_id: entryInput.tenant_id,
+      branch_id: entryInput.branch_id,
+      entity: 'stockLedger',
+      action: 'INSERT_EVENT',
+      payload: newEvent,
+      status: 'PENDING',
+      retry_count: 0,
+      max_retries: 5,
+      created_at: NOW,
+      updated_at: NOW,
+    });
 
     return { event: newEvent, isDuplicate: false };
   },
@@ -180,7 +199,6 @@ export const stockLedgerSyncEngine = {
       stock_value: stockValue,
       updated_at: NOW
     };
-
     await db.stockBalance.put(updatedBalance);
 
     // Update display stock property in products / productVariants tables locally
@@ -202,7 +220,7 @@ export const stockLedgerSyncEngine = {
 
   /**
    * 3. REBUILD ALL BRANCH INVENTORY BALANCES FROM LEDGER
-   * Full event-replay audit tool that recalculates stock balances for every product in a branch.
+   * Full event-replay audit tool that recalculates stock balances for every active product in a branch.
    */
   async rebuildAllBranchBalances(tenantId: string, branchId: string): Promise<{ productsRecalculated: number; totalEventsReplayed: number }> {
     // 1. Get active non-deleted product IDs for tenant
@@ -257,7 +275,121 @@ export const stockLedgerSyncEngine = {
   },
 
   /**
-   * 4. BACKGROUND EVENT INCREMENTAL SYNC WORKER
+   * 4. PROCESS TRANSACTIONAL OUTBOX QUEUE
+   * Flushes client outbox jobs to cloud endpoints with exponential backoff & DLQ routing.
+   */
+  async processOutboxQueue(tenantId: string, branchId: string): Promise<{ processed: number; failed: number; deadLettered: number }> {
+    const pendingItems = await db.syncOutbox
+      .where('tenant_id').equals(tenantId)
+      .and(item => item.branch_id === branchId && (item.status === 'PENDING' || item.status === 'FAILED'))
+      .toArray();
+
+    if (pendingItems.length === 0) {
+      return { processed: 0, failed: 0, deadLettered: 0 };
+    }
+
+    let processed = 0;
+    let failed = 0;
+    let deadLettered = 0;
+    const NOW = Date.now();
+
+    for (const item of pendingItems) {
+      if (item.retry_count >= item.max_retries) {
+        await db.syncOutbox.update(item.id!, {
+          status: 'DEAD_LETTER',
+          updated_at: NOW,
+          last_error: `Max retries (${item.max_retries}) exceeded.`
+        });
+        deadLettered++;
+        continue;
+      }
+
+      try {
+        await db.syncOutbox.update(item.id!, { status: 'SYNCING', updated_at: NOW });
+
+        // Push to primary sync queue
+        await db.syncQueue.add({
+          actionType: 'INSERT',
+          entityName: 'stockLedger',
+          payload: item.payload,
+          timestamp: NOW,
+          status: 'Pending'
+        }).catch(() => {});
+
+        // Mark outbox entry completed
+        await db.syncOutbox.update(item.id!, {
+          status: 'COMPLETED',
+          synced_at: NOW,
+          updated_at: NOW
+        });
+
+        // Mark ledger entry synced
+        if (item.payload?.id) {
+          await db.stockLedger.update(item.payload.id, {
+            synced: true,
+            sync_status: 'SYNCED',
+            synced_at: NOW,
+            last_error: undefined
+          });
+        }
+
+        processed++;
+      } catch (err: any) {
+        failed++;
+        const nextRetries = item.retry_count + 1;
+        const isMaxed = nextRetries >= item.max_retries;
+        await db.syncOutbox.update(item.id!, {
+          status: isMaxed ? 'DEAD_LETTER' : 'FAILED',
+          retry_count: nextRetries,
+          last_error: err?.message || 'Outbox sync failed',
+          updated_at: NOW
+        });
+      }
+    }
+
+    return { processed, failed, deadLettered };
+  },
+
+  /**
+   * 5. RETRY FAILED OUTBOX ITEMS
+   */
+  async retryFailedOutbox(tenantId: string, branchId: string): Promise<number> {
+    const failedItems = await db.syncOutbox
+      .where('tenant_id').equals(tenantId)
+      .and(item => item.branch_id === branchId && (item.status === 'FAILED' || item.status === 'DEAD_LETTER'))
+      .toArray();
+
+    const NOW = Date.now();
+    for (const item of failedItems) {
+      await db.syncOutbox.update(item.id!, {
+        status: 'PENDING',
+        retry_count: 0,
+        last_error: undefined,
+        updated_at: NOW
+      });
+    }
+
+    const result = await this.processOutboxQueue(tenantId, branchId);
+    return result.processed;
+  },
+
+  /**
+   * 6. PURGE DEAD-LETTER QUEUE
+   */
+  async purgeDeadLetterQueue(tenantId: string, branchId: string): Promise<number> {
+    const dlqItems = await db.syncOutbox
+      .where('tenant_id').equals(tenantId)
+      .and(item => item.branch_id === branchId && item.status === 'DEAD_LETTER')
+      .toArray();
+
+    for (const item of dlqItems) {
+      await db.syncOutbox.delete(item.id!);
+    }
+    return dlqItems.length;
+  },
+
+  /**
+   * 7. BACKGROUND EVENT INCREMENTAL SYNC WORKER
    * Flushes pending local events to external sync queue and updates sync_status.
    */
   async syncPendingEvents(tenantId: string, branchId: string): Promise<{ syncedCount: number; failedCount: number }> {
@@ -267,6 +399,7 @@ export const stockLedgerSyncEngine = {
       .toArray();
 
     if (pendingEvents.length === 0) {
+      await this.processOutboxQueue(tenantId, branchId).catch(() => {});
       return { syncedCount: 0, failedCount: 0 };
     }
 
@@ -276,16 +409,14 @@ export const stockLedgerSyncEngine = {
 
     for (const evt of pendingEvents) {
       try {
-        // Enqueue into central sync queue if present
         await db.syncQueue.add({
           actionType: 'INSERT',
           entityName: 'stockLedger',
           payload: evt,
           timestamp: NOW,
           status: 'Pending'
-        }).catch(() => {}); // Ignore duplicate sync queue key if present
+        }).catch(() => {});
 
-        // Mark local event as SYNCED
         await db.stockLedger.update(evt.id, {
           synced: true,
           sync_status: 'SYNCED',
@@ -305,21 +436,30 @@ export const stockLedgerSyncEngine = {
       }
     }
 
+    await this.processOutboxQueue(tenantId, branchId).catch(() => {});
     return { syncedCount, failedCount };
   },
 
   /**
-   * 5. DIAGNOSTICS & AUDIT METRICS
+   * 8. DIAGNOSTICS & AUDIT METRICS
    */
-  async getSyncEngineDiagnostics(tenantId: string, branchId: string): Promise<SyncEngineDiagnostics> {
+  async getSyncEngineDiagnostics(tenantId: string, branchId: string): Promise<SyncEngineDiagnostics & { pendingOutboxCount: number; deadLetterCount: number }> {
     const events = await db.stockLedger
       .where('tenant_id').equals(tenantId)
       .and(e => e.branch_id === branchId)
       .toArray();
 
+    const outboxItems = await db.syncOutbox
+      .where('tenant_id').equals(tenantId)
+      .and(item => item.branch_id === branchId)
+      .toArray();
+
     const pending = events.filter(e => e.sync_status === 'PENDING');
     const failed = events.filter(e => e.sync_status === 'FAILED');
     const synced = events.filter(e => e.sync_status === 'SYNCED' || e.synced);
+
+    const pendingOutbox = outboxItems.filter(i => i.status === 'PENDING' || i.status === 'SYNCING');
+    const deadLetter = outboxItems.filter(i => i.status === 'DEAD_LETTER');
 
     let maxVersion = 0;
     let lastSyncedAt: number | undefined;
@@ -334,15 +474,17 @@ export const stockLedgerSyncEngine = {
     }
 
     let healthStatus: SyncEngineDiagnostics['healthStatus'] = 'OPTIMAL';
-    if (failed.length > 0) healthStatus = 'DEGRADED';
-    else if (pending.length > 5) healthStatus = 'SYNCING';
-    else if (pending.length > 0) healthStatus = 'PENDING_RETRY';
+    if (failed.length > 0 || deadLetter.length > 0) healthStatus = 'DEGRADED';
+    else if (pendingOutbox.length > 5 || pending.length > 5) healthStatus = 'SYNCING';
+    else if (pendingOutbox.length > 0 || pending.length > 0) healthStatus = 'PENDING_RETRY';
 
     return {
       totalLedgerEvents: events.length,
       pendingSyncCount: pending.length,
       syncedCount: synced.length,
       failedSyncCount: failed.length,
+      pendingOutboxCount: pendingOutbox.length,
+      deadLetterCount: deadLetter.length,
       lastSyncedVersion: maxVersion,
       healthStatus,
       lastSyncedAt

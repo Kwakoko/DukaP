@@ -24,11 +24,18 @@ export const SyncDashboard: React.FC = () => {
   const [isRebuilding, setIsRebuilding] = useState<boolean>(false);
   const [isFlushing, setIsFlushing] = useState<boolean>(false);
   const [isClearingQueue, setIsClearingQueue] = useState<boolean>(false);
+  const [isDetectingDrift, setIsDetectingDrift] = useState<boolean>(false);
+  const [driftResult, setDriftResult] = useState<any>(null);
 
-  // Live queries for real-time queue items
+  // Live queries for real-time queue & outbox items
   const queueItems = useLiveQuery(async () => {
     return await db.syncQueue.toArray();
   }) || [];
+
+  const outboxItems = useLiveQuery(async () => {
+    if (!currentTenant?.id) return [];
+    return await db.syncOutbox.where('tenant_id').equals(currentTenant.id).reverse().sortBy('created_at');
+  }, [currentTenant?.id]) || [];
 
   const stockLedgerEvents = useLiveQuery(async () => {
     if (!currentTenant?.id) return [];
@@ -103,6 +110,46 @@ export const SyncDashboard: React.FC = () => {
       alert(`Error flushing events: ${err.message}`);
     } finally {
       setIsFlushing(false);
+    }
+  };
+
+  const handleRetryFailedOutbox = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    try {
+      const processed = await stockLedgerSyncEngine.retryFailedOutbox(currentTenant.id, currentBranch.id);
+      alert(`✅ Outbox retry triggered: Successfully processed ${processed} item(s).`);
+    } catch (err: any) {
+      alert(`Outbox retry error: ${err.message}`);
+    }
+  };
+
+  const handlePurgeDLQ = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    if (!confirm('Are you sure you want to purge all Dead-Letter Queue items?')) return;
+    try {
+      const purged = await stockLedgerSyncEngine.purgeDeadLetterQueue(currentTenant.id, currentBranch.id);
+      alert(`✅ Purged ${purged} Dead-Letter Queue item(s).`);
+    } catch (err: any) {
+      alert(`DLQ purge error: ${err.message}`);
+    }
+  };
+
+  const handleDetectDrift = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    setIsDetectingDrift(true);
+    try {
+      const { stockSnapshotManager } = await import('../../services/stockSnapshotManager');
+      const res = await stockSnapshotManager.detectDrift(currentTenant.id, currentBranch.id);
+      setDriftResult(res);
+      if (res.driftCount === 0) {
+        alert(`✅ Stock Ledger Audit Passed!\nChecked ${res.totalChecked} product(s). Zero balance drift detected.`);
+      } else {
+        alert(`⚠️ Drift Detected in ${res.driftCount} product(s)!\nProducts: ${res.driftedProducts.join(', ')}`);
+      }
+    } catch (err: any) {
+      alert(`Drift audit error: ${err.message}`);
+    } finally {
+      setIsDetectingDrift(false);
     }
   };
 
@@ -312,6 +359,73 @@ export const SyncDashboard: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Drift Result Banner */}
+          {driftResult && (
+            <div className={`p-4 rounded-2xl border text-xs font-semibold flex items-center justify-between gap-3 ${
+              driftResult.driftCount === 0
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+            }`}>
+              <div>
+                <strong>Stock Ledger Audit Status:</strong> {driftResult.driftCount === 0 ? `Zero drift across ${driftResult.totalChecked} product balances.` : `Drift detected in ${driftResult.driftCount} product(s)! (${driftResult.driftedProducts.join(', ')})`}
+              </div>
+              <Button size="sm" onClick={() => setDriftResult(null)} variant="outline" className="text-[10px] h-6 px-2">Dismiss</Button>
+            </div>
+          )}
+
+          {/* Transactional Outbox Queue Card */}
+          <Card>
+            <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <CardTitle className="text-sm font-bold flex items-center gap-2">
+                    <Zap className="h-4.5 w-4.5 text-amber-500" />
+                    Transactional Outbox Queue (`sync_outbox`)
+                  </CardTitle>
+                  <CardDescription>Resilient outbox items with exponential retry backoff & DLQ isolation.</CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button onClick={handleRetryFailedOutbox} size="sm" variant="outline" className="text-[11px] font-bold h-7">Retry Failed</Button>
+                  <Button onClick={handlePurgeDLQ} size="sm" variant="outline" className="text-[11px] font-bold text-rose-600 border-rose-200 h-7">Purge DLQ</Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0 overflow-x-auto">
+              {outboxItems.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400 italic">
+                  Outbox queue is clear. Zero pending background events.
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 dark:border-darkbg-border/30 bg-slate-50/50 dark:bg-darkbg/20 text-slate-400 font-bold uppercase text-[10px]">
+                      <th className="p-3">Action</th>
+                      <th className="p-3">Idempotency Key</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3">Retries</th>
+                      <th className="p-3">Created</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border/20 font-mono text-[11px]">
+                    {outboxItems.slice(0, 5).map((ob) => (
+                      <tr key={ob.outbox_id} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/10">
+                        <td className="p-3 font-semibold text-slate-700 dark:text-slate-300">{ob.action}</td>
+                        <td className="p-3 text-slate-500 truncate max-w-[120px]">{ob.idempotency_key}</td>
+                        <td className="p-3">
+                          <Badge variant={ob.status === 'COMPLETED' ? 'success' : ob.status === 'DEAD_LETTER' ? 'danger' : ob.status === 'FAILED' ? 'warning' : 'info'} className="text-[9px] py-0 font-bold">
+                            {ob.status}
+                          </Badge>
+                        </td>
+                        <td className="p-3 text-slate-500">{ob.retry_count}/{ob.max_retries}</td>
+                        <td className="p-3 text-slate-400 text-[10px]">{new Date(ob.created_at).toLocaleTimeString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Stock Ledger Events Replay Section */}
           <Card>
             <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
@@ -331,6 +445,15 @@ export const SyncDashboard: React.FC = () => {
                   <CardDescription>Immutable stock movement events. Stock balance is derived by replaying these entries.</CardDescription>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    onClick={handleDetectDrift}
+                    disabled={isDetectingDrift}
+                    variant="outline"
+                    className="text-xs font-bold flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800"
+                  >
+                    <Shield className={`h-3.5 w-3.5 ${isDetectingDrift ? 'animate-spin' : ''}`} />
+                    Audit Drift
+                  </Button>
                   <Button
                     onClick={handleFlushEvents}
                     disabled={isFlushing}

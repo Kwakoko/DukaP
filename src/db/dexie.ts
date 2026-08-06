@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import type { SyncOutboxItem } from '../types/stockSync';
 
 // Interfaces for our database entities
 export interface Product {
@@ -1821,6 +1822,7 @@ class DukaPosDatabase extends Dexie {
   userBranchRoles!: Table<UserBranchRole>;
   stockLedger!: Table<StockLedgerEntry>;
   stockBalance!: Table<ProductBranchStock>;
+  syncOutbox!: Table<SyncOutboxItem>;
   tenantModules!: Table<TenantModule>;
   tenantSettings!: Table<TenantSetting>;
   appSettings!: Table<AppSetting>;
@@ -2639,6 +2641,11 @@ class DukaPosDatabase extends Dexie {
       receiptQrCodes: 'id, receipt_id, receipt_number, tenant_id',
       receiptSignatures: 'id, receipt_id, receipt_number, tenant_id',
       receiptNumberSequences: 'id, tenant_id, branch_id, date_key',
+    });
+
+    // Version 33: Enterprise Stock Sync Engine Transactional Outbox Schema
+    this.version(33).stores({
+      syncOutbox: '++id, outbox_id, operation_id, idempotency_key, tenant_id, branch_id, status, created_at'
     });
 
     const tablesWithOrigin = [
