@@ -706,9 +706,11 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const [prods, vars, ledger, brs, settings, modules, flags, devList] = await Promise.all([
+        const [prods, vars, cats, brds, ledger, brs, settings, modules, flags, devList] = await Promise.all([
           sql`SELECT * FROM products WHERE tenant_id = ${targetTenant} AND (updated_at > ${since} OR created_at > ${since})`,
           sql`SELECT * FROM product_variants WHERE tenant_id = ${targetTenant} AND (updated_at > ${since} OR created_at > ${since})`,
+          sql`SELECT * FROM categories WHERE tenant_id = ${targetTenant}`,
+          sql`SELECT * FROM brands WHERE tenant_id = ${targetTenant}`,
           sql`SELECT * FROM stock_ledger WHERE tenant_id = ${targetTenant} AND created_at > ${since}`,
           sql`SELECT * FROM branches WHERE tenant_id = ${targetTenant}`,
           sql`SELECT * FROM tenant_settings WHERE tenant_id = ${targetTenant}`,
@@ -725,6 +727,8 @@ const server = http.createServer(async (req, res) => {
           changes: {
             products: prods,
             productVariants: vars,
+            categories: cats,
+            brands: brds,
             stockLedger: ledger,
             branches: brs,
             tenantSettings: settings,

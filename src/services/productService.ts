@@ -218,6 +218,24 @@ export class ProductService {
     const mappedLocal = mapProductToLocal(newProd);
     await saveProductAndVariants(mappedLocal, []);
 
+    // Auto-seed Category if new
+    if (newProd.category && newProd.category.trim()) {
+      const trimmedCat = newProd.category.trim();
+      const existingCat = await db.categories.where('tenant_id').equals(tenantId).filter(c => c.name === trimmedCat).first();
+      if (!existingCat) {
+        await createCategory({ name: trimmedCat, tenant_id: tenantId }).catch(() => {});
+      }
+    }
+
+    // Auto-seed Brand if new
+    if (newProd.brand && newProd.brand.trim()) {
+      const trimmedBrand = newProd.brand.trim();
+      const existingBrand = await db.brands.where('tenant_id').equals(tenantId).filter(b => b.name === trimmedBrand).first();
+      if (!existingBrand) {
+        await createBrand({ name: trimmedBrand, tenant_id: tenantId }).catch(() => {});
+      }
+    }
+
     const rawQueued = await db.syncQueue
       .where('entityName').equals('products')
       .and(item => item.payload?.id === newProd.id && item.status === 'Pending')

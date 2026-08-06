@@ -194,6 +194,17 @@ export function useSync() {
         }
       }
 
+      // 3.5. Ingest Brands
+      if (Array.isArray(changes.brands)) {
+        for (const brand of changes.brands) {
+          if (brand.deletedAt || brand.deleted_at || brand.is_deleted) {
+            await db.brands.delete(brand.id);
+            continue;
+          }
+          await db.brands.put({ ...brand, syncStatus: 'SYNCED' } as any);
+        }
+      }
+
       // 4. Ingest Customers
       if (Array.isArray(changes.customers)) {
         for (const sc of changes.customers) {
