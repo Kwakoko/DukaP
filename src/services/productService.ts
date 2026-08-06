@@ -834,6 +834,7 @@ export async function createCategory(
   await db.syncQueue.add({
     actionType: 'CREATE',
     entityName: 'categories',
+    tenant_id: tid,
     payload: category,
     timestamp: Date.now(),
     status: 'Pending',
@@ -848,6 +849,7 @@ export async function updateCategory(id: string, updates: Partial<Category>): Pr
     await db.syncQueue.add({
       actionType: 'UPDATE',
       entityName: 'categories',
+      tenant_id: updated.tenant_id,
       payload: updated,
       timestamp: Date.now(),
       status: 'Pending',
@@ -862,6 +864,7 @@ export async function deleteCategory(id: string): Promise<void> {
     await db.syncQueue.add({
       actionType: 'DELETE',
       entityName: 'categories',
+      tenant_id: existing.tenant_id,
       payload: { id, tenant_id: existing.tenant_id },
       timestamp: Date.now(),
       status: 'Pending',
@@ -918,6 +921,7 @@ export async function createBrand(
   await db.syncQueue.add({
     actionType: 'CREATE',
     entityName: 'brands',
+    tenant_id: tid,
     payload: brand,
     timestamp: Date.now(),
     status: 'Pending',
@@ -932,6 +936,7 @@ export async function updateBrand(id: string, updates: Partial<Brand>): Promise<
     await db.syncQueue.add({
       actionType: 'UPDATE',
       entityName: 'brands',
+      tenant_id: updated.tenant_id,
       payload: updated,
       timestamp: Date.now(),
       status: 'Pending',
@@ -946,6 +951,7 @@ export async function deleteBrand(id: string): Promise<void> {
     await db.syncQueue.add({
       actionType: 'DELETE',
       entityName: 'brands',
+      tenant_id: existing.tenant_id,
       payload: { id, tenant_id: existing.tenant_id },
       timestamp: Date.now(),
       status: 'Pending',

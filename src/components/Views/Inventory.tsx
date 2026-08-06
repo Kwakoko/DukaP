@@ -3554,12 +3554,12 @@ export const Inventory: React.FC = () => {
                   <select
                     className="inv-input h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
                     value={pBrand}
-                    onChange={e => {
+                    onChange={async e => {
                       if (e.target.value === '__ADD_NEW__') {
                         const name = prompt('Enter new Brand name:');
                         if (name && name.trim()) {
                           const bName = name.trim();
-                          createBrand({ name: bName, tenant_id: currentTenant.id });
+                          await createBrand({ name: bName, tenant_id: currentTenant.id });
                           setPBrand(bName);
                         }
                       } else {

@@ -778,6 +778,8 @@ const server = http.createServer(async (req, res) => {
           const recordId = payload.id || op.entity_id;
           const action = op.operation || op.actionType || 'UPDATE';
 
+          const opTenant = payload.tenant_id || payload.tenantId || op.tenant_id || body.tenantId || tenantId || 'tenant-101';
+
           if (!recordId) continue;
 
           if (entity === 'products') {
@@ -786,7 +788,7 @@ const server = http.createServer(async (req, res) => {
             } else {
               await sql`
                 INSERT INTO products (id, tenant_id, branch_id, name, category, category_id, sku, barcode, buying_price, selling_price, price, cost_price, stock, module, has_variants, origin, status, created_at, updated_at, version)
-                VALUES (${recordId}, ${tenantId}, ${payload.branch_id || ''}, ${payload.name || 'Product'}, ${payload.category || 'General'}, ${payload.category_id || ''}, ${payload.sku || ''}, ${payload.barcode || ''}, ${payload.buyingPrice || payload.buying_price || 0}, ${payload.sellingPrice || payload.selling_price || 0}, ${payload.price || 0}, ${payload.costPrice || payload.cost_price || 0}, ${payload.stock || 0}, ${payload.module || 'Retail'}, ${payload.hasVariants || false}, ${payload.origin || 'PRODUCTION'}, ${payload.status || 'Active'}, ${payload.createdAt || payload.created_at || now}, ${now}, ${payload.version || 1})
+                VALUES (${recordId}, ${opTenant}, ${payload.branch_id || ''}, ${payload.name || 'Product'}, ${payload.category || 'General'}, ${payload.category_id || ''}, ${payload.sku || ''}, ${payload.barcode || ''}, ${payload.buyingPrice || payload.buying_price || 0}, ${payload.sellingPrice || payload.selling_price || 0}, ${payload.price || 0}, ${payload.costPrice || payload.cost_price || 0}, ${payload.stock || 0}, ${payload.module || 'Retail'}, ${payload.hasVariants || false}, ${payload.origin || 'PRODUCTION'}, ${payload.status || 'Active'}, ${payload.createdAt || payload.created_at || now}, ${now}, ${payload.version || 1})
                 ON CONFLICT (id) DO UPDATE SET
                   name = EXCLUDED.name,
                   stock = EXCLUDED.stock,
@@ -803,7 +805,7 @@ const server = http.createServer(async (req, res) => {
             } else {
               await sql`
                 INSERT INTO product_variants (id, tenant_id, branch_id, product_id, sku, barcode, attributes, buying_price, selling_price, stock, status, created_at, updated_at)
-                VALUES (${recordId}, ${tenantId}, ${payload.branch_id || ''}, ${payload.productId || payload.product_id || ''}, ${payload.sku || ''}, ${payload.barcode || ''}, ${JSON.stringify(payload.attributes || {})}, ${payload.buyingPrice || payload.buying_price || 0}, ${payload.sellingPrice || payload.selling_price || 0}, ${payload.stock || 0}, ${payload.status || 'Active'}, ${payload.createdAt || payload.created_at || now}, ${now})
+                VALUES (${recordId}, ${opTenant}, ${payload.branch_id || ''}, ${payload.productId || payload.product_id || ''}, ${payload.sku || ''}, ${payload.barcode || ''}, ${JSON.stringify(payload.attributes || {})}, ${payload.buyingPrice || payload.buying_price || 0}, ${payload.sellingPrice || payload.selling_price || 0}, ${payload.stock || 0}, ${payload.status || 'Active'}, ${payload.createdAt || payload.created_at || now}, ${now})
                 ON CONFLICT (id) DO UPDATE SET
                   stock = EXCLUDED.stock,
                   selling_price = EXCLUDED.selling_price,
@@ -820,7 +822,7 @@ const server = http.createServer(async (req, res) => {
                 INSERT INTO categories (id, tenant_id, branch_id, name, code, description, color, icon, status, created_by, updated_by, created_at, updated_at, sync_version, sync_status, parent_id)
                 VALUES (
                   ${recordId},
-                  ${tenantId},
+                  ${opTenant},
                   ${payload.branch_id || null},
                   ${payload.name || ''},
                   ${payload.code || ''},
@@ -853,7 +855,7 @@ const server = http.createServer(async (req, res) => {
                 INSERT INTO brands (id, tenant_id, branch_id, name, code, description, color, icon, status, created_by, updated_by, created_at, updated_at, sync_version, sync_status)
                 VALUES (
                   ${recordId},
-                  ${tenantId},
+                  ${opTenant},
                   ${payload.branch_id || null},
                   ${payload.name || ''},
                   ${payload.code || ''},
