@@ -344,10 +344,34 @@ export class ProductService {
   }
 
   // ─── Soft Delete Product ───────────────────────────────────────────────────
+  // ─── Sales History Detection ───────────────────────────────────────────────
+  static async checkSalesHistory(productId: string): Promise<{ hasSales: boolean; salesCount: number }> {
+    const ledgerCount = await db.stockLedger
+      .where('product_id').equals(productId)
+      .and(l => l.movement_type === 'SALE' || l.movement_type === 'RETURN')
+      .count();
+
+    if (ledgerCount > 0) {
+      return { hasSales: true, salesCount: ledgerCount };
+    }
+
+    const orders = await db.orders.toArray();
+    let orderSalesCount = 0;
+    for (const o of orders) {
+      if (o.items && o.items.some((i: any) => i.product_id === productId || i.product?.id === productId)) {
+        orderSalesCount++;
+      }
+    }
+
+    return { hasSales: orderSalesCount > 0, salesCount: orderSalesCount };
+  }
+
+  // ─── Production-Grade Product Deletion Engine ──────────────────────────────
   static async deleteProduct(
     id: string,
     user: UserContext,
-    _isOnline: boolean
+    _isOnline: boolean,
+    options?: { permanent?: boolean; archive?: boolean }
   ): Promise<boolean> {
     const existing = await db.products.get(id);
     if (!existing) return false;
@@ -357,64 +381,114 @@ export class ProductService {
     }
 
     if (!validateProductPermission('delete', user.role)) {
-      throw new Error(`Permission Denied: User role '${user.role}' cannot delete products.`);
+      throw new Error(`You do not have permission to delete products.`);
     }
 
     const now = Date.now();
 
-    const deletedProd: Product = {
-      ...existing,
-      deletedAt: now,
-      status: 'Inactive',
-      syncStatus: 'PENDING',
-      version: (existing.version || 1) + 1,
-      updatedAt: now,
-    };
+    // 1. ARCHIVE MODE (Soft Delete / Status Change)
+    if (options?.archive && !options?.permanent) {
+      const archivedProd: Product = {
+        ...existing,
+        status: 'Inactive',
+        updatedAt: now,
+        syncStatus: 'PENDING',
+        version: (existing.version || 1) + 1,
+      };
+      await db.products.put(mapProductToLocal(archivedProd));
+      await db.securityAuditLogs.put({
+        id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
+        tenant_id: user.tenant_id,
+        branch_id: user.branch_id,
+        user_id: user.id,
+        action: 'PRODUCT_ARCHIVED',
+        created_at: now,
+        details: `Archived product '${existing.name}' (${id})`,
+      } as any);
 
-    const mappedLocal = mapProductToLocal(deletedProd);
-    await db.products.put(mappedLocal);
-
-    // CASCADE: Hard-delete all product variants so stock alerts don't show
-    // stale entries for products the user has already removed.
-    const variantsToDelete = await db.productVariants.where('productId').equals(id).toArray();
-    for (const v of variantsToDelete) {
-      await db.productVariants.delete(v.id);
-      // Also clean up associated stock balance rows
-      await db.stockBalance.where('variant_id').equals(v.id).delete();
+      await db.syncQueue.add({
+        actionType: 'UPDATE',
+        entityName: 'products',
+        payload: mapProductToCloud(archivedProd),
+        timestamp: now,
+        status: 'Pending',
+      });
+      return true;
     }
-    // Clean orphaned stock balance rows for the product itself (simple products)
-    await db.stockBalance.where('product_id').equals(id).delete();
 
-    await db.securityAuditLogs.put({
-      id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
-      tenant_id: user.tenant_id,
-      branch_id: user.branch_id,
-      user_id: user.id,
-      action: 'PRODUCT_DELETED',
-      created_at: now,
-      details: `Soft deleted product '${existing.name}' (${id}), cascade-removed ${variantsToDelete.length} variant(s)`,
-    } as any);
+    // 2. PERMANENT TRANSACTIONAL DELETION (ACID Global Wipe)
+    const variants = await db.productVariants.where('productId').equals(id).toArray();
+    const variantIds = variants.map(v => v.id);
 
-    await db.syncQueue.add({
-      actionType: 'DELETE',
-      entityName: 'products',
-      payload: mapProductToCloud(deletedProd),
-      timestamp: now,
-      status: 'Pending',
+    await db.transaction('rw', [
+      db.products,
+      db.productVariants,
+      db.stockLedger,
+      db.stockBalance,
+      db.batchLots,
+      db.serialNumbers,
+      db.reorderRules,
+      db.heldCarts,
+      db.syncQueue,
+      db.securityAuditLogs
+    ], async () => {
+      // a. Cascade Delete Variants
+      for (const vId of variantIds) {
+        await db.productVariants.delete(vId);
+        await db.stockBalance.where('variant_id').equals(vId).delete();
+        await db.stockLedger.where('variant_id').equals(vId).delete();
+        await db.batchLots.where('variant_id').equals(vId).delete();
+        await db.serialNumbers.where('variant_id').equals(vId).delete();
+      }
+
+      // b. Cascade Delete Parent Product Inventory & Specs
+      await db.stockBalance.where('product_id').equals(id).delete();
+      await db.stockLedger.where('product_id').equals(id).delete();
+      await db.batchLots.where('product_id').equals(id).delete();
+      await db.serialNumbers.where('product_id').equals(id).delete();
+      await db.reorderRules.where('product_id').equals(id).delete();
+
+      // c. Clean from open / held carts
+      const heldCarts = await db.heldCarts.toArray();
+      for (const hc of heldCarts) {
+        if (hc.items && hc.items.length > 0) {
+          const cleanedItems = hc.items.filter((item: any) => item.product?.id !== id && item.product_id !== id);
+          if (cleanedItems.length !== hc.items.length) {
+            if (cleanedItems.length === 0) {
+              await db.heldCarts.delete(hc.id);
+            } else {
+              await db.heldCarts.update(hc.id, { items: cleanedItems });
+            }
+          }
+        }
+      }
+
+      // d. Delete Parent Product Row
+      await db.products.delete(id);
+
+      // e. Immutable Security Audit Log
+      await db.securityAuditLogs.put({
+        id: `aud-${now}-${Math.random().toString(36).substring(2, 9)}`,
+        tenant_id: user.tenant_id,
+        branch_id: user.branch_id,
+        user_id: user.id,
+        action: 'DELETE_PRODUCT',
+        created_at: now,
+        details: `Permanently deleted product '${existing.name}' (${id}) and ${variants.length} variant(s)`,
+      } as any);
+
+      // f. Sync Queue Event
+      await db.syncQueue.add({
+        actionType: 'DELETE',
+        entityName: 'products',
+        payload: { id, tenant_id: user.tenant_id, deletedAt: now, deletedBy: user.id },
+        timestamp: now,
+        status: 'Pending',
+      });
     });
 
-    attemptDirectCloudWrite('UPDATE', mapProductToCloud(deletedProd), user.tenant_id, user.id)
-      .then(success => {
-        if (success) {
-          db.products.update(deletedProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any).catch(() => {});
-          db.syncQueue
-            .where('entityName').equals('products')
-            .and(item => item.payload?.id === deletedProd.id && item.status === 'Pending')
-            .delete()
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+    // 3. Direct Server Cloud Write (Fire-and-forget server sync)
+    attemptDirectCloudWrite('DELETE', { id }, user.tenant_id, user.id).catch(() => {});
 
     return true;
   }

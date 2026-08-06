@@ -972,6 +972,11 @@ export const Inventory: React.FC = () => {
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [deleteHasSalesHistory, setDeleteHasSalesHistory] = useState(false);
+  const [deleteSalesCount, setDeleteSalesCount] = useState(0);
+  const [deleteModeChoice, setDeleteModeChoice] = useState<'archive' | 'permanent'>('archive');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteToastMessage, setDeleteToastMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [editorTab, setEditorTab] = useState<ProductTab>('general');
@@ -3118,15 +3123,44 @@ export const Inventory: React.FC = () => {
     }
   };
 
+  const openDeleteConfirmation = async (product: Product) => {
+    setProductToDelete(product);
+    try {
+      const historyInfo = await ProductService.checkSalesHistory(product.id);
+      setDeleteHasSalesHistory(historyInfo.hasSales);
+      setDeleteSalesCount(historyInfo.salesCount);
+      setDeleteModeChoice(historyInfo.hasSales ? 'archive' : 'permanent');
+    } catch {
+      setDeleteHasSalesHistory(false);
+      setDeleteSalesCount(0);
+      setDeleteModeChoice('permanent');
+    }
+    setIsDeleteConfirmOpen(true);
+  };
+
   const handleDeleteProduct = async () => {
     if (!productToDelete) return;
+    setIsDeleting(true);
     try {
       const ctx = { id: user?.id || 'usr-anon', tenant_id: currentTenant.id, branch_id: currentBranch.id, role: user?.role || 'Business Owner', name: user?.name || 'User' };
-      await ProductService.deleteProduct(productToDelete.id, ctx, isOnline);
-      await db.productVariants.where('productId').equals(productToDelete.id).delete();
+      const isPermanent = deleteModeChoice === 'permanent';
+      const isArchive = deleteModeChoice === 'archive';
+
+      await ProductService.deleteProduct(productToDelete.id, ctx, isOnline, {
+        permanent: isPermanent,
+        archive: isArchive
+      });
+
+      const msg = isArchive
+        ? `Product archived successfully. ${productToDelete.name} has been set to inactive.`
+        : `Product deleted successfully. ${productToDelete.name} has been permanently removed.`;
+
+      setDeleteToastMessage(msg);
+      setTimeout(() => setDeleteToastMessage(''), 5000);
     } catch (err: any) {
-      alert('Error deleting product: ' + err.message);
+      alert('Error: ' + err.message);
     } finally {
+      setIsDeleting(false);
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
     }
@@ -3267,7 +3301,7 @@ export const Inventory: React.FC = () => {
                 <button onClick={() => openLedgerDrilldown(p)} title="View Stock Ledger" className="inv-icon-btn view" style={{ color: '#6366f1' }}><Eye size={14}/></button>
                 <button onClick={() => openAdjustment(p)} title="Adjust Stock" className="inv-icon-btn adjust"><Sliders size={14}/></button>
                 {canEdit && (
-                  <button onClick={() => { setProductToDelete(p); setIsDeleteConfirmOpen(true); }} title="Delete" className="inv-icon-btn delete"><Trash2 size={14}/></button>
+                  <button onClick={() => openDeleteConfirmation(p)} title="Delete" className="inv-icon-btn delete"><Trash2 size={14}/></button>
                 )}
               </div>
             </div>
@@ -6748,6 +6782,85 @@ export const Inventory: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Toast Notification */}
+      {deleteToastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4">
+          <CheckCircle2 className="h-5 w-5 text-emerald-400 dark:text-emerald-600 flex-shrink-0" />
+          <span className="text-xs font-semibold">{deleteToastMessage}</span>
+        </div>
+      )}
+
+      {/* Production-Grade Delete Confirmation Dialog */}
+      <Dialog isOpen={isDeleteConfirmOpen} onClose={() => !isDeleting && setIsDeleteConfirmOpen(false)} title="Delete Product" size="lg">
+        <div className="p-4 space-y-4">
+          <div className="border-b pb-3 dark:border-slate-700">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-red-500 flex-shrink-0" /> {productToDelete?.name}
+            </h3>
+            <p className="text-xs text-red-600 dark:text-red-400 font-semibold mt-1">This action cannot be undone.</p>
+          </div>
+
+          <div className="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-lg border border-slate-200 dark:border-slate-700">
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">The following will be removed:</p>
+            <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Product Information</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Variants</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Stock Records</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Price History</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Images & Barcodes</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Supplier Links</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Inventory Ledger</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Sync Queue</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Search Index</div>
+              <div className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Offline Cache</div>
+            </div>
+          </div>
+
+          {deleteHasSalesHistory && (
+            <div className="bg-amber-50 border border-amber-200 dark:bg-amber-950/40 dark:border-amber-800 p-3.5 rounded-lg space-y-2">
+              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0" /> This product has {deleteSalesCount} historical sales record(s).
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">Choose deletion mode:</p>
+              <div className="space-y-2 pl-1">
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="deleteChoice"
+                    value="archive"
+                    checked={deleteModeChoice === 'archive'}
+                    onChange={() => setDeleteModeChoice('archive')}
+                  />
+                  <span>Archive Product (Recommended)</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="deleteChoice"
+                    value="permanent"
+                    checked={deleteModeChoice === 'permanent'}
+                    onChange={() => setDeleteModeChoice('permanent')}
+                  />
+                  <span>Permanently Delete Product and Historical References</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t dark:border-slate-700">
+            <Button variant="outline" onClick={() => setIsDeleteConfirmOpen(false)} disabled={isDeleting}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleDeleteProduct}
+              disabled={isDeleting}
+            >
+              {isDeleting ? 'Deleting...' : deleteModeChoice === 'archive' ? 'Archive Product' : 'Delete Forever'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 };

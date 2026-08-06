@@ -768,6 +768,19 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // 19. DELETE /api/products/:id
+      if (pathname.startsWith('/api/products/') && req.method === 'DELETE') {
+        const prodId = pathname.replace('/api/products/', '');
+        if (prodId) {
+          console.log(`[Neon Backend] Permanently deleting product ${prodId} and variants from PostgreSQL...`);
+          await sql`DELETE FROM product_variants WHERE product_id = ${prodId}`;
+          await sql`DELETE FROM products WHERE id = ${prodId}`;
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, id: prodId, message: 'Product and variants deleted from Neon PostgreSQL' }));
+          return;
+        }
+      }
+
       // Generic 404 for unrecognized API routes
       res.writeHead(404);
       res.end(JSON.stringify({ error: `API endpoint ${pathname} not found on Neon backend` }));
