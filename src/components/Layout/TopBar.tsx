@@ -530,15 +530,16 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
 
       <header className="sticky top-0 z-40 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white/80 px-4 sm:px-6 backdrop-blur-md dark:border-darkbg-border dark:bg-darkbg-card/85">
-        {/* Brand Logo & Title with Mobile Hamburger Toggle */}
+        {/* Top Left Brand Logo & Mobile Hamburger Sidebar Toggle */}
         <div className="flex items-center space-x-2 sm:space-x-3">
           <button
+            type="button"
             onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-            className="lg:hidden p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition border border-slate-200/60 dark:border-darkbg-border shrink-0"
-            title="Toggle Sidebar Menu"
-            aria-label="Toggle Sidebar Menu"
+            className="lg:hidden flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-white hover:bg-indigo-50 dark:hover:bg-indigo-950/60 hover:text-indigo-600 dark:hover:text-indigo-400 transition border border-slate-200/80 dark:border-darkbg-border shadow-xs active:scale-95 cursor-pointer shrink-0"
+            title="Toggle Navigation Menu"
+            aria-label="Toggle Navigation Menu"
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="h-5 w-5 stroke-[2.5]" />
           </button>
 
           <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-white p-0.5 shadow-md border border-slate-200/80 dark:border-darkbg-border overflow-hidden shrink-0">
