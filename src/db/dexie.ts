@@ -2940,8 +2940,12 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
   const activeVariants = variants.filter(v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt);
 
   if (parent.hasVariants || variants.length > 0) {
-    // 1. Calculate Aggregate Stock across active variants
+    // 1. Calculate Aggregate Stock & Variant Metrics across active variants
     const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+    const reservedStock = activeVariants.reduce((sum, v) => sum + (v.reservedStock || (v as any).reserved_stock || 0), 0);
+    const availableQty = Math.max(0, totalStock - reservedStock);
+    const lowStockVariantCount = activeVariants.filter(v => (v.stock || 0) <= (v.reorderLevel ?? 5)).length;
+
     const reorderLevel = parent.reorderLevel ?? 10;
     const stockStatus =
       totalStock === 0
@@ -2982,7 +2986,10 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
     (updatedProd as any).minPrice = minPrice;
     (updatedProd as any).maxPrice = maxPrice;
     (updatedProd as any).priceRange = priceRange;
-    (updatedProd as any).availableQty = totalStock;
+    (updatedProd as any).reservedStock = reservedStock;
+    (updatedProd as any).availableQty = availableQty;
+    (updatedProd as any).variantCount = variants.length;
+    (updatedProd as any).lowStockVariantCount = lowStockVariantCount;
     (updatedProd as any).inStock = totalStock > 0;
     (updatedProd as any).stockStatus = stockStatus;
 

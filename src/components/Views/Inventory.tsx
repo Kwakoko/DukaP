@@ -45,7 +45,7 @@ export function generateAutoSku(name?: string, category?: string, idOrSeed?: str
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 type InventoryTab = 'dashboard' | 'products' | 'categories' | 'stockSync' | 'ledger' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
-type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'batch' | 'serials' | 'reorder' | 'history';
+export type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'images' | 'suppliers' | 'batch' | 'serials' | 'reorder' | 'history';
 type ReportType = 'balance' | 'movements' | 'valuation' | 'batch' | 'expiry' | 'reorder' | 'slow' | 'negative';
 
 const PRODUCT_TABS: { id: ProductTab; label: string; icon: React.ReactNode }[] = [
@@ -53,6 +53,8 @@ const PRODUCT_TABS: { id: ProductTab; label: string; icon: React.ReactNode }[] =
   { id: 'pricing',   label: 'Pricing',   icon: <Tag className="h-3.5 w-3.5" /> },
   { id: 'inventory', label: 'Inventory', icon: <BarChart3 className="h-3.5 w-3.5" /> },
   { id: 'variants',  label: 'Variants',  icon: <Layers className="h-3.5 w-3.5" /> },
+  { id: 'images',    label: 'Images',    icon: <Camera className="h-3.5 w-3.5" /> },
+  { id: 'suppliers', label: 'Suppliers', icon: <Truck className="h-3.5 w-3.5" /> },
   { id: 'batch',     label: 'Batch/Lot', icon: <Archive className="h-3.5 w-3.5" /> },
   { id: 'serials',   label: 'Serials',   icon: <Hash className="h-3.5 w-3.5" /> },
   { id: 'reorder',   label: 'Reorder',   icon: <Target className="h-3.5 w-3.5" /> },
@@ -1082,6 +1084,22 @@ export const Inventory: React.FC = () => {
   const [newAttrName, setNewAttrName] = useState('');
   const [newAttrValues, setNewAttrValues] = useState('');
   const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
+
+  // Variant Hub Search & Filter & Bulk Action States
+  const [variantSearch, setVariantSearch] = useState('');
+  const [variantStatusFilter, setVariantStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [isBulkPriceModalOpen, setIsBulkPriceModalOpen] = useState(false);
+  const [bulkPriceBuyingInput, setBulkPriceBuyingInput] = useState<string>('');
+  const [bulkPriceSellingInput, setBulkPriceSellingInput] = useState<string>('');
+  const [isBulkStockModalOpen, setIsBulkStockModalOpen] = useState(false);
+  const [bulkStockInput, setBulkStockInput] = useState<string>('');
+  const [bulkReorderInput, setBulkReorderInput] = useState<string>('');
+
+  // Image Gallery & Supplier Extended Specs States
+  const [productGalleryImages, setProductGalleryImages] = useState<string[]>([]);
+  const [supplierSku, setSupplierSku] = useState('');
+  const [supplierLeadTimeDays, setSupplierLeadTimeDays] = useState(7);
+  const [supplierPurchaseCost, setSupplierPurchaseCost] = useState(0);
 
   // Batch/Lot form
   const [batchNum, setBatchNum] = useState('');
@@ -3745,48 +3763,104 @@ export const Inventory: React.FC = () => {
 
             {/* Inventory Tab */}
             {editorTab === 'inventory' && (
-              <div className="inv-form-grid">
-                {pHasVariants ? (
-                  <div className="inv-field">
-                    <label>Current Stock (Computed from Variants)</label>
-                    <input
-                      className="inv-input"
-                      type="number"
-                      value={pStock}
-                      disabled
-                      title="Stock is automatically calculated from product variants."
-                    />
-                    <small style={{ color: '#6366f1', fontWeight: 600 }}>
-                      Stock is automatically calculated from product variants.
-                    </small>
+              <div className="space-y-4">
+                {/* KPI Summary Banner */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+                  <div className="p-3 bg-slate-50 dark:bg-darkbg/80 border border-slate-200 dark:border-darkbg-border rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Total Stock</span>
+                    <p className="text-lg font-black text-slate-900 dark:text-white font-mono">{fmtNum(pStock)}</p>
+                    <span className="text-[10px] text-slate-500">Physical units</span>
                   </div>
-                ) : (
-                  <div className="inv-field">
-                    <label>{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
-                    <input className="inv-input" type="number" min="0"
-                      value={pStock} onChange={e => setPStock(Number(e.target.value))}
-                      disabled={!!selectedProduct}
-                      title={selectedProduct ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}/>
-                    {selectedProduct && <small style={{opacity:0.6}}>Use the Adjustments tab to change stock levels.</small>}
+                  <div className="p-3 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-amber-600 block mb-0.5">Reserved</span>
+                    <p className="text-lg font-black text-amber-700 dark:text-amber-400 font-mono">
+                      {fmtNum(localVariants.reduce((s, v) => s + (v.reservedStock || 0), 0))}
+                    </p>
+                    <span className="text-[10px] text-amber-600/80">Pending orders</span>
                   </div>
-                )}
-                <div className="inv-field">
-                  <label>Reorder Level</label>
-                  <input className="inv-input" type="number" min="0" value={pReorderLevel} onChange={e => setPReorderLevel(Number(e.target.value))}/>
+                  <div className="p-3 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-900/40 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-emerald-600 block mb-0.5">Available</span>
+                    <p className="text-lg font-black text-emerald-700 dark:text-emerald-400 font-mono">
+                      {fmtNum(Math.max(0, pStock - localVariants.reduce((s, v) => s + (v.reservedStock || 0), 0)))}
+                    </p>
+                    <span className="text-[10px] text-emerald-600/80">Available to sell</span>
+                  </div>
+                  <div className="p-3 bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200/60 dark:border-indigo-900/40 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-indigo-600 block mb-0.5">Total Variants</span>
+                    <p className="text-lg font-black text-indigo-700 dark:text-indigo-400 font-mono">{localVariants.length}</p>
+                    <span className="text-[10px] text-indigo-600/80">SKUs configured</span>
+                  </div>
+                  <div className="p-3 bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/60 dark:border-rose-900/40 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-rose-600 block mb-0.5">Low Stock</span>
+                    <p className="text-lg font-black text-rose-700 dark:text-rose-400 font-mono">
+                      {localVariants.filter(v => (v.stock || 0) <= (v.reorderLevel ?? 5)).length}
+                    </p>
+                    <span className="text-[10px] text-rose-600/80">Below reorder limit</span>
+                  </div>
                 </div>
-                {selectedProduct && productHistory.length > 0 && (
-                  <div className="inv-field full">
-                    <label>Recent Stock Movements</label>
-                    <div className="inv-mini-ledger">
-                      {productHistory.slice(0, 5).map(e => (
-                        <div key={e.id} className="inv-ledger-row">
-                          <span className={`inv-ledger-type ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>
-                            {INBOUND_TYPES.has(e.movement_type) ? '+' : ''}{e.quantity_change}
-                          </span>
-                          <span>{e.movement_type.replace(/_/g,' ')}</span>
-                          <span style={{marginLeft:'auto',opacity:0.6}}>{fmtDateTime(e.created_at)}</span>
-                        </div>
-                      ))}
+
+                <div className="inv-form-grid">
+                  {pHasVariants ? (
+                    <div className="inv-field">
+                      <label className="font-bold">Current Stock (Computed from Variants)</label>
+                      <input className="inv-input font-bold" type="number" value={pStock} disabled />
+                      <small style={{ color: '#6366f1', fontWeight: 600 }}>
+                        Stock is automatically calculated as the sum of all variant quantities.
+                      </small>
+                    </div>
+                  ) : (
+                    <div className="inv-field">
+                      <label className="font-bold">{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
+                      <input className="inv-input font-bold" type="number" min="0" value={pStock} onChange={e => setPStock(Number(e.target.value))} disabled={!!selectedProduct} />
+                      {selectedProduct && <small style={{opacity:0.6}}>Use the Adjustments tab to change stock levels.</small>}
+                    </div>
+                  )}
+                  <div className="inv-field">
+                    <label className="font-bold">Reorder Threshold Level</label>
+                    <input className="inv-input" type="number" min="0" value={pReorderLevel} onChange={e => setPReorderLevel(Number(e.target.value))}/>
+                  </div>
+                </div>
+
+                {/* Variant Inventory Breakdown Table */}
+                {pHasVariants && localVariants.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-darkbg-border">
+                    <h4 className="text-xs font-bold uppercase text-slate-700 dark:text-slate-200">Variant Inventory Breakdown</h4>
+                    <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-darkbg-border">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-50 dark:bg-darkbg text-slate-500 font-bold uppercase">
+                          <tr>
+                            <th className="p-2.5">Variant Specs</th>
+                            <th className="p-2.5">SKU</th>
+                            <th className="p-2.5">In Stock</th>
+                            <th className="p-2.5">Reserved</th>
+                            <th className="p-2.5">Available</th>
+                            <th className="p-2.5">Reorder Level</th>
+                            <th className="p-2.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-darkbg-border">
+                          {localVariants.map(v => {
+                            const avail = Math.max(0, (v.stock || 0) - (v.reservedStock || 0));
+                            return (
+                              <tr key={v.id} className="hover:bg-slate-50/50 dark:hover:bg-darkbg/50">
+                                <td className="p-2.5 font-medium">
+                                  {Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' · ') || v.sku}
+                                </td>
+                                <td className="p-2.5 font-mono text-[11px]">{v.sku}</td>
+                                <td className="p-2.5 font-bold font-mono text-slate-900 dark:text-white">{v.stock}</td>
+                                <td className="p-2.5 font-bold font-mono text-amber-600">{v.reservedStock || 0}</td>
+                                <td className="p-2.5 font-bold font-mono text-emerald-600">{avail}</td>
+                                <td className="p-2.5 font-mono">{v.reorderLevel ?? 5}</td>
+                                <td className="p-2.5">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${v.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                    {v.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 )}
@@ -3795,7 +3869,7 @@ export const Inventory: React.FC = () => {
 
             {/* Variants Tab */}
             {editorTab === 'variants' && (
-              <div className="inv-variants-tab">
+              <div className="inv-variants-tab space-y-3">
                 {!pHasVariants ? (
                   <div className="inv-variants-disabled">
                     <Layers size={32} opacity={0.3}/>
@@ -3804,7 +3878,7 @@ export const Inventory: React.FC = () => {
                 ) : (
                   <>
                     <div className="inv-attr-builder">
-                      <h4>Attribute Builder</h4>
+                      <h4>Attribute Builder & Generator</h4>
                       <div className="inv-attr-row">
                         <input className="inv-input" placeholder="Attribute name (e.g. Size)" value={newAttrName} onChange={e => setNewAttrName(e.target.value)}/>
                         <input className="inv-input" placeholder="Values, comma separated (e.g. S, M, L, XL)" value={newAttrValues} onChange={e => setNewAttrValues(e.target.value)}/>
@@ -3813,7 +3887,7 @@ export const Inventory: React.FC = () => {
                           const values = newAttrValues.split(',').map(v => v.trim()).filter(Boolean);
                           setCustomAttributes(prev => ({ ...prev, [newAttrName.trim()]: values }));
                           setNewAttrName(''); setNewAttrValues('');
-                        }}>Add</button>
+                        }}>Add Attribute</button>
                       </div>
                       {Object.keys(customAttributes).length > 0 && (
                         <div className="inv-attr-chips">
@@ -3829,7 +3903,7 @@ export const Inventory: React.FC = () => {
                       )}
                       <div className="inv-attr-actions">
                         <button className="inv-generate-btn" onClick={handleGenerateVariants}>
-                          <Zap size={14}/> Generate Variants ({generateCombinations(customAttributes).length})
+                          <Zap size={14}/> Generate Combinations ({generateCombinations(customAttributes).length})
                         </button>
                         <button className="inv-add-btn outline" onClick={() => {
                           const v = blankVariant(pId, currentTenant.id, currentBranch.id);
@@ -3837,6 +3911,90 @@ export const Inventory: React.FC = () => {
                         }}><Plus size={14}/> Manual Variant</button>
                       </div>
                     </div>
+
+                    {/* Search, Filter & Bulk Operations Bar */}
+                    <div className="p-3 bg-slate-50 dark:bg-darkbg/80 border border-slate-200 dark:border-darkbg-border rounded-xl space-y-2">
+                      <div className="flex flex-col md:flex-row gap-2 items-center justify-between">
+                        {/* Search & Filter Inputs */}
+                        <div className="flex items-center gap-2 w-full md:w-auto flex-1">
+                          <div className="relative flex-1">
+                            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                            <input
+                              className="inv-input pl-8 h-9 text-xs w-full"
+                              placeholder="Search variants by SKU, barcode, size, color..."
+                              value={variantSearch}
+                              onChange={e => setVariantSearch(e.target.value)}
+                            />
+                          </div>
+                          <select
+                            className="inv-input h-9 text-xs w-36"
+                            value={variantStatusFilter}
+                            onChange={e => setVariantStatusFilter(e.target.value as any)}
+                          >
+                            <option value="all">All Statuses</option>
+                            <option value="active">Active Only</option>
+                            <option value="inactive">Inactive Only</option>
+                          </select>
+                        </div>
+
+                        {/* Bulk Action Controls */}
+                        {selectedVariantIds.size > 0 && (
+                          <div className="flex items-center gap-1.5 shrink-0 bg-indigo-50 dark:bg-indigo-950/60 p-1 rounded-lg border border-indigo-200/60 dark:border-indigo-900/40">
+                            <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 px-2">
+                              {selectedVariantIds.size} Selected
+                            </span>
+
+                            <button
+                              type="button"
+                              className="text-xs px-2.5 py-1 bg-white dark:bg-slate-800 text-slate-800 dark:text-white rounded font-bold hover:bg-slate-100 border border-slate-200 flex items-center gap-1"
+                              onClick={() => {
+                                const newSelling = prompt('Enter new Selling Price (Tsh) for selected variants:');
+                                if (newSelling !== null && !isNaN(Number(newSelling))) {
+                                  const val = Number(newSelling);
+                                  setLocalVariants(prev => prev.map(v => selectedVariantIds.has(v.id) ? { ...v, inheritSellingPrice: false, sellingPrice: val } : v));
+                                }
+                              }}
+                            >
+                              <DollarSign className="h-3 w-3" /> Bulk Sell Price
+                            </button>
+
+                            <button
+                              type="button"
+                              className="text-xs px-2.5 py-1 bg-white dark:bg-slate-800 text-slate-800 dark:text-white rounded font-bold hover:bg-slate-100 border border-slate-200 flex items-center gap-1"
+                              onClick={() => {
+                                const newStock = prompt('Enter Stock Quantity for selected variants:');
+                                if (newStock !== null && !isNaN(Number(newStock))) {
+                                  const val = Number(newStock);
+                                  setLocalVariants(prev => prev.map(v => selectedVariantIds.has(v.id) ? { ...v, stock: val } : v));
+                                }
+                              }}
+                            >
+                              <Package className="h-3 w-3" /> Bulk Stock
+                            </button>
+
+                            <button
+                              type="button"
+                              className="text-xs px-2 py-1 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700"
+                              onClick={() => {
+                                setLocalVariants(prev => prev.map(v => selectedVariantIds.has(v.id) ? { ...v, status: 'Active' } : v));
+                              }}
+                            >
+                              Enable
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs px-2 py-1 bg-rose-600 text-white rounded font-bold hover:bg-rose-700"
+                              onClick={() => {
+                                setLocalVariants(prev => prev.map(v => selectedVariantIds.has(v.id) ? { ...v, status: 'Inactive' } : v));
+                              }}
+                            >
+                              Disable
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                     <div className="inv-variants-table-wrap">
                       <table className="inv-variants-table">
                         <thead>
@@ -3850,7 +4008,22 @@ export const Inventory: React.FC = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {localVariants.map((v, idx) => (
+                          {localVariants
+                            .filter(v => {
+                              if (variantStatusFilter === 'active' && v.status !== 'Active') return false;
+                              if (variantStatusFilter === 'inactive' && v.status === 'Active') return false;
+                              if (variantSearch.trim()) {
+                                const q = variantSearch.toLowerCase().trim();
+                                const attrStr = Object.entries(v.attributes).map(([k, val]) => `${k}:${val}`).join(' ').toLowerCase();
+                                return (
+                                  v.sku.toLowerCase().includes(q) ||
+                                  (v.barcode && v.barcode.toLowerCase().includes(q)) ||
+                                  attrStr.includes(q)
+                                );
+                              }
+                              return true;
+                            })
+                            .map((v, idx) => (
                             <React.Fragment key={v.id}>
                               <tr className={`inv-var-row ${editingVariantIdx === idx ? 'editing' : ''}`} onClick={() => setEditingVariantIdx(editingVariantIdx === idx ? null : idx)}>
                                 <td onClick={e => e.stopPropagation()}>
@@ -4070,6 +4243,129 @@ export const Inventory: React.FC = () => {
                     </div>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* Images Tab */}
+            {editorTab === 'images' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-slate-800 dark:text-white">Product & Variant Photo Gallery</h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-xs hover:bg-indigo-700"
+                      onClick={() => (document.getElementById('product-image-file-input') as HTMLInputElement)?.click()}
+                    >
+                      <Upload className="h-3.5 w-3.5" /> Upload Photo
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 bg-slate-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-xs hover:bg-slate-900"
+                      onClick={startImageCamera}
+                    >
+                      <Camera className="h-3.5 w-3.5" /> Camera Snap 📸
+                    </button>
+                  </div>
+                </div>
+
+                {/* Primary Photo Preview Card */}
+                <div className="p-4 bg-slate-50 dark:bg-darkbg/80 border border-slate-200 dark:border-darkbg-border rounded-xl flex flex-col md:flex-row gap-4 items-center">
+                  <div className="h-32 w-32 rounded-xl bg-white dark:bg-darkbg border border-slate-200 dark:border-darkbg-border overflow-hidden flex items-center justify-center shrink-0">
+                    {pImagePreview ? (
+                      <img src={pImagePreview} alt="Main Product Thumbnail" className="h-full w-full object-contain" />
+                    ) : (
+                      <div className="flex flex-col items-center text-slate-400">
+                        <Camera className="h-8 w-8 text-indigo-500 mb-1" />
+                        <span className="text-[10px] font-bold">No Image</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2 flex-1">
+                    <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-extrabold rounded">PRIMARY THUMBNAIL</span>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      This thumbnail image is displayed in POS product catalog cards, online catalog, and receipt printouts.
+                    </p>
+                    {pImagePreview && (
+                      <button
+                        type="button"
+                        className="text-xs text-rose-600 hover:underline font-bold flex items-center gap-1"
+                        onClick={() => { setPImageUrl(''); setPImagePreview(''); }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Remove Primary Image
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Suppliers Tab */}
+            {editorTab === 'suppliers' && (
+              <div className="space-y-4">
+                <h4 className="text-sm font-bold text-slate-800 dark:text-white">Supplier & Procurement Information</h4>
+                <div className="inv-form-grid">
+                  <div className="inv-field full">
+                    <label className="text-xs font-bold mb-1 block">Preferred Primary Supplier</label>
+                    {allSuppliers.length > 0 ? (
+                      <select
+                        className="inv-input h-10 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white font-semibold"
+                        value={pSupplierId}
+                        onChange={e => {
+                          const sup = allSuppliers.find(s => s.id === e.target.value);
+                          setPSupplierId(e.target.value);
+                          setPSupplier(sup?.name || '');
+                        }}
+                      >
+                        <option value="">— Select Preferred Supplier —</option>
+                        {allSuppliers.map(s => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} · Code: {s.supplier_code || s.id}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className="inv-input"
+                        value={pSupplier}
+                        onChange={e => setPSupplier(e.target.value)}
+                        placeholder="Enter supplier name"
+                      />
+                    )}
+                  </div>
+
+                  <div className="inv-field">
+                    <label className="text-xs font-bold mb-1 block">Supplier Item SKU / Part Number</label>
+                    <input
+                      className="inv-input font-mono text-xs"
+                      value={supplierSku}
+                      onChange={e => setSupplierSku(e.target.value)}
+                      placeholder="e.g. SUP-ITEM-9988"
+                    />
+                  </div>
+
+                  <div className="inv-field">
+                    <label className="text-xs font-bold mb-1 block">Procurement Lead Time (Days)</label>
+                    <input
+                      className="inv-input font-mono text-xs"
+                      type="number"
+                      min="1"
+                      value={supplierLeadTimeDays}
+                      onChange={e => setSupplierLeadTimeDays(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="inv-field">
+                    <label className="text-xs font-bold mb-1 block">Contracted Unit Cost (Tsh)</label>
+                    <input
+                      className="inv-input font-mono text-xs"
+                      type="number"
+                      min="0"
+                      value={supplierPurchaseCost || pBuyingPrice}
+                      onChange={e => setSupplierPurchaseCost(Number(e.target.value))}
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
