@@ -32,7 +32,7 @@ import {
   RefreshCw, TrendingUp, TrendingDown, Archive, AlertCircle, Zap,
   ChevronRight, ChevronDown, Download, Barcode, Hash, Calendar, Target,
   Send, Check, Eye,
-  ShoppingCart, Activity, DollarSign, Shield, Camera, Upload, Lock,
+  ShoppingCart, Activity, DollarSign, Shield, Camera, Upload, Lock, Truck,
 } from 'lucide-react';
 import './Inventory.css';
 
@@ -1085,18 +1085,9 @@ export const Inventory: React.FC = () => {
   const [newAttrValues, setNewAttrValues] = useState('');
   const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
 
-  // Variant Hub Search & Filter & Bulk Action States
+  // Variant Hub Search & Filter & Supplier Specs States
   const [variantSearch, setVariantSearch] = useState('');
   const [variantStatusFilter, setVariantStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
-  const [isBulkPriceModalOpen, setIsBulkPriceModalOpen] = useState(false);
-  const [bulkPriceBuyingInput, setBulkPriceBuyingInput] = useState<string>('');
-  const [bulkPriceSellingInput, setBulkPriceSellingInput] = useState<string>('');
-  const [isBulkStockModalOpen, setIsBulkStockModalOpen] = useState(false);
-  const [bulkStockInput, setBulkStockInput] = useState<string>('');
-  const [bulkReorderInput, setBulkReorderInput] = useState<string>('');
-
-  // Image Gallery & Supplier Extended Specs States
-  const [productGalleryImages, setProductGalleryImages] = useState<string[]>([]);
   const [supplierSku, setSupplierSku] = useState('');
   const [supplierLeadTimeDays, setSupplierLeadTimeDays] = useState(7);
   const [supplierPurchaseCost, setSupplierPurchaseCost] = useState(0);
