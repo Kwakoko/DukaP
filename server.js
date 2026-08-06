@@ -105,23 +105,47 @@ async function initDatabaseSchema() {
       CREATE TABLE IF NOT EXISTS categories (
         id TEXT PRIMARY KEY,
         tenant_id TEXT,
+        branch_id TEXT,
         name TEXT,
-        parent_id TEXT,
+        code TEXT,
         description TEXT,
+        color TEXT,
+        icon TEXT,
+        status TEXT DEFAULT 'Active',
+        created_by TEXT,
+        updated_by TEXT,
         created_at BIGINT,
-        updated_at BIGINT
+        updated_at BIGINT,
+        deleted_at BIGINT,
+        sync_version INT DEFAULT 1,
+        sync_status TEXT DEFAULT 'SYNCED',
+        last_synced_at BIGINT,
+        parent_id TEXT
       );
     `;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_tenant_name ON categories(tenant_id, LOWER(name)) WHERE deleted_at IS NULL;`;
     await sql`
       CREATE TABLE IF NOT EXISTS brands (
         id TEXT PRIMARY KEY,
         tenant_id TEXT,
+        branch_id TEXT,
         name TEXT,
+        code TEXT,
         description TEXT,
+        color TEXT,
+        icon TEXT,
+        status TEXT DEFAULT 'Active',
+        created_by TEXT,
+        updated_by TEXT,
         created_at BIGINT,
-        updated_at BIGINT
+        updated_at BIGINT,
+        deleted_at BIGINT,
+        sync_version INT DEFAULT 1,
+        sync_status TEXT DEFAULT 'SYNCED',
+        last_synced_at BIGINT
       );
     `;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_brands_tenant_name ON brands(tenant_id, LOWER(name)) WHERE deleted_at IS NULL;`;
     await sql`
       CREATE TABLE IF NOT EXISTS stock_ledger (
         id TEXT PRIMARY KEY,
@@ -790,27 +814,66 @@ const server = http.createServer(async (req, res) => {
             processedIds.push(op.id || recordId);
           } else if (entity === 'categories') {
             if (action === 'DELETE') {
-              await sql`DELETE FROM categories WHERE id = ${recordId}`;
+              await sql`UPDATE categories SET deleted_at = ${now}, updated_at = ${now}, sync_version = sync_version + 1 WHERE id = ${recordId}`;
             } else {
               await sql`
-                INSERT INTO categories (id, tenant_id, name, parent_id, created_at, updated_at)
-                VALUES (${recordId}, ${tenantId}, ${payload.name || ''}, ${payload.parent_id || payload.parentId || null}, ${payload.created_at || now}, ${now})
+                INSERT INTO categories (id, tenant_id, branch_id, name, code, description, color, icon, status, created_by, updated_by, created_at, updated_at, sync_version, sync_status, parent_id)
+                VALUES (
+                  ${recordId},
+                  ${tenantId},
+                  ${payload.branch_id || null},
+                  ${payload.name || ''},
+                  ${payload.code || ''},
+                  ${payload.description || ''},
+                  ${payload.color || '#4f46e5'},
+                  ${payload.icon || 'Folder'},
+                  ${payload.status || 'Active'},
+                  ${payload.created_by || 'usr-system'},
+                  ${payload.updated_by || 'usr-system'},
+                  ${payload.created_at || now},
+                  ${now},
+                  ${payload.sync_version || 1},
+                  'SYNCED',
+                  ${payload.parent_id || payload.parentId || null}
+                )
                 ON CONFLICT (id) DO UPDATE SET
                   name = EXCLUDED.name,
-                  updated_at = ${now};
+                  description = EXCLUDED.description,
+                  status = EXCLUDED.status,
+                  updated_at = ${now},
+                  sync_version = categories.sync_version + 1;
               `;
             }
             processedIds.push(op.id || recordId);
           } else if (entity === 'brands') {
             if (action === 'DELETE') {
-              await sql`DELETE FROM brands WHERE id = ${recordId}`;
+              await sql`UPDATE brands SET deleted_at = ${now}, updated_at = ${now}, sync_version = sync_version + 1 WHERE id = ${recordId}`;
             } else {
               await sql`
-                INSERT INTO brands (id, tenant_id, name, created_at, updated_at)
-                VALUES (${recordId}, ${tenantId}, ${payload.name || ''}, ${payload.created_at || now}, ${now})
+                INSERT INTO brands (id, tenant_id, branch_id, name, code, description, color, icon, status, created_by, updated_by, created_at, updated_at, sync_version, sync_status)
+                VALUES (
+                  ${recordId},
+                  ${tenantId},
+                  ${payload.branch_id || null},
+                  ${payload.name || ''},
+                  ${payload.code || ''},
+                  ${payload.description || ''},
+                  ${payload.color || '#9333ea'},
+                  ${payload.icon || 'Tag'},
+                  ${payload.status || 'Active'},
+                  ${payload.created_by || 'usr-system'},
+                  ${payload.updated_by || 'usr-system'},
+                  ${payload.created_at || now},
+                  ${now},
+                  ${payload.sync_version || 1},
+                  'SYNCED'
+                )
                 ON CONFLICT (id) DO UPDATE SET
                   name = EXCLUDED.name,
-                  updated_at = ${now};
+                  description = EXCLUDED.description,
+                  status = EXCLUDED.status,
+                  updated_at = ${now},
+                  sync_version = brands.sync_version + 1;
               `;
             }
             processedIds.push(op.id || recordId);

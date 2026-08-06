@@ -802,6 +802,9 @@ export async function createCategory(
   _branchId?: string
 ): Promise<Category> {
   const catName = typeof input === 'string' ? input : (input.name || '');
+  const trimmedName = catName.trim();
+  if (!trimmedName) throw new Error('Category name cannot be empty.');
+
   let tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
   if (!tid) {
     try {
@@ -813,10 +816,18 @@ export async function createCategory(
     } catch (_) {}
     if (!tid) tid = 'tenant-101';
   }
+
+  // Case-insensitive uniqueness validation within tenant
+  const existing = await db.categories.where('tenant_id').equals(tid).filter(c => c.name && c.name.toLowerCase() === trimmedName.toLowerCase()).first();
+  if (existing) {
+    return existing;
+  }
+
   const category: Category = {
-    id: `cat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-    name: catName.trim(),
+    id: typeof input !== 'string' && input.id ? input.id : `cat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    name: trimmedName,
     tenant_id: tid,
+    description: typeof input !== 'string' ? input.description : undefined,
     created_at: Date.now(),
   };
   await db.categories.put(category);
@@ -875,6 +886,9 @@ export async function createBrand(
   tenantId?: string
 ): Promise<Brand> {
   const bName = typeof input === 'string' ? input : (input.name || '');
+  const trimmedName = bName.trim();
+  if (!trimmedName) throw new Error('Brand name cannot be empty.');
+
   let tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
   if (!tid) {
     try {
@@ -886,10 +900,18 @@ export async function createBrand(
     } catch (_) {}
     if (!tid) tid = 'tenant-101';
   }
+
+  // Case-insensitive uniqueness validation within tenant
+  const existing = await db.brands.where('tenant_id').equals(tid).filter(b => b.name && b.name.toLowerCase() === trimmedName.toLowerCase()).first();
+  if (existing) {
+    return existing;
+  }
+
   const brand: Brand = {
-    id: `brand-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-    name: bName.trim(),
+    id: typeof input !== 'string' && input.id ? input.id : `brand-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    name: trimmedName,
     tenant_id: tid,
+    description: typeof input !== 'string' ? input.description : undefined,
     created_at: Date.now(),
   };
   await db.brands.put(brand);
