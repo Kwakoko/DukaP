@@ -93,7 +93,7 @@ const formatTenantRegistrationDate = (ts?: number) => {
 };
 
 export const TenantManagement: React.FC = () => {
-  const { user, setImpersonatedTenant } = useAuth();
+  const { user, currentTenant, setImpersonatedTenant } = useAuth();
   const { setActiveTab, enabledModules } = useModule();
 
   // Navigation & View States
@@ -116,6 +116,53 @@ export const TenantManagement: React.FC = () => {
   const [verificationFilter, setVerificationFilter] = useState<'ALL' | 'VERIFIED' | 'PENDING' | 'UNVERIFIED'>('ALL');
   const [sortDirection, setSortDirection] = useState<'DESC' | 'ASC'>('DESC');
   const [selectedAuditTenant, setSelectedAuditTenant] = useState<any | null>(null);
+
+  // Auto-sync active dev workspace currentTenant to cloudDb and local db.tenants
+  React.useEffect(() => {
+    const curT = currentTenant as any;
+    if (curT && curT.id) {
+      const tenantData = {
+        id: curT.id,
+        name: curT.name || 'Local Dev Tenant',
+        slug: curT.slug || 'local-dev',
+        status: curT.status || 'ACTIVE',
+        plan: curT.plan || 'PRO',
+        business_type: curT.business_type || curT.industry || 'Retail',
+        industry: curT.industry || curT.business_type || 'Retail',
+        tenant_code: curT.tenant_code || curT.id,
+        owner_name: curT.owner_name || 'Business Owner',
+        email: curT.email || 'owner@dukapos.com',
+        created_at: curT.created_at || Date.now(),
+        registration_source: 'LOCAL_DEV_WORKSPACE',
+        created_by: 'usr-dev-owner',
+        registration_ip: '127.0.0.1',
+        registration_device: 'Local Dev Workspace',
+        verification_status: 'VERIFIED'
+      };
+
+      // 1. Sync to Dexie db.tenants
+      db.tenants.get(curT.id).then(existing => {
+        if (!existing) {
+          db.tenants.put({
+            id: curT.id,
+            name: curT.name || 'Local Dev Tenant',
+            status: (curT.status || 'ACTIVE') as any,
+            plan: (curT.plan || 'PRO') as any,
+            business_type: curT.business_type || 'Retail',
+            email: curT.email || 'owner@dukapos.com',
+            created_at: curT.created_at || Date.now(),
+          } as any).catch(console.warn);
+        }
+      });
+
+      // 2. Sync to cloudDb.cloud_tenants
+      cloudDb.cloud_tenants.get(curT.id).then(existing => {
+        if (!existing) {
+          cloudDb.cloud_tenants.put(tenantData).catch(console.warn);
+        }
+      });
+    }
+  }, [currentTenant]);
 
   // Live Central Production Database Queries (cloudDb - Source of Truth)
   const cloudTenants = useLiveQuery(() => cloudDb.cloud_tenants.filter((t: any) => !t.deleted_at).toArray(), []) || [];
@@ -148,7 +195,7 @@ export const TenantManagement: React.FC = () => {
     return list;
   }, [cloudPlans, localPlans]);
 
-  // Merge central PostgreSQL cloudTenants with local dbTenants for complete central registry
+  // Merge central PostgreSQL cloudTenants with local dbTenants & currentTenant for complete central registry
   const tenants = useMemo(() => {
     const map = new Map<string, any>();
     for (const ct of cloudTenants) {
@@ -186,8 +233,29 @@ export const TenantManagement: React.FC = () => {
         });
       }
     }
+    const curT = currentTenant as any;
+    if (curT && curT.id && !map.has(curT.id)) {
+      map.set(curT.id, {
+        id: curT.id,
+        name: curT.name || 'Local Dev Tenant',
+        slug: curT.slug || 'local-dev',
+        status: curT.status || 'ACTIVE',
+        plan: curT.plan || 'PRO',
+        business_type: curT.business_type || curT.industry || 'Retail',
+        industry: curT.industry || curT.business_type || 'Retail',
+        tenant_code: curT.tenant_code || curT.id,
+        owner_name: curT.owner_name || 'Business Owner',
+        email: curT.email || 'owner@dukapos.com',
+        created_at: curT.created_at || Date.now(),
+        registration_source: 'LOCAL_DEV_WORKSPACE',
+        created_by: 'usr-dev-owner',
+        registration_ip: '127.0.0.1',
+        registration_device: 'Local Dev Workspace',
+        verification_status: 'VERIFIED'
+      });
+    }
     return Array.from(map.values());
-  }, [cloudTenants, dbTenants]);
+  }, [cloudTenants, dbTenants, currentTenant]);
 
   // Enriched Tenants with meta counts
   const enrichedTenants = useMemo(() => {
