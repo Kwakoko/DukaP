@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Receipt as ReceiptIcon,
@@ -350,6 +350,10 @@ interface ReceiptsProps {
 export const Receipts: React.FC<ReceiptsProps> = ({ initialTab = 'history' }) => {
   const { user, currentTenant, currentBranch } = useAuth();
   const [activeTab, setActiveTab] = useState(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
   const [selectedReceipt, setSelectedReceipt] = useState<Receipt | null>(null);
   const [printFormat, setPrintFormat] = useState<ReceiptFormat>('thermal_80');
   const [isBusy, setIsBusy] = useState(false);

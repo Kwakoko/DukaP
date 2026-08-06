@@ -580,6 +580,7 @@ const DukaPosAppContent: React.FC = () => {
       case 'Receipts':
       case 'Receipt Management':
       case 'Receipt History':
+      case 'Receipts History':
       case 'Receit History':
         return <Receipts initialTab="history" />;
       case 'Receipt Viewer':
@@ -587,14 +588,18 @@ const DukaPosAppContent: React.FC = () => {
         return <Receipts initialTab="viewer" />;
       case 'Receipt Templates':
       case 'Receipt Template':
+      case 'Receipts Templates':
         return <Receipts initialTab="templates" />;
       case 'Receipt Analytics':
       case 'Receipt Analysis':
+      case 'Receipts Analytics':
         return <Receipts initialTab="analytics" />;
       case 'Receipt Verification':
       case 'Verify Receipt':
+      case 'Receipts Verification':
         return <Receipts initialTab="verification" />;
       case 'Receipt Archive':
+      case 'Receipts Archive':
         return <Receipts initialTab="archive" />;
       default:
         return <Dashboard />;
