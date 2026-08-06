@@ -953,6 +953,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Rebuild all branch balances directly from stock ledger entries to guarantee stock accuracy across login/logout
       await stockLedgerSyncEngine.rebuildAllBranchBalances(tenantId, primaryBranchId);
 
+      // Reconcile tenant metadata: categories & brands
+      try {
+        const { data: cloudCats } = await supabase.from('categories').select('*').eq('tenant_id', tenantId);
+        if (cloudCats && cloudCats.length > 0) {
+          for (const cc of cloudCats) {
+            await db.categories.put({
+              id: cc.id,
+              name: cc.name,
+              tenant_id: cc.tenant_id || tenantId,
+              parent_id: cc.parent_id,
+              description: cc.description,
+              created_at: cc.created_at || Date.now()
+            });
+          }
+        }
+      } catch (_) {}
+
+      try {
+        const { data: cloudBrands } = await supabase.from('brands').select('*').eq('tenant_id', tenantId);
+        if (cloudBrands && cloudBrands.length > 0) {
+          for (const cb of cloudBrands) {
+            await db.brands.put({
+              id: cb.id,
+              name: cb.name,
+              tenant_id: cb.tenant_id || tenantId,
+              description: cb.description,
+              created_at: cb.created_at || Date.now()
+            });
+          }
+        }
+      } catch (_) {}
+
+      // Ensure every category and brand referenced by products exists in db.categories & db.brands
+      const allLocalProds = await db.products.where('tenant_id').equals(tenantId).toArray();
+      const existingCatMap = new Map((await db.categories.where('tenant_id').equals(tenantId).toArray()).map(c => [c.name, c]));
+      const existingBrandMap = new Map((await db.brands.where('tenant_id').equals(tenantId).toArray()).map(b => [b.name, b]));
+
+      for (const p of allLocalProds) {
+        if (p.category && p.category.trim() && !existingCatMap.has(p.category.trim())) {
+          const newCat = {
+            id: `cat-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            name: p.category.trim(),
+            tenant_id: tenantId,
+            created_at: Date.now()
+          };
+          await db.categories.put(newCat);
+          existingCatMap.set(p.category.trim(), newCat);
+        }
+        if (p.brand && p.brand.trim() && !existingBrandMap.has(p.brand.trim())) {
+          const newBrand = {
+            id: `brand-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            name: p.brand.trim(),
+            tenant_id: tenantId,
+            created_at: Date.now()
+          };
+          await db.brands.put(newBrand);
+          existingBrandMap.set(p.brand.trim(), newBrand);
+        }
+      }
+
       console.log(`[Supabase Persistence] Cloud data sync completed. Loaded ${cloudProducts?.length || 0} products.`);
       return true;
     } catch (err) {

@@ -102,6 +102,27 @@ async function initDatabaseSchema() {
       );
     `;
     await sql`
+      CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT,
+        name TEXT,
+        parent_id TEXT,
+        description TEXT,
+        created_at BIGINT,
+        updated_at BIGINT
+      );
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS brands (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT,
+        name TEXT,
+        description TEXT,
+        created_at BIGINT,
+        updated_at BIGINT
+      );
+    `;
+    await sql`
       CREATE TABLE IF NOT EXISTS stock_ledger (
         id TEXT PRIMARY KEY,
         tenant_id TEXT,
@@ -759,6 +780,32 @@ const server = http.createServer(async (req, res) => {
                   stock = EXCLUDED.stock,
                   selling_price = EXCLUDED.selling_price,
                   buying_price = EXCLUDED.buying_price,
+                  updated_at = ${now};
+              `;
+            }
+            processedIds.push(op.id || recordId);
+          } else if (entity === 'categories') {
+            if (action === 'DELETE') {
+              await sql`DELETE FROM categories WHERE id = ${recordId}`;
+            } else {
+              await sql`
+                INSERT INTO categories (id, tenant_id, name, parent_id, created_at, updated_at)
+                VALUES (${recordId}, ${tenantId}, ${payload.name || ''}, ${payload.parent_id || payload.parentId || null}, ${payload.created_at || now}, ${now})
+                ON CONFLICT (id) DO UPDATE SET
+                  name = EXCLUDED.name,
+                  updated_at = ${now};
+              `;
+            }
+            processedIds.push(op.id || recordId);
+          } else if (entity === 'brands') {
+            if (action === 'DELETE') {
+              await sql`DELETE FROM brands WHERE id = ${recordId}`;
+            } else {
+              await sql`
+                INSERT INTO brands (id, tenant_id, name, created_at, updated_at)
+                VALUES (${recordId}, ${tenantId}, ${payload.name || ''}, ${payload.created_at || now}, ${now})
+                ON CONFLICT (id) DO UPDATE SET
+                  name = EXCLUDED.name,
                   updated_at = ${now};
               `;
             }

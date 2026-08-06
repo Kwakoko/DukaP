@@ -792,15 +792,42 @@ export async function createCategory(
     created_at: Date.now(),
   };
   await db.categories.put(category);
+  await db.syncQueue.add({
+    actionType: 'CREATE',
+    entityName: 'categories',
+    payload: category,
+    timestamp: Date.now(),
+    status: 'Pending',
+  });
   return category;
 }
 
 export async function updateCategory(id: string, updates: Partial<Category>): Promise<void> {
   await db.categories.update(id, updates);
+  const updated = await db.categories.get(id);
+  if (updated) {
+    await db.syncQueue.add({
+      actionType: 'UPDATE',
+      entityName: 'categories',
+      payload: updated,
+      timestamp: Date.now(),
+      status: 'Pending',
+    });
+  }
 }
 
 export async function deleteCategory(id: string): Promise<void> {
+  const existing = await db.categories.get(id);
   await db.categories.delete(id);
+  if (existing) {
+    await db.syncQueue.add({
+      actionType: 'DELETE',
+      entityName: 'categories',
+      payload: { id, tenant_id: existing.tenant_id },
+      timestamp: Date.now(),
+      status: 'Pending',
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -828,15 +855,42 @@ export async function createBrand(
     created_at: Date.now(),
   };
   await db.brands.put(brand);
+  await db.syncQueue.add({
+    actionType: 'CREATE',
+    entityName: 'brands',
+    payload: brand,
+    timestamp: Date.now(),
+    status: 'Pending',
+  });
   return brand;
 }
 
 export async function updateBrand(id: string, updates: Partial<Brand>): Promise<void> {
   await db.brands.update(id, updates);
+  const updated = await db.brands.get(id);
+  if (updated) {
+    await db.syncQueue.add({
+      actionType: 'UPDATE',
+      entityName: 'brands',
+      payload: updated,
+      timestamp: Date.now(),
+      status: 'Pending',
+    });
+  }
 }
 
 export async function deleteBrand(id: string): Promise<void> {
+  const existing = await db.brands.get(id);
   await db.brands.delete(id);
+  if (existing) {
+    await db.syncQueue.add({
+      actionType: 'DELETE',
+      entityName: 'brands',
+      payload: { id, tenant_id: existing.tenant_id },
+      timestamp: Date.now(),
+      status: 'Pending',
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
