@@ -12,12 +12,16 @@ export interface SyncProgress {
   percentage: number;
 }
 
+const ONLINE_MODE_KEY = 'dukapos_online_mode';
+
 export function useSync() {
-  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  // Restore online mode from localStorage — default Online unless user explicitly went Offline
+  const storedMode = typeof localStorage !== 'undefined' ? localStorage.getItem(ONLINE_MODE_KEY) : null;
+  const [isOnline, setIsOnline] = useState<boolean>(storedMode !== null ? storedMode === 'true' : (typeof navigator !== 'undefined' ? navigator.onLine : true));
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [syncLogs, setSyncLogs] = useState<string[]>([]);
-  const [isSimulated, setIsSimulated] = useState<boolean>(false);
+  const [isSimulated, setIsSimulated] = useState<boolean>(storedMode !== null ? storedMode === 'false' : false);
 
   // Use refs so interval callbacks always see the latest values without stale closures
   const isSyncingRef = useRef(false);
@@ -266,8 +270,10 @@ export function useSync() {
   useEffect(() => {
     const handleOnline = async () => {
       setIsSimulated(false);
+      isSimulatedRef.current = false;
       const reallyConnected = await checkRealConnectivity();
       setIsOnline(reallyConnected);
+      localStorage.setItem(ONLINE_MODE_KEY, String(reallyConnected));
       if (reallyConnected) {
         addLog('Connection restored. Running auto-sync...');
       }
@@ -275,7 +281,9 @@ export function useSync() {
 
     const handleOffline = () => {
       setIsSimulated(false);
+      isSimulatedRef.current = false;
       setIsOnline(false);
+      localStorage.setItem(ONLINE_MODE_KEY, 'false');
       addLog('Connection offline.');
     };
 
@@ -444,6 +452,8 @@ export function useSync() {
     setIsOnline(nextState);
     setIsSimulated(true);
     isSimulatedRef.current = true;
+    // Persist chosen mode so it survives page refresh
+    localStorage.setItem(ONLINE_MODE_KEY, String(nextState));
 
     if (nextState) {
       addLog('NETWORK: Online mode manually activated.');
