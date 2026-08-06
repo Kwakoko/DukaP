@@ -20,6 +20,7 @@ import { sessionService } from '../../services/sessionService';
 import { DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../../services/settingsService';
 import { cashDrawerService } from '../../services/cashDrawerService';
 import { getShortBranchName } from '../../utils/mobileFormatters';
+import { createReceipt } from '../../services/receiptEngine';
 
 // Local POS Cart item interface
 interface CartItem {
@@ -1171,7 +1172,45 @@ export const POS: React.FC = () => {
       setBackdatedTransactionDate('');
       setIsCheckoutOpen(false);
 
-      // Auto open receipt simulation
+      // Auto-generate canonical receipt via ReceiptEngine
+      try {
+        await createReceipt({
+          idempotency_key: orderId,
+          transaction_id: orderId,
+          transaction_type: 'POS_SALE',
+          tenant_id: currentTenant.id,
+          branch_id: currentBranch.id,
+          cashier_id: user?.id || 'usr-cashier',
+          cashier_name: user?.name || 'Cashier',
+          customer_id: selectedCustomer?.id,
+          customer_name: selectedCustomer?.name,
+          customer_phone: selectedCustomer?.phone,
+          items: cart.map(item => ({
+            product_id: item.product.id,
+            variant_id: item.variant?.id,
+            name: item.variant
+              ? `${item.product.name} (${Object.values(item.variant.attributes).join('/')})`
+              : item.product.name,
+            sku: item.variant?.sku || item.product.sku,
+            qty: item.quantity,
+            unit_price: getItemSellingPrice(item.product, item.variant),
+            discount: 0,
+            tax_rate: 0,
+          })),
+          discount_amount: discountAmount,
+          tax_amount: taxAmount,
+          total: cartTotal,
+          paid_amount: isPaymentSplit ? splitTotalEntered : cashReceived,
+          change_amount: isPaymentSplit ? 0 : Math.max(0, cashReceived - cartTotal),
+          payment_method: isPaymentSplit ? 'Split' : paymentMethod,
+          currency: 'TZS',
+        });
+      } catch (receiptErr) {
+        // Receipt generation failure is non-fatal — POS sale is already committed
+        console.warn('[POS] Receipt auto-generation failed (non-fatal):', receiptErr);
+      }
+
+      // Auto open receipt modal
       setIsReceiptOpen(true);
     };
 

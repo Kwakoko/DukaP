@@ -42,3 +42,84 @@
   -moz-user-select: none;
   user-select: none;
 }
+
+/* ── Receipt Print Styles ──────────────────────────────────────────────────── */
+
+/* Hide everything except the receipt when printing */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  body > *:not(.print-root) {
+    display: none !important;
+  }
+
+  /* Remove shadows and borders for clean print */
+  .receipt-print-area {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* Thermal 58mm paper */
+  .print-format-thermal-58 .receipt-print-area {
+    width: 58mm !important;
+    max-width: 58mm !important;
+    margin: 0 !important;
+    padding: 4mm !important;
+    font-size: 8pt !important;
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+
+  /* Thermal 80mm paper */
+  .print-format-thermal-80 .receipt-print-area {
+    width: 80mm !important;
+    max-width: 80mm !important;
+    margin: 0 !important;
+    padding: 5mm !important;
+    font-size: 9pt !important;
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+
+  /* A4 invoice */
+  .print-format-a4 .receipt-print-area {
+    width: 210mm !important;
+    max-width: 210mm !important;
+    margin: 10mm auto !important;
+    padding: 10mm !important;
+    font-size: 11pt !important;
+    font-family: Arial, Helvetica, sans-serif !important;
+  }
+
+  @page {
+    margin: 0;
+  }
+
+  @page :first {
+    margin-top: 2mm;
+  }
+}
+
+/* scrollbar-none utility */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Fade / slide-in animation for toasts and modals */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+.slide-in-from-top-2 {
+  animation: fadeIn 0.2s ease-out forwards;
+}

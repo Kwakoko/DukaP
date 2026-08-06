@@ -85,6 +85,13 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     if (nameLower === 'expenses') {
       return hasPermission('expense.manage');
     }
+    if (nameLower === 'receipts' || nameLower === 'receipt history' || nameLower === 'receipt management' || nameLower === 'receipt templates' || nameLower === 'receipt analytics' || nameLower === 'receipt verification' || nameLower === 'receipt archive') {
+      // Cashiers and above can view receipts; templates/analytics require manager role
+      if (nameLower === 'receipt templates' || nameLower === 'receipt analytics') {
+        return hasPermission('settings.manage') || ['Super Admin', 'Business Owner', 'Tenant Owner', 'Business Administrator', 'Accountant', 'Branch Manager', 'Manager'].includes(role);
+      }
+      return hasPermission('sales.create') || hasPermission('reports.view') || ['Super Admin', 'Business Owner', 'Tenant Owner', 'Business Administrator', 'Cashier', 'Accountant', 'Branch Manager', 'Manager', 'Read Only Auditor'].includes(role);
+    }
     if (nameLower === 'subscriptions' || nameLower === 'plans & pricing') {
       return hasPermission('settings.manage') || role === 'Business Owner' || role === 'Tenant Owner';
     }

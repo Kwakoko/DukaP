@@ -342,6 +342,195 @@ export interface AuditLog {
   origin?: 'DEMO' | 'PRODUCTION' | 'IMPORTED' | 'MIGRATED';
 }
 
+// ── Receipt Management Module Interfaces (v32) ──────────────────────────────
+export type ReceiptStatus = 'Completed' | 'Cancelled' | 'Refunded' | 'Voided' | 'Draft' | 'Archived';
+export type ReceiptTransactionType =
+  | 'POS_SALE'
+  | 'POS_RETURN'
+  | 'REFUND'
+  | 'LAYBY_PAYMENT'
+  | 'CUSTOMER_DEPOSIT'
+  | 'CREDIT_PAYMENT'
+  | 'SERVICE_INVOICE'
+  | 'RESTAURANT_ORDER'
+  | 'CASH_DRAWER_OP'
+  | 'MEMBERSHIP_PAYMENT'
+  | 'SUBSCRIPTION_PAYMENT'
+  | 'EXPENSE'
+  | 'OTHER';
+
+export type ReceiptFormat = 'thermal_58' | 'thermal_80' | 'a4';
+
+export interface Receipt {
+  id: string;
+  receipt_number: string;
+  transaction_id?: string;
+  transaction_type: ReceiptTransactionType;
+  original_receipt_id?: string;
+  original_receipt_number?: string;
+  tenant_id: string;
+  branch_id: string;
+  device_id?: string;
+  terminal_id?: string;
+  cashier_id: string;
+  cashier_name: string;
+  customer_id?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  currency: string;
+  exchange_rate?: number;
+  subtotal: number;
+  discount_amount: number;
+  tax_amount: number;
+  total: number;
+  paid_amount: number;
+  change_amount: number;
+  payment_method: string;
+  payment_reference?: string;
+  tax_breakdown?: Array<{ label: string; rate: number; amount: number }>;
+  status: ReceiptStatus;
+  print_count: number;
+  last_printed_at?: number;
+  last_printed_by?: string;
+  cancellation_reason?: string;
+  refund_reason?: string;
+  created_at: number;
+  updated_at: number;
+  created_by?: string;
+  updated_by?: string;
+  sync_status: 'PENDING' | 'SYNCING' | 'SYNCED' | 'FAILED';
+  sync_version?: number;
+  version?: number;
+  qr_payload?: string;
+  barcode_value?: string;
+  signature_hash?: string;
+  notes?: string;
+  custom_fields?: Record<string, any>;
+}
+
+export interface ReceiptItem {
+  id: string;
+  receipt_id: string;
+  tenant_id: string;
+  product_id?: string;
+  variant_id?: string;
+  name: string;
+  sku?: string;
+  qty: number;
+  unit_price: number;
+  discount: number;
+  tax_rate: number;
+  tax_amount: number;
+  subtotal: number;
+  total: number;
+  notes?: string;
+}
+
+export interface ReceiptTemplate {
+  id: string;
+  tenant_id: string;
+  branch_id?: string;
+  name: string;
+  format: ReceiptFormat;
+  is_default: boolean;
+  business_name?: string;
+  business_address?: string;
+  business_phone?: string;
+  tin?: string;
+  header_text?: string;
+  footer_text?: string;
+  return_policy?: string;
+  thank_you_message?: string;
+  logo_url?: string;
+  show_logo?: boolean;
+  show_qr?: boolean;
+  show_barcode?: boolean;
+  show_tax_breakdown?: boolean;
+  show_cashier?: boolean;
+  show_customer?: boolean;
+  show_branch?: boolean;
+  show_device?: boolean;
+  show_return_policy?: boolean;
+  receipt_prefix?: string;
+  primary_color?: string;
+  font_size?: string;
+  paper_width?: number;
+  created_at: number;
+  updated_at: number;
+  created_by?: string;
+}
+
+export interface ReceiptPrintLog {
+  id: string;
+  receipt_id: string;
+  receipt_number: string;
+  tenant_id: string;
+  branch_id: string;
+  printed_by: string;
+  printed_by_name: string;
+  device_id?: string;
+  format: ReceiptFormat;
+  is_reprint: boolean;
+  reprint_reason?: string;
+  created_at: number;
+}
+
+export interface ReceiptShareLog {
+  id: string;
+  receipt_id: string;
+  receipt_number: string;
+  tenant_id: string;
+  branch_id: string;
+  shared_by: string;
+  channel: 'EMAIL' | 'SMS' | 'WHATSAPP' | 'IN_APP' | 'PUSH';
+  recipient?: string;
+  status: 'SENT' | 'FAILED';
+  created_at: number;
+}
+
+export interface ReceiptAuditLog {
+  id: string;
+  receipt_id: string;
+  receipt_number: string;
+  tenant_id: string;
+  branch_id: string;
+  user_id: string;
+  user_name: string;
+  action: 'CREATED' | 'PRINTED' | 'REPRINTED' | 'CANCELLED' | 'REFUNDED' | 'SHARED' | 'ARCHIVED' | 'RESTORED';
+  details?: string;
+  device_id?: string;
+  created_at: number;
+}
+
+export interface ReceiptQrCode {
+  id: string;
+  receipt_id: string;
+  receipt_number: string;
+  tenant_id: string;
+  payload: string;
+  created_at: number;
+}
+
+export interface ReceiptSignature {
+  id: string;
+  receipt_id: string;
+  receipt_number: string;
+  tenant_id: string;
+  algorithm: string;
+  hash: string;
+  input_string: string;
+  created_at: number;
+}
+
+export interface ReceiptNumberSequence {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  date_key: string;
+  last_sequence: number;
+  updated_at: number;
+}
+
 export interface ResetCommand {
   id: string;
   tenant_id: string;
@@ -1728,6 +1917,17 @@ class DukaPosDatabase extends Dexie {
   versionChanges!: Table<VersionChange>;
   deploymentHistory!: Table<DeploymentHistory>;
 
+  // ── Receipt Management Module Tables (v32) ────────────────────────────────
+  receipts!: Table<Receipt>;
+  receiptItems!: Table<ReceiptItem>;
+  receiptTemplates!: Table<ReceiptTemplate>;
+  receiptPrintLogs!: Table<ReceiptPrintLog>;
+  receiptShareLogs!: Table<ReceiptShareLog>;
+  receiptAuditLogs!: Table<ReceiptAuditLog>;
+  receiptQrCodes!: Table<ReceiptQrCode>;
+  receiptSignatures!: Table<ReceiptSignature>;
+  receiptNumberSequences!: Table<ReceiptNumberSequence>;
+
   constructor() {
     super('DukaPosDatabase');
 
@@ -2410,8 +2610,37 @@ class DukaPosDatabase extends Dexie {
       versionChanges: 'id, version_id, module, change_type, commit_hash, created_at',
       deploymentHistory: 'id, version, environment, status, deployment_start, created_at'
     });
+    // Version 32: Production-Grade Receipt Management Module
+    // Centralized receipt engine for all transaction types across DukaPos.
+    this.version(32).stores({
+      receipts: [
+        'id',
+        'receipt_number',
+        'tenant_id',
+        'branch_id',
+        'transaction_id',
+        'transaction_type',
+        'cashier_id',
+        'customer_id',
+        'status',
+        'sync_status',
+        'created_at',
+        'payment_method',
+        'origin',
+        '[tenant_id+branch_id+status]',
+        '[tenant_id+branch_id+created_at]',
+        '[tenant_id+status]',
+      ].join(', '),
+      receiptItems: 'id, receipt_id, tenant_id, product_id, variant_id',
+      receiptTemplates: 'id, tenant_id, branch_id, format, is_default',
+      receiptPrintLogs: 'id, receipt_id, tenant_id, branch_id, printed_by, created_at',
+      receiptShareLogs: 'id, receipt_id, tenant_id, branch_id, channel, created_at',
+      receiptAuditLogs: 'id, receipt_id, tenant_id, branch_id, user_id, action, created_at',
+      receiptQrCodes: 'id, receipt_id, receipt_number, tenant_id',
+      receiptSignatures: 'id, receipt_id, receipt_number, tenant_id',
+      receiptNumberSequences: 'id, tenant_id, branch_id, date_key',
+    });
 
-    // Add hooks to dynamically set 'origin' based on tenant ID naming convention
     const tablesWithOrigin = [
       'products', 'productVariants', 'customers', 'orders',
       'stockLedger', 'invoices', 'payments', 'suppliers',

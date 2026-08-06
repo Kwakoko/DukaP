@@ -26,6 +26,7 @@ const BusinessConsulting = lazy(() => import('./components/Views/BusinessConsult
 const TechnicalCompany = lazy(() => import('./components/Views/TechnicalCompany').then(m => ({ default: m.TechnicalCompany })));
 const AIInsightsView = lazy(() => import('./components/Views/AIInsightsView').then(m => ({ default: m.AIInsightsView })));
 const CashDrawer = lazy(() => import('./components/Views/CashDrawer/CashDrawer').then(m => ({ default: m.CashDrawer })));
+const Receipts = lazy(() => import('./components/Views/Receipts').then(m => ({ default: m.Receipts })));
 import { useSubscription } from './hooks/useSubscription';
 import { Search, Lock } from 'lucide-react';
 import { Dialog, Badge } from './components/UI/custom-ui';
@@ -571,6 +572,23 @@ const DukaPosAppContent: React.FC = () => {
       case 'Licensing & Permits':
       case 'Damaged/Broken Stock':
         return <Expenses />;
+      // Receipt Management module routes
+      case 'Receipts':
+      case 'Receipt Management':
+      case 'Receipt History':
+        return <Receipts initialTab="history" />;
+      case 'Receipt Viewer':
+      case 'Print Receipt':
+        return <Receipts initialTab="viewer" />;
+      case 'Receipt Templates':
+        return <Receipts initialTab="templates" />;
+      case 'Receipt Analytics':
+        return <Receipts initialTab="analytics" />;
+      case 'Receipt Verification':
+      case 'Verify Receipt':
+        return <Receipts initialTab="verification" />;
+      case 'Receipt Archive':
+        return <Receipts initialTab="archive" />;
       default:
         return <Dashboard />;
     }

@@ -29,3 +29,4 @@ dist-ssr
 # cloud_db.json.example on first run. Never commit it — production tenants
 # must register through the app. Only the .example template is committed.
 cloud_db.json
+scratch/
