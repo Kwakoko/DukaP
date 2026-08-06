@@ -1403,7 +1403,7 @@ export const POS: React.FC = () => {
       )}
 
       {/* Main split dashboard view */}
-      <div className="flex h-[calc(100vh-12.5rem)] flex-col lg:flex-row gap-4 overflow-hidden">
+      <div className="flex h-[calc(100vh-12.5rem)] flex-col lg:flex-row gap-4 overflow-hidden pb-20 lg:pb-0">
         {activeModule === 'Bar' && barSubView === 'FLOOR' ? (
           <div className="flex-1 flex flex-col space-y-4 overflow-y-auto">
             {/* Zone Selector */}
@@ -1641,7 +1641,7 @@ export const POS: React.FC = () => {
             </div>
             {cart.length > 0 && (
               <button onClick={handleClearCart} className="text-xs text-danger hover:underline font-semibold">
-                Clear (ESC)
+                Clear
               </button>
             )}
           </div>
@@ -1708,7 +1708,7 @@ export const POS: React.FC = () => {
           <div className="border-t border-slate-100 p-4 space-y-3 dark:border-darkbg-border/30">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                Customer Attachment (F2)
+                Customer Attachment
               </label>
               <button onClick={() => setIsAddCustomerOpen(true)} className="text-[10px] text-primary hover:underline font-bold flex items-center gap-1">
                 <UserPlus className="h-3 w-3" /> Add
@@ -1794,7 +1794,7 @@ export const POS: React.FC = () => {
               )}
 
               <div className="flex justify-between">
-                <span>Discount (F6)</span>
+                <span>Discount</span>
                 {discountPercent > 0 ? (
                   <span className="text-success font-bold">- Tsh. {discountAmount.toLocaleString()} ({discountPercent}%)</span>
                 ) : (
@@ -1869,7 +1869,7 @@ export const POS: React.FC = () => {
                   setIsHoldModalOpen(true);
                 }}
               >
-                Hold (F4)
+                Hold
               </Button>
               <Button 
                 variant="primary" 
@@ -1893,16 +1893,16 @@ export const POS: React.FC = () => {
                   setIsCheckoutOpen(true);
                 }}
               >
-                Pay (F7)
+                Pay
               </Button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Floating Mobile Cart Bar */}
+      {/* Floating Mobile Cart Bar — Positioned above BottomNav (bottom-20) */}
       {cart.length > 0 && (
-        <div className="lg:hidden fixed bottom-4 left-4 right-4 z-40 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl flex items-center justify-between border border-slate-700 animate-in slide-in-from-bottom duration-200">
+        <div className="lg:hidden fixed bottom-20 left-4 right-4 z-40 bg-slate-900 text-white rounded-2xl p-3 shadow-2xl flex items-center justify-between border border-slate-700 animate-in slide-in-from-bottom duration-200">
           <div className="flex items-center space-x-3">
             <div className="relative">
               <ShoppingCart className="h-6 w-6 text-primary" />
@@ -1957,24 +1957,10 @@ export const POS: React.FC = () => {
             You have {heldCarts.length} suspended carts active in this shift.
           </span>
           <Button size="xs" variant="primary" onClick={() => setIsResumeModalOpen(true)}>
-            Resume Cart (F5)
+            Resume Cart
           </Button>
         </div>
       )}
-
-      {/* Keyboard shortcuts quick help bar at bottom */}
-      <div className="pos-hotkey-bar">
-        <span className="text-xs font-bold text-slate-500 mr-2 uppercase">Shortcuts:</span>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F1</kbd> New Sale</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F2</kbd> Attach Cust</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F3</kbd> Search</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F4</kbd> Hold Cart</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F5</kbd> Resume</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F6</kbd> Cycle Discount</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F7</kbd> Pay/Checkout</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">F8</kbd> Reprint Receipt</div>
-        <div className="pos-hotkey-badge"><kbd className="pos-hotkey-kbd">ESC</kbd> Cancel</div>
-      </div>
 
       {/* --- Dialogs & Modals Implementation --- */}
 

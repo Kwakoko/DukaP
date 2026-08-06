@@ -543,180 +543,35 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
           </button>
 
           <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-white p-0.5 shadow-md border border-slate-200/80 dark:border-darkbg-border overflow-hidden shrink-0">
-            <img src="/dukapos-logo.png" alt="DukaPos Logo" className="h-full w-full object-contain" />
+            <img src={currentTenant.logo_url || "/dukapos-logo.png"} alt={currentTenant.name || "Tenant Logo"} className="h-full w-full object-contain" />
           </div>
-          <div className="hidden sm:block">
-            <h1 className="text-base font-black tracking-tight text-slate-900 dark:text-white leading-none">DukaPos</h1>
-            <p className="text-[9px] font-bold text-blue-600 dark:text-blue-400 mt-0.5 tracking-wider uppercase">Business Operating System</p>
-          </div>
+          <span className="font-bold text-sm text-slate-800 dark:text-white truncate max-w-[140px] sm:max-w-[200px]">
+            {currentTenant.name || 'DukaPos'}
+          </span>
         </div>
 
-        {/* Center Search Everything Trigger */}
-        <div className="mx-4 hidden max-w-md flex-1 md:block">
+        {/* Center Search Everything Trigger (Ctrl+K) */}
+        <div className="mx-2 sm:mx-4 flex-1 max-w-md">
           <button
             onClick={onOpenSearch}
-            className="flex h-10 w-full items-center space-x-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-400 hover:bg-slate-100 dark:border-darkbg-border dark:bg-darkbg/50 dark:hover:bg-darkbg"
+            className="flex h-9 sm:h-10 w-full items-center space-x-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs sm:text-sm text-slate-400 hover:bg-slate-100 dark:border-darkbg-border dark:bg-darkbg/50 dark:hover:bg-darkbg"
           >
-            <Search className="h-4 w-4" />
-            <span className="flex-1 text-left">Search products, customers, transactions...</span>
-            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-darkbg-border dark:text-slate-400">Ctrl+K</span>
+            <Search className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="flex-1 text-left truncate">Search products, customers, transactions...</span>
+            <span className="hidden sm:inline-block rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-darkbg-border dark:text-slate-400">Ctrl+K</span>
           </button>
         </div>
 
         {/* Right Actions */}
-        <div className="flex items-center space-x-1.5 sm:space-x-3">
-          {/* Industry Module Selector (Hidden in Super Admin View) */}
-          {!isSuperAdminView && (
-            displayedModules.length > 1 ? (
-              <div className="relative" ref={moduleContainerRef}>
-                <button
-                  onClick={() => {
-                    setShowModuleDropdown(!showModuleDropdown);
-                    setShowBranchDropdown(false);
-                    setShowSyncDropdown(false);
-                  }}
-                  className="flex items-center space-x-1 sm:space-x-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-                >
-                  <Layers className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                  <span className="hidden sm:inline">Module: {getShortModuleName(activeModule)}</span>
-                  <span className="sm:hidden font-bold">{getShortModuleName(activeModule)}</span>
-                  <ChevronDown className="h-3 w-3 shrink-0" />
-                </button>
-                
-                {showModuleDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowModuleDropdown(false)} />}
-                {showModuleDropdown && (
-                  <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card animate-in fade-in slide-in-from-top-2 duration-150 z-50">
-                    <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100 dark:border-darkbg-border pb-1 mb-1">Select Industry Module</div>
-                    <div className="max-h-80 overflow-y-auto space-y-0.5 pr-0.5">
-                      {displayedModules.map((mod) => (
-                        <button
-                          key={mod}
-                          onClick={() => {
-                            setActiveModule(mod);
-                            setShowModuleDropdown(false);
-                          }}
-                          className={`flex w-full items-center rounded-lg px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                            activeModule === mod ? 'bg-primary/5 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300'
-                          }`}
-                        >
-                          <span className="mr-2 text-sm shrink-0">
-                            {mod === 'Retail' && '🏪'}
-                            {mod === 'Restaurant' && '🍳'}
-                            {mod === 'SACCO' && '🪙'}
-                            {mod === 'Workforce' && '👥'}
-                            {mod === 'Pharmacy' && '💊'}
-                            {mod === 'Hardware' && '🔨'}
-                            {mod === 'Construction' && '👷'}
-                            {mod === 'Law' && '⚖️'}
-                            {mod === 'RealEstate' && '🏢'}
-                            {mod === 'Microfinance' && '📈'}
-                            {mod === 'Agriculture' && '🌱'}
-                            {mod === 'Electronics' && '🔌'}
-                            {mod === 'Garage' && '🔧'}
-                            {mod === 'FuelStation' && '⛽'}
-                            {mod === 'School' && '🎓'}
-                            {mod === 'Bookshop' && '📚'}
-                            {mod === 'Security' && '🛡️'}
-                            {mod === 'Water' && '💧'}
-                            {mod === 'Transport' && '🚌'}
-                            {mod === 'Waste' && '🗑️'}
-                            {mod === 'Wholesale' && '📦'}
-                            {mod === 'Fashion' && '👕'}
-                            {mod === 'Service' && '💼'}
-                            {mod === 'Cosmetics' && '✨'}
-                            {mod === 'Salon' && '✂️'}
-                            {mod === 'Hotel' && '🛏️'}
-                            {mod === 'Poultry' && '🐔'}
-                          </span>
-                          <span className="truncate">{MODULE_MANIFESTS[mod].name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-2.5 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
-                <Layers className="h-3.5 w-3.5 text-slate-400" />
-                <span>{getShortModuleName(activeModule)}</span>
-              </div>
-            )
-          )}
-
-          {/* Branch & Industry Context Switcher — Hidden for Super Admin */}
-          {isSuperAdminView ? (
-            // Super Admin shows platform HQ label — no branch switching
-            <div className="flex items-center space-x-1.5 rounded-lg border border-primary/30 bg-primary/5 dark:border-primary-dark/30 dark:bg-primary-dark/10 px-3 py-1.5 text-xs font-bold text-primary dark:text-primary-dark select-none shadow-sm">
-              <MapPin className="h-3.5 w-3.5" />
-              <span>DukaPos Platform HQ</span>
-            </div>
-          ) : uniqueBranchesCount > 1 ? (
-            <div className="relative" ref={branchContainerRef}>
-              <button
-                onClick={() => {
-                  setShowBranchDropdown(!showBranchDropdown);
-                  setShowModuleDropdown(false);
-                  setShowSyncDropdown(false);
-                }}
-                className="flex items-center space-x-1 sm:space-x-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:border-darkbg-border dark:bg-darkbg-card dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm"
-              >
-                <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                <span className="hidden lg:inline">{currentBranch.name} ({getShortModuleName(currentIndustry?.name || 'Retail')})</span>
-                <span className="lg:hidden">{getShortBranchName(currentBranch.name)}</span>
-                <ChevronDown className="h-3 w-3 shrink-0" />
-              </button>
-              
-              {showBranchDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowBranchDropdown(false)} />}
-              {showBranchDropdown && (
-                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card z-50">
-                  <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100 dark:border-darkbg-border pb-1.5 mb-1.5">
-                    Available Workspaces
-                  </div>
-                  {userContexts.map((ctx) => (
-                    <button
-                      key={ctx.id}
-                      onClick={() => {
-                        switchContext(ctx.tenant_id, ctx.branch_id, ctx.industry_id, ctx.role);
-                        setShowBranchDropdown(false);
-                        setActiveModule(ctx.industryName as any);
-                      }}
-                      className={`flex w-full flex-col rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                        currentBranch.id === ctx.branch_id && currentIndustry?.id === ctx.industry_id
-                          ? 'bg-primary/5 text-primary dark:bg-primary-dark/15 dark:text-primary-dark font-bold'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="truncate">{ctx.branchName}</span>
-                        <span className="text-[8px] font-bold bg-slate-100 dark:bg-darkbg px-1.5 py-0.5 rounded text-slate-500 shrink-0 font-mono">
-                          {getShortModuleName(ctx.industryName)}
-                        </span>
-                      </div>
-                      <span className="text-[9px] text-slate-400 mt-0.5">{ctx.role}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50/50 dark:border-darkbg-border dark:bg-darkbg-card px-2.5 py-1.5 text-xs font-bold text-slate-500 dark:text-slate-400 select-none shadow-sm">
-              <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-              <span className="hidden sm:inline">{currentBranch.name} ({getShortModuleName(currentIndustry?.name || 'Retail')})</span>
-              <span className="sm:hidden">{getShortBranchName(currentBranch.name)}</span>
-            </div>
-          )}
-
-
+        <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
           {/* Offline Status & Sync Queue Indicator */}
           <div className="relative" ref={syncContainerRef}>
             <button
               onClick={() => {
                 setShowSyncDropdown(!showSyncDropdown);
-                setShowModuleDropdown(false);
-                setShowBranchDropdown(false);
-                setShowProfileDropdown(false);
+                setShowNotifications(false);
               }}
-              className={`flex items-center space-x-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition ${
+              className={`flex items-center space-x-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-semibold shadow-sm transition ${
                 isOnline 
                   ? 'bg-success/10 text-success dark:bg-success/20' 
                   : 'bg-danger/10 text-danger dark:bg-danger/20'
@@ -807,16 +662,12 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
             )}
           </div>
 
-
           {/* ─── Real-time Notification Bell ─── */}
           <div className="relative" ref={notifContainerRef}>
             <button
               id="notification-bell-btn"
               onClick={() => {
                 setShowNotifications(!showNotifications);
-                setShowProfileDropdown(false);
-                setShowModuleDropdown(false);
-                setShowBranchDropdown(false);
                 setShowSyncDropdown(false);
               }}
               className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
@@ -889,124 +740,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 {/* Footer */}
                 <div className="px-4 py-2.5 border-t border-slate-100 dark:border-darkbg-border bg-slate-50/50 dark:bg-darkbg/20">
                   <p className="text-[10px] text-center text-slate-400">Alerts update live via IndexedDB sync</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-
-          {/* Global Theme Toggle */}
-          <button
-            onClick={toggleTheme}
-            className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
-          >
-            <Sun className="h-5 w-5 dark:hidden" />
-            <Moon className="h-5 w-5 hidden dark:block" />
-          </button>
-          
-          {/* User Profile Menu */}
-          <div className="relative" ref={profileContainerRef}>
-            <button
-              onClick={() => {
-                setShowProfileDropdown(!showProfileDropdown);
-                setShowModuleDropdown(false);
-                setShowBranchDropdown(false);
-                setShowSyncDropdown(false);
-              }}
-              className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-tr from-primary to-indigo-500 text-white font-bold text-[10px] shadow-sm hover:scale-105 transition duration-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:focus:ring-offset-darkbg shrink-0"
-            >
-              {userInitials}
-              <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-darkbg-card" />
-            </button>
-            {showProfileDropdown && <div className="fixed inset-0 z-40" onClick={() => setShowProfileDropdown(false)} />}
-            {showProfileDropdown && (
-              <div className="absolute right-0 mt-2.5 w-72 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-darkbg-border dark:bg-darkbg-card z-50 text-xs animate-in fade-in slide-in-from-top-2 duration-150">
-                {/* Header Profile Section */}
-                <div className="flex items-center space-x-3 p-3 border-b border-slate-100 dark:border-darkbg-border/50">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-indigo-500 text-white font-black text-xs shadow-md">
-                    {userInitials}
-                  </div>
-                  <div className="truncate flex-1">
-                    <div className="font-bold text-slate-800 dark:text-white text-xs truncate">{user?.name || profileName}</div>
-                    <div className="text-[10px] text-slate-400 truncate mt-0.5">{user?.email || profileEmail}</div>
-                  </div>
-                </div>
-
-                {/* Body metadata Context */}
-                <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-darkbg/40 rounded-xl my-1.5 border border-slate-100/50 dark:border-darkbg-border/30 space-y-1.5 text-[10px] text-slate-500 dark:text-slate-400">
-                  <div className="flex justify-between items-center">
-                    <span>Active Role</span>
-                    <span className="font-bold text-slate-700 dark:text-slate-300 bg-white dark:bg-darkbg-card border border-slate-200 dark:border-darkbg-border px-2 py-0.5 rounded-md">
-                      {user?.role || role}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span>Tenant ID</span>
-                    <span className="font-mono text-slate-500 dark:text-slate-400 font-bold">
-                      {tenantIdentifierService.getReadableTenantId(currentTenant)}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Submenu Options */}
-                <div className="space-y-0.5 p-1">
-                  <button 
-                    onClick={() => { 
-                      setShowAccountModal(true); 
-                      setShowProfileDropdown(false); 
-                    }}
-                    className="flex w-full items-center space-x-2.5 rounded-lg px-2.5 py-2 text-left text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors font-medium"
-                  >
-                    <User className="h-4 w-4 text-slate-400" />
-                    <span>My Account Settings</span>
-                  </button>
-
-                  <button 
-                    onClick={() => { 
-                      setShowSecurityModal(true); 
-                      setShowProfileDropdown(false); 
-                    }}
-                    className="flex w-full items-center space-x-2.5 rounded-lg px-2.5 py-2 text-left text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors font-medium"
-                  >
-                    <Lock className="h-4 w-4 text-slate-400" />
-                    <span>Security & MFA Keys</span>
-                  </button>
-
-                  <button 
-                    onClick={() => { 
-                      setShowSessionsModal(true); 
-                      setShowProfileDropdown(false); 
-                    }}
-                    className="flex w-full items-center space-x-2.5 rounded-lg px-2.5 py-2 text-left text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors font-medium"
-                  >
-                    <Smartphone className="h-4 w-4 text-slate-400" />
-                    <span>Active Device Sessions</span>
-                  </button>
-
-                  <button 
-                    onClick={() => { 
-                      setShowBillingModal(true); 
-                      setShowProfileDropdown(false); 
-                    }}
-                    className="flex w-full items-center space-x-2.5 rounded-lg px-2.5 py-2 text-left text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors font-medium"
-                  >
-                    <CreditCard className="h-4 w-4 text-slate-400" />
-                    <span>Billing & Invoice Log</span>
-                  </button>
-                </div>
-
-                {/* Footer Section */}
-                <div className="border-t border-slate-100 dark:border-darkbg-border/50 p-1 mt-1">
-                  <button
-                    onClick={() => {
-                      logout();
-                      setShowProfileDropdown(false);
-                    }}
-                    className="flex w-full items-center justify-center space-x-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 py-2.5 text-center text-xs font-bold transition dark:bg-red-950/20 dark:hover:bg-red-950/30 dark:text-red-400"
-                  >
-                    <LogOut className="h-4 w-4" />
-                    <span>Log out of session</span>
-                  </button>
                 </div>
               </div>
             )}
