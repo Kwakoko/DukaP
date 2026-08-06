@@ -15,7 +15,6 @@ import { tenantProvisioningService } from '../../services/tenantProvisioningServ
 import { tenantRecoveryService } from '../../services/tenantRecoveryService';
 import { SuperAdminService } from '../../services/superAdminService';
 import { Html5Qrcode } from 'html5-qrcode';
-import { AppVersionFooter } from '../Layout/AppVersionFooter';
 
 type AuthMode = 'select' | 'tenant-login' | 'admin-login' | 'context-selection' | 'register-wizard';
 
@@ -1875,10 +1874,17 @@ export const AuthGateway: React.FC = () => {
         </div>
       </div>
 
-      {/* Production Clean Full-Bleed End-to-End Footer Strip */}
-      <div className="lg:col-span-12 w-full border-t border-slate-200/80 dark:border-darkbg-border bg-white dark:bg-darkbg-card px-6 py-3 shadow-sm flex items-center justify-center text-xs select-none z-20">
-        <AppVersionFooter className="!py-0 !mb-0 md:!mb-0 text-slate-500 dark:text-slate-400" />
-      </div>
+      {/* Production Clean Full-Bleed End-to-End Login Page Footer Strip */}
+      <footer className="lg:col-span-12 w-full border-t border-slate-200/80 dark:border-darkbg-border bg-white dark:bg-darkbg-card px-6 py-3.5 shadow-sm flex items-center justify-center text-xs select-none z-20">
+        <div className="flex items-center justify-center space-x-1.5 flex-wrap gap-y-1 text-[11px] font-medium text-slate-400 dark:text-slate-500">
+          <span className="font-semibold text-slate-600 dark:text-slate-300">DukaPos</span>
+          <span>&copy; 2026</span>
+          <span className="text-slate-300 dark:text-slate-700">&bull;</span>
+          <span>Version <strong className="font-semibold text-slate-600 dark:text-slate-300">1.0.1</strong></span>
+          <span className="text-slate-300 dark:text-slate-700">&bull;</span>
+          <span>Build <code className="font-mono text-[10px] bg-slate-100 dark:bg-slate-800/80 px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 border border-slate-200/50 dark:border-slate-700/50">20260806.06</code></span>
+        </div>
+      </footer>
 
       {/* Mock QR Code Scanner Modal */}
       {showQRScanner && (
