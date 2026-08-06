@@ -58,8 +58,8 @@ export function mapProductToLocal(prod: any): Product {
   const tenantId = prod.tenantId || prod.tenant_id || '';
   const branchId = prod.branchId || prod.branch_id || '';
   const resolvedBuyingPrice = prod.buyingPrice ?? prod.buying_price ?? prod.costPrice ?? prod.cost_price ?? prod.unit_cost ?? 0;
-  const resolvedSellingPrice = prod.sellingPrice ?? prod.selling_price ?? prod.price ?? 0;
-  const resolvedStock = prod.stock ?? prod.quantity ?? prod.current_quantity ?? 0;
+  const rawStock = prod.stock ?? prod.quantity ?? prod.current_quantity ?? 0;
+  const resolvedStock = typeof rawStock === 'number' ? rawStock : (parseFloat(String(rawStock)) || 0);
 
   return {
     ...prod,

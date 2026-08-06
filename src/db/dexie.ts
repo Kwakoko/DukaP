@@ -2752,7 +2752,7 @@ export async function saveProductAndVariants(
 
     if (finalProduct.hasVariants || uniqueVariants.length > 0) {
       const activeVariants = uniqueVariants.filter(v => (v.status as any) !== 'Inactive');
-      const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
+      const totalStock = activeVariants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
       const reorderLevel = finalProduct.reorderLevel ?? 10;
       const stockStatus =
         totalStock === 0
@@ -2941,10 +2941,10 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
 
   if (parent.hasVariants || variants.length > 0) {
     // 1. Calculate Aggregate Stock & Variant Metrics across active variants
-    const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
-    const reservedStock = activeVariants.reduce((sum, v) => sum + (v.reservedStock || (v as any).reserved_stock || 0), 0);
+    const totalStock = activeVariants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+    const reservedStock = activeVariants.reduce((sum, v) => sum + (Number(v.reservedStock || (v as any).reserved_stock) || 0), 0);
     const availableQty = Math.max(0, totalStock - reservedStock);
-    const lowStockVariantCount = activeVariants.filter(v => (v.stock || 0) <= (v.reorderLevel ?? 5)).length;
+    const lowStockVariantCount = activeVariants.filter(v => (Number(v.stock) || 0) <= (v.reorderLevel ?? 5)).length;
 
     const reorderLevel = parent.reorderLevel ?? 10;
     const stockStatus =
@@ -3064,10 +3064,21 @@ export async function reconcileAllParentProductStocks(): Promise<{
   reconciledCount: number;
   fixedDiscrepancies: number;
 }> {
-  const products = await db.products.toArray();
   let reconciledCount = 0;
   let fixedDiscrepancies = 0;
 
+  // 1. Sanitize all variant stocks in database to numeric values
+  const allVariants = await db.productVariants.toArray();
+  for (const v of allVariants) {
+    if (typeof v.stock !== 'number' || isNaN(v.stock)) {
+      const cleanStock = Number(v.stock) || 0;
+      await db.productVariants.update(v.id, { stock: cleanStock });
+      v.stock = cleanStock;
+    }
+  }
+
+  // 2. Reconcile parent products
+  const products = await db.products.toArray();
   for (const p of products) {
     const childVariants = await db.productVariants
       .where('productId')
@@ -3079,11 +3090,20 @@ export async function reconcileAllParentProductStocks(): Promise<{
       const activeVars = childVariants.filter(
         v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt && !(v as any).deleted_at
       );
-      const computedTotal = activeVars.reduce((sum, v) => sum + (v.stock || 0), 0);
+      const computedTotal = activeVars.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
 
-      if (p.stock !== computedTotal || (p.hasVariants && activeVars.length === 0)) {
+      const hasStringStock = typeof p.stock !== 'number' || isNaN(p.stock) || String(p.stock).length > 8;
+
+      if (p.stock !== computedTotal || hasStringStock || (p.hasVariants && activeVars.length === 0)) {
         fixedDiscrepancies++;
         await syncParentStock(p.id);
+      }
+    } else {
+      // Simple product without variants
+      if (typeof p.stock !== 'number' || isNaN(p.stock) || String(p.stock).length > 8) {
+        const cleanStock = Number(p.stock) || 0;
+        await db.products.update(p.id, { stock: cleanStock });
+        fixedDiscrepancies++;
       }
     }
   }

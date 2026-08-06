@@ -71,8 +71,9 @@ const blankVariant = (productId: string, tenantId: string, branchId: string): Pr
   inheritBuyingPrice: true, inheritSellingPrice: true,
 });
 
-function fmtNum(n: number): string {
-  return n.toLocaleString('en-TZ', { maximumFractionDigits: 0 });
+function fmtNum(n: number | string): string {
+  const num = typeof n === 'number' ? n : parseFloat(String(n || 0)) || 0;
+  return (isNaN(num) ? 0 : num).toLocaleString('en-TZ', { maximumFractionDigits: 0 });
 }
 function fmtCcy(n: number): string {
   return `Tsh ${n.toLocaleString('en-TZ', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -1238,7 +1239,7 @@ export const Inventory: React.FC = () => {
         const cleanVars = Array.from(uniqueMap.values());
 
         const activeVars = cleanVars.filter(v => (v.status as any) !== 'Inactive' && !(v as any).deletedAt);
-        const computedStock = activeVars.reduce((sum, v) => sum + (v.stock || 0), 0);
+        const computedStock = activeVars.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
         setPStock(computedStock);
         if (product.stock !== computedStock) {
           await syncParentStock(product.id);
@@ -3077,7 +3078,7 @@ export const Inventory: React.FC = () => {
 
         let finalProduct: Product;
         if (selectedProduct) {
-          savedProd.stock = pHasVariants ? localVariants.reduce((sum, lv) => sum + (lv.stock || 0), 0) : pStock;
+          savedProd.stock = pHasVariants ? localVariants.reduce((sum, lv) => sum + (Number(lv.stock) || 0), 0) : (Number(pStock) || 0);
           finalProduct = await ProductService.updateProduct(pId, savedProd, ctx, isOnline);
         } else {
           finalProduct = await ProductService.createProduct(savedProd, ctx, isOnline);
@@ -3301,8 +3302,8 @@ export const Inventory: React.FC = () => {
           </div>
         ) : filteredProducts.map(p => {
           const effectiveStock = p.hasVariants
-            ? productVariants.filter(v => v.productId === p.id && v.status !== 'Inactive').reduce((sum, v) => sum + (v.stock || 0), 0)
-            : (p.stock || 0);
+            ? productVariants.filter(v => v.productId === p.id && v.status !== 'Inactive').reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
+            : (Number(p.stock) || 0);
 
           return (
             <div key={p.id} className={`inv-product-card ${effectiveStock <= 0 ? 'out-of-stock' : effectiveStock < 10 ? 'low-stock' : ''}`}>
