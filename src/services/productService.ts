@@ -584,39 +584,6 @@ export async function cleanDuplicateVariants(tenantId?: string): Promise<{ clean
   }
 }
 
-// ─── Effective Price Helpers ────────────────────────────────────────────────
-/**
- * Returns the effective buying price for a variant:
- * - If inheritBuyingPrice is true, returns the parent product buying price.
- * - If inheritBuyingPrice is false and the variant has its own buyingPrice, returns it.
- * - Falls back to parent buying price if no override is defined.
- */
-export function getEffectiveVariantBuyingPrice(
-  variant: Pick<ProductVariant, 'inheritBuyingPrice' | 'buyingPrice'>,
-  parent: Pick<Product, 'buyingPrice' | 'costPrice'>
-): number {
-  if (variant.inheritBuyingPrice !== false) {
-    return parent.buyingPrice ?? parent.costPrice ?? 0;
-  }
-  return variant.buyingPrice ?? parent.buyingPrice ?? parent.costPrice ?? 0;
-}
-
-/**
- * Returns the effective selling price for a variant:
- * - If inheritSellingPrice is true, returns the parent product selling price.
- * - If inheritSellingPrice is false and the variant has its own sellingPrice, returns it.
- * - Falls back to parent selling price if no override is defined.
- */
-export function getEffectiveVariantSellingPrice(
-  variant: Pick<ProductVariant, 'inheritSellingPrice' | 'sellingPrice'>,
-  parent: Pick<Product, 'sellingPrice' | 'price'>
-): number {
-  if (variant.inheritSellingPrice !== false) {
-    return parent.sellingPrice ?? parent.price ?? 0;
-  }
-  return variant.sellingPrice ?? parent.sellingPrice ?? parent.price ?? 0;
-}
-
 // ─── createProductWithVariants ──────────────────────────────────────────────
 export async function createProductWithVariants(
   input: Omit<Product, 'id' | 'updatedAt' | 'version' | 'syncStatus'>,

@@ -282,6 +282,9 @@ export const tenantHealthMonitor = {
     
     const interval = setInterval(async () => {
       try {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
         const localTenant = tenantId ? await safeGet(db.tenants, tenantId) : null;
         
         // 1. Verify existence of the tenant in local database

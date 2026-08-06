@@ -52,6 +52,7 @@ export function useSync() {
   // failed → isOnline was permanently false → nothing ever synced.
   const checkRealConnectivity = async (): Promise<boolean> => {
     if (!navigator.onLine) return false;
+    if (typeof document !== 'undefined' && document.hidden) return isOnlineRef.current;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);

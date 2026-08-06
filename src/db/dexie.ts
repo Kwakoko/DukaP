@@ -2942,11 +2942,7 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
   if (parent.hasVariants || variants.length > 0) {
     // 1. Calculate Aggregate Stock across active variants
     const totalStock = activeVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
-    const totalReservedStock = activeVariants.reduce((sum, v) => sum + (v.reservedStock || 0), 0);
-    const availableStock = Math.max(0, totalStock - totalReservedStock);
-    const variantCount = activeVariants.length;
     const reorderLevel = parent.reorderLevel ?? 10;
-    const lowStockVariantCount = activeVariants.filter(v => (v.stock || 0) > 0 && (v.stock || 0) <= (v.reorderLevel ?? reorderLevel)).length;
     const stockStatus =
       totalStock === 0
         ? 'OUT_OF_STOCK'
@@ -2986,14 +2982,9 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
     (updatedProd as any).minPrice = minPrice;
     (updatedProd as any).maxPrice = maxPrice;
     (updatedProd as any).priceRange = priceRange;
-    (updatedProd as any).availableQty = availableStock;
+    (updatedProd as any).availableQty = totalStock;
     (updatedProd as any).inStock = totalStock > 0;
     (updatedProd as any).stockStatus = stockStatus;
-    // Variant-First Architecture aggregates (read-only on parent)
-    (updatedProd as any).reservedStock = totalReservedStock;
-    (updatedProd as any).availableStock = availableStock;
-    (updatedProd as any).variantCount = variantCount;
-    (updatedProd as any).lowStockVariantCount = lowStockVariantCount;
 
     await db.products.put(updatedProd);
 
