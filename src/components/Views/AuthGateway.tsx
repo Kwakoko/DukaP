@@ -1057,19 +1057,6 @@ export const AuthGateway: React.FC = () => {
             })}
           </div>
         </div>
-
-        {/* Social Proof */}
-        <div className="relative z-10 flex items-center gap-3 mt-auto pt-4 border-t border-white/10 text-left">
-          <div className="flex -space-x-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#5b3ce4] bg-yellow-400 text-[10px] font-bold text-slate-800 shadow-sm">A</span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#5b3ce4] bg-pink-400 text-[10px] font-bold text-white shadow-sm">B</span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#5b3ce4] bg-teal-400 text-[10px] font-bold text-white shadow-sm">C</span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#5b3ce4] bg-blue-500 text-[10px] font-bold text-white shadow-sm">D</span>
-          </div>
-          <div className="text-[11px] text-indigo-100/80">
-            <span className="font-bold text-white">2,400+ businesses</span> trust DukaPos daily
-          </div>
-        </div>
       </div>
 
       {/* Right Form Column */}
@@ -1875,22 +1862,8 @@ export const AuthGateway: React.FC = () => {
         </div>
       </div>
 
-      {/* Production Full-Bleed End-to-End Footer Strip */}
-      <div className="lg:col-span-12 w-full border-t border-slate-200/80 dark:border-darkbg-border bg-white dark:bg-darkbg-card px-6 py-3 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3 text-xs select-none z-20">
-        {/* Left: Social Proof */}
-        <div className="flex items-center gap-3">
-          <div className="flex -space-x-2">
-            <span className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white dark:border-darkbg bg-yellow-400 text-[9px] font-bold text-slate-800 shadow-sm">A</span>
-            <span className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white dark:border-darkbg bg-pink-400 text-[9px] font-bold text-white shadow-sm">B</span>
-            <span className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white dark:border-darkbg bg-teal-400 text-[9px] font-bold text-white shadow-sm">C</span>
-            <span className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white dark:border-darkbg bg-blue-500 text-[9px] font-bold text-white shadow-sm">D</span>
-          </div>
-          <span className="text-[11px] text-slate-600 dark:text-slate-300 font-medium">
-            <strong className="font-bold text-[#5b3ce4] dark:text-indigo-400">2,400+ businesses</strong> trust DukaPos daily
-          </span>
-        </div>
-
-        {/* Right: App Version Metadata */}
+      {/* Production Clean Full-Bleed End-to-End Footer Strip */}
+      <div className="lg:col-span-12 w-full border-t border-slate-200/80 dark:border-darkbg-border bg-white dark:bg-darkbg-card px-6 py-3 shadow-sm flex items-center justify-center text-xs select-none z-20">
         <AppVersionFooter className="!py-0 !mb-0 md:!mb-0 text-slate-500 dark:text-slate-400" />
       </div>
 
