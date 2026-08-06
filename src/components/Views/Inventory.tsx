@@ -45,18 +45,20 @@ export function generateAutoSku(name?: string, category?: string, idOrSeed?: str
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 type InventoryTab = 'dashboard' | 'products' | 'categories' | 'stockSync' | 'ledger' | 'adjustments' | 'transfers' | 'alerts' | 'count' | 'reports' | 'recipes' | 'wastage';
-type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'batch' | 'serials' | 'reorder' | 'history';
+type ProductTab = 'general' | 'pricing' | 'inventory' | 'variants' | 'images' | 'suppliers' | 'batch' | 'serials' | 'reorder' | 'history';
 type ReportType = 'balance' | 'movements' | 'valuation' | 'batch' | 'expiry' | 'reorder' | 'slow' | 'negative';
 
 const PRODUCT_TABS: { id: ProductTab; label: string; icon: React.ReactNode }[] = [
-  { id: 'general',   label: 'General',   icon: <Package className="h-3.5 w-3.5" /> },
-  { id: 'pricing',   label: 'Pricing',   icon: <Tag className="h-3.5 w-3.5" /> },
-  { id: 'inventory', label: 'Inventory', icon: <BarChart3 className="h-3.5 w-3.5" /> },
-  { id: 'variants',  label: 'Variants',  icon: <Layers className="h-3.5 w-3.5" /> },
-  { id: 'batch',     label: 'Batch/Lot', icon: <Archive className="h-3.5 w-3.5" /> },
-  { id: 'serials',   label: 'Serials',   icon: <Hash className="h-3.5 w-3.5" /> },
-  { id: 'reorder',   label: 'Reorder',   icon: <Target className="h-3.5 w-3.5" /> },
-  { id: 'history',   label: 'History',   icon: <Clock className="h-3.5 w-3.5" /> },
+  { id: 'general',   label: 'General',      icon: <Package className="h-3.5 w-3.5" /> },
+  { id: 'pricing',   label: 'Pricing',      icon: <Tag className="h-3.5 w-3.5" /> },
+  { id: 'inventory', label: 'Inv. Summary', icon: <BarChart3 className="h-3.5 w-3.5" /> },
+  { id: 'variants',  label: 'Variants',     icon: <Layers className="h-3.5 w-3.5" /> },
+  { id: 'images',    label: 'Images',       icon: <Camera className="h-3.5 w-3.5" /> },
+  { id: 'suppliers', label: 'Suppliers',    icon: <Send className="h-3.5 w-3.5" /> },
+  { id: 'batch',     label: 'Batch/Lot',    icon: <Archive className="h-3.5 w-3.5" /> },
+  { id: 'serials',   label: 'Serials',      icon: <Hash className="h-3.5 w-3.5" /> },
+  { id: 'reorder',   label: 'Reorder',      icon: <Target className="h-3.5 w-3.5" /> },
+  { id: 'history',   label: 'History',      icon: <Clock className="h-3.5 w-3.5" /> },
 ];
 
 const INBOUND_TYPES = new Set(['OPENING_STOCK','PURCHASE_RECEIVE','CUSTOMER_RETURN','TRANSFER_IN','PRODUCTION_OUTPUT','ADJUSTMENT_GAIN']);
@@ -1083,6 +1085,33 @@ export const Inventory: React.FC = () => {
   const [newAttrValues, setNewAttrValues] = useState('');
   const [editingVariantIdx, setEditingVariantIdx] = useState<number | null>(null);
 
+  // Variants tab — search & filter
+  const [variantSearch, setVariantSearch] = useState('');
+  const [variantStatusFilter, setVariantStatusFilter] = useState<'all' | 'Active' | 'Inactive'>('all');
+
+  // Variants tab — bulk operations toolbar
+  const [bulkOpMode, setBulkOpMode] = useState<'none' | 'price' | 'stock' | 'status'>('none');
+  // Bulk price state
+  const [bulkPriceTarget, setBulkPriceTarget] = useState<'selling' | 'buying'>('selling');
+  const [bulkPriceMode, setBulkPriceMode] = useState<'fixed' | 'markup_pct' | 'discount_pct'>('fixed');
+  const [bulkPriceValue, setBulkPriceValue] = useState(0);
+  const [bulkPriceInherit, setBulkPriceInherit] = useState(false);
+  // Bulk stock state
+  const [bulkStockMode, setBulkStockMode] = useState<'set_reorder'>('set_reorder');
+  const [bulkStockValue, setBulkStockValue] = useState(0);
+  // Bulk status state
+  const [bulkStatusTarget, setBulkStatusTarget] = useState<'Active' | 'Inactive'>('Active');
+
+  // Images tab — gallery support
+  const [pGalleryImages, setPGalleryImages] = useState<string[]>([]);
+  const [pPrimaryImageIdx, setPPrimaryImageIdx] = useState(0);
+
+  // Suppliers tab — product-supplier link fields
+  const [pSupplierSku, setPSupplierSku] = useState('');
+  const [pSupplierLeadTimeDays, setPSupplierLeadTimeDays] = useState(0);
+  const [pSupplierMinQty, setPSupplierMinQty] = useState(0);
+  const [pSupplierNotes, setPSupplierNotes] = useState('');
+
   // Batch/Lot form
   const [batchNum, setBatchNum] = useState('');
   const [batchQty, setBatchQty] = useState(0);
@@ -1171,6 +1200,18 @@ export const Inventory: React.FC = () => {
     setBatchSupplier(''); setBatchSupplierId('');
     setSerialInput('');
     setProductCreatedAtDate('');
+    // Reset new state
+    setVariantSearch('');
+    setVariantStatusFilter('all');
+    setBulkOpMode('none');
+    setBulkPriceValue(0);
+    setBulkStockValue(0);
+    setPGalleryImages([]);
+    setPPrimaryImageIdx(0);
+    setPSupplierSku('');
+    setPSupplierLeadTimeDays(0);
+    setPSupplierMinQty(0);
+    setPSupplierNotes('');
 
     if (product) {
       setPId(product.id);
@@ -1195,6 +1236,16 @@ export const Inventory: React.FC = () => {
       setPBarcode(product.barcode || '');
       setPImageUrl((product as any).image_url || '');
       setPImagePreview((product as any).image_url || '');
+      // Hydrate image gallery from stored gallery or single image_url
+      const gallery: string[] = (product as any).galleryImages || [];
+      if (gallery.length === 0 && (product as any).image_url) gallery.push((product as any).image_url);
+      setPGalleryImages(gallery);
+      setPPrimaryImageIdx(0);
+      // Hydrate supplier link data
+      setPSupplierSku((product as any).supplierSku || '');
+      setPSupplierLeadTimeDays((product as any).supplierLeadTimeDays || 0);
+      setPSupplierMinQty((product as any).supplierMinQty || 0);
+      setPSupplierNotes((product as any).supplierNotes || '');
 
       if (product.hasVariants) {
         await cleanDuplicateVariants(currentTenant.id);
@@ -2911,9 +2962,73 @@ export const Inventory: React.FC = () => {
     });
   };
 
+  // ─── Role-based variant deletion guard ─────────────────────────────────────
+  // Tenant Owner / Tenant Admin  → may force-delete variants with ledger history
+  //                                 after explicit confirmation.
+  // All other roles              → blocked; prompted to archive instead.
+  const isOwnerOrAdmin = (() => {
+    const role = (user?.role || '').trim().toLowerCase();
+    return (
+      role === 'super admin' ||
+      role === 'tenant owner' ||
+      role === 'business owner' ||
+      role === 'business administrator' ||
+      role.includes('tenant_owner') ||
+      role.startsWith('role-owner') ||
+      role.includes('owner') ||
+      role.includes('admin')
+    );
+  })();
+
   const handleDeleteVariant = async (variantId: string) => {
     const ledgerCount = await db.stockLedger.where('variant_id').equals(variantId).count();
-    if (ledgerCount > 0) { alert(`⚠️ Cannot delete variant. It has ${ledgerCount} stock transaction records.\n\nSet status to Inactive instead.`); return; }
+
+    if (ledgerCount > 0) {
+      if (!isOwnerOrAdmin) {
+        // Regular users: block deletion and suggest archiving
+        alert(
+          `⚠️ This variant has ${ledgerCount} stock transaction record${ledgerCount !== 1 ? 's' : ''} in the ledger.\n\n` +
+          `Only a Tenant Owner or Tenant Admin can delete a variant with transaction history.\n\n` +
+          `✅ Recommended: Set the variant status to "Inactive" to archive it without data loss.`
+        );
+        return;
+      }
+
+      // Privileged users: require explicit confirmation
+      const confirmed = window.confirm(
+        `⚠️ PRIVILEGED DELETE — Tenant Admin / Owner Action\n\n` +
+        `This variant has ${ledgerCount} stock transaction record${ledgerCount !== 1 ? 's' : ''} in the ledger.\n\n` +
+        `Force-deleting it will permanently remove the variant and cascade-clean all its stock balance entries.\n` +
+        `Stock ledger entries will be preserved for audit purposes.\n\n` +
+        `This action CANNOT be undone.\n\nAre you absolutely sure you want to delete this variant?`
+      );
+      if (!confirmed) return;
+
+      // Cascade-clean stock balance rows for this variant
+      try {
+        await db.stockBalance.where('variant_id').equals(variantId).delete();
+        // If this is a saved variant (exists in DB), hard-delete it
+        const existing = await db.productVariants.get(variantId);
+        if (existing) {
+          await db.productVariants.delete(variantId);
+          // Log this privileged action to the security audit trail
+          await db.securityAuditLogs.put({
+            id: `aud-vdel-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            tenant_id: currentTenant.id,
+            branch_id: currentBranch.id,
+            user_id: user?.id || 'usr-anon',
+            action: 'VARIANT_FORCE_DELETED',
+            created_at: Date.now(),
+            details: `Force-deleted variant ${variantId} (${ledgerCount} ledger entries preserved) by ${user?.role} "${user?.name}"`,
+          } as any);
+        }
+      } catch (err: any) {
+        alert('Error force-deleting variant: ' + err.message);
+        return;
+      }
+    }
+
+    // Remove from local in-memory state (works for both new and saved variants)
     setLocalVariants(prev => prev.filter(v => v.id !== variantId));
     setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
     if (editingVariantIdx !== null) setEditingVariantIdx(null);
@@ -3019,10 +3134,21 @@ export const Inventory: React.FC = () => {
           sku: pSku.trim() || undefined, barcode: pBarcode.trim() || undefined,
           createdAt: targetTime,
           ...(pImageUrl.trim() && { image_url: pImageUrl.trim() }),
+          // Gallery & multi-image support
+          ...(pGalleryImages.length > 0 && {
+            galleryImages: pGalleryImages,
+            // Keep image_url in sync with the chosen primary image
+            image_url: pGalleryImages[pPrimaryImageIdx] || pImageUrl.trim() || undefined,
+          }),
           ...(pTaxRate > 0 && { taxRate: pTaxRate }),
           ...(pWholesalePrice > 0 && { wholesalePrice: pWholesalePrice }),
           ...(pVipPrice > 0 && { vipPrice: pVipPrice }),
           ...(pOnlinePrice > 0 && { onlinePrice: pOnlinePrice }),
+          // Supplier link fields
+          ...(pSupplierSku.trim() && { supplierSku: pSupplierSku.trim() }),
+          ...(pSupplierLeadTimeDays > 0 && { supplierLeadTimeDays: pSupplierLeadTimeDays }),
+          ...(pSupplierMinQty > 0 && { supplierMinQty: pSupplierMinQty }),
+          ...(pSupplierNotes.trim() && { supplierNotes: pSupplierNotes.trim() }),
         } as any;
 
         const ctx = { id: user?.id || 'usr-anon', tenant_id: currentTenant.id, branch_id: currentBranch.id, role: user?.role || 'Business Owner', name: user?.name || 'User' };
@@ -3743,42 +3869,154 @@ export const Inventory: React.FC = () => {
               </div>
             )}
 
-            {/* Inventory Tab */}
+            {/* Inventory Summary Tab — read-only KPI breakdown */}
             {editorTab === 'inventory' && (
-              <div className="inv-form-grid">
-                {pHasVariants ? (
-                  <div className="inv-field">
-                    <label>Current Stock (Computed from Variants)</label>
-                    <input
-                      className="inv-input"
-                      type="number"
-                      value={pStock}
-                      disabled
-                      title="Stock is automatically calculated from product variants."
-                    />
-                    <small style={{ color: '#6366f1', fontWeight: 600 }}>
-                      Stock is automatically calculated from product variants.
-                    </small>
+              <div style={{ padding: '8px 2px' }}>
+
+                {/* ── Header info bar ── */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                  <div style={{ padding: '10px 16px', borderRadius: '10px', background: 'var(--bg-slate-50,#f8fafc)', border: '1px solid var(--border-color,#e2e8f0)', flex: '1', minWidth: '130px' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#6366f1', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '2px' }}>Total Stock</div>
+                    <div style={{ fontSize: '1.5rem', fontWeight: 800, color: pStock <= 0 ? '#ef4444' : pStock < 10 ? '#f59e0b' : '#10b981', lineHeight: 1 }}>{fmtNum(pStock)}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '2px' }}>units on hand</div>
                   </div>
-                ) : (
+                  {pHasVariants && (
+                    <>
+                      <div style={{ padding: '10px 16px', borderRadius: '10px', background: 'var(--bg-slate-50,#f8fafc)', border: '1px solid var(--border-color,#e2e8f0)', flex: '1', minWidth: '130px' }}>
+                        <div style={{ fontSize: '0.7rem', color: '#8b5cf6', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '2px' }}>Active Variants</div>
+                        <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#8b5cf6', lineHeight: 1 }}>{localVariants.filter(v => v.status !== 'Inactive').length}</div>
+                        <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '2px' }}>of {localVariants.length} total</div>
+                      </div>
+                      <div style={{ padding: '10px 16px', borderRadius: '10px', background: 'var(--bg-slate-50,#f8fafc)', border: '1px solid var(--border-color,#e2e8f0)', flex: '1', minWidth: '130px' }}>
+                        <div style={{ fontSize: '0.7rem', color: '#f59e0b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '2px' }}>Low Stock Variants</div>
+                        <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f59e0b', lineHeight: 1 }}>
+                          {localVariants.filter(v => v.status !== 'Inactive' && (v.stock || 0) > 0 && (v.stock || 0) <= (v.reorderLevel ?? pReorderLevel ?? 5)).length}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '2px' }}>below reorder level</div>
+                      </div>
+                      <div style={{ padding: '10px 16px', borderRadius: '10px', background: 'var(--bg-slate-50,#f8fafc)', border: '1px solid var(--border-color,#e2e8f0)', flex: '1', minWidth: '130px' }}>
+                        <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '2px' }}>Out of Stock</div>
+                        <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ef4444', lineHeight: 1 }}>
+                          {localVariants.filter(v => v.status !== 'Inactive' && (v.stock || 0) <= 0).length}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '2px' }}>variants at zero</div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* ── Price & Buying Value ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                  <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#059669', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Buying Value</div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#059669', marginTop: '2px' }}>{fmtCcy(pBuyingPrice * pStock)}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{fmtCcy(pBuyingPrice)} × {fmtNum(pStock)} units</div>
+                  </div>
+                  <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#6366f1', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Selling Value</div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#6366f1', marginTop: '2px' }}>{fmtCcy(pSellingPrice * pStock)}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{fmtCcy(pSellingPrice)} × {fmtNum(pStock)} units</div>
+                  </div>
+                  <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#d97706', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Potential Profit</div>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#d97706', marginTop: '2px' }}>{fmtCcy((pSellingPrice - pBuyingPrice) * pStock)}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                      {pBuyingPrice > 0 ? `${(((pSellingPrice - pBuyingPrice) / pSellingPrice) * 100).toFixed(1)}% margin` : 'Set prices'}
+                    </div>
+                  </div>
+                  {pHasVariants && (() => {
+                    const variantPrices = localVariants
+                      .filter(v => v.status !== 'Inactive')
+                      .map(v => (v.inheritSellingPrice !== false ? pSellingPrice : (v.sellingPrice ?? pSellingPrice)));
+                    const minP = variantPrices.length ? Math.min(...variantPrices) : 0;
+                    const maxP = variantPrices.length ? Math.max(...variantPrices) : 0;
+                    return (
+                      <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                        <div style={{ fontSize: '0.7rem', color: '#8b5cf6', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Variant Price Range</div>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#8b5cf6', marginTop: '2px' }}>
+                          {minP === maxP ? fmtCcy(minP) : `${fmtCcy(minP)} – ${fmtCcy(maxP)}`}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>across active variants</div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* ── Stock Settings (editable) ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
+                  {!pHasVariants && (
+                    <div className="inv-field">
+                      <label>{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
+                      <input className="inv-input" type="number" min="0"
+                        value={pStock} onChange={e => setPStock(Number(e.target.value))}
+                        disabled={!!selectedProduct}
+                        title={selectedProduct ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}/>
+                      {selectedProduct && <small style={{opacity:0.6}}>Use Adjustments tab to change.</small>}
+                    </div>
+                  )}
+                  {pHasVariants && (
+                    <div className="inv-field">
+                      <label>Total Stock (Computed — Read-Only)</label>
+                      <input className="inv-input" type="number" value={pStock} disabled
+                        title="Aggregated from variant quantities." />
+                      <small style={{ color: '#6366f1', fontWeight: 600 }}>Sum of all active variant stock.</small>
+                    </div>
+                  )}
                   <div className="inv-field">
-                    <label>{selectedProduct ? 'Current Stock (ledger-managed)' : 'Opening Stock'}</label>
-                    <input className="inv-input" type="number" min="0"
-                      value={pStock} onChange={e => setPStock(Number(e.target.value))}
-                      disabled={!!selectedProduct}
-                      title={selectedProduct ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}/>
-                    {selectedProduct && <small style={{opacity:0.6}}>Use the Adjustments tab to change stock levels.</small>}
+                    <label>Reorder Level</label>
+                    <input className="inv-input" type="number" min="0" value={pReorderLevel} onChange={e => setPReorderLevel(Number(e.target.value))}/>
+                  </div>
+                </div>
+
+                {/* ── Variant Stock Breakdown Table ── */}
+                {pHasVariants && localVariants.length > 0 && (
+                  <div style={{ marginBottom: '14px' }}>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#374151', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Variant Stock Breakdown</div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="inv-table" style={{ minWidth: '420px' }}>
+                        <thead><tr><th>Variant</th><th>SKU</th><th>Stock</th><th>Buy Price</th><th>Sell Price</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {localVariants.map(v => {
+                            const effBuy  = v.inheritBuyingPrice  !== false ? pBuyingPrice  : (v.buyingPrice  ?? pBuyingPrice);
+                            const effSell = v.inheritSellingPrice !== false ? pSellingPrice : (v.sellingPrice ?? pSellingPrice);
+                            const isLow   = v.status !== 'Inactive' && (v.stock || 0) > 0 && (v.stock || 0) <= (v.reorderLevel ?? pReorderLevel ?? 5);
+                            const isOut   = v.status !== 'Inactive' && (v.stock || 0) <= 0;
+                            return (
+                              <tr key={v.id} className={isOut ? 'inv-row-danger' : isLow ? 'inv-row-warning' : ''}>
+                                <td>
+                                  <div className="flex flex-wrap gap-1">
+                                    {Object.entries(v.attributes || {}).map(([k, val]) => (
+                                      <span key={k} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+                                        {k}: {val}
+                                      </span>
+                                    ))}
+                                    {Object.keys(v.attributes || {}).length === 0 && <span className="text-slate-400 italic text-xs">{v.sku}</span>}
+                                  </div>
+                                </td>
+                                <td><code className="text-xs">{v.sku}</code></td>
+                                <td>
+                                  <strong style={{ color: isOut ? '#ef4444' : isLow ? '#f59e0b' : '#10b981' }}>{fmtNum(v.stock || 0)}</strong>
+                                  {isLow && <span style={{ fontSize: '10px', color: '#f59e0b', marginLeft: 4 }}>⚠ Low</span>}
+                                  {isOut && <span style={{ fontSize: '10px', color: '#ef4444', marginLeft: 4 }}>✗ Out</span>}
+                                </td>
+                                <td>{fmtCcy(effBuy)}{v.inheritBuyingPrice !== false && <span style={{fontSize:9,opacity:0.5,marginLeft:3}}>↑</span>}</td>
+                                <td>{fmtCcy(effSell)}{v.inheritSellingPrice !== false && <span style={{fontSize:9,opacity:0.5,marginLeft:3}}>↑</span>}</td>
+                                <td><span className={`inv-status-pill ${(v.status || 'Active').toLowerCase()}`}>{v.status || 'Active'}</span></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
-                <div className="inv-field">
-                  <label>Reorder Level</label>
-                  <input className="inv-input" type="number" min="0" value={pReorderLevel} onChange={e => setPReorderLevel(Number(e.target.value))}/>
-                </div>
+
+                {/* ── Recent Stock Movements ── */}
                 {selectedProduct && productHistory.length > 0 && (
-                  <div className="inv-field full">
-                    <label>Recent Stock Movements</label>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#374151', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Recent Stock Movements</div>
                     <div className="inv-mini-ledger">
-                      {productHistory.slice(0, 5).map(e => (
+                      {productHistory.slice(0, 8).map(e => (
                         <div key={e.id} className="inv-ledger-row">
                           <span className={`inv-ledger-type ${INBOUND_TYPES.has(e.movement_type) ? 'inbound' : 'outbound'}`}>
                             {INBOUND_TYPES.has(e.movement_type) ? '+' : ''}{e.quantity_change}
@@ -3803,6 +4041,223 @@ export const Inventory: React.FC = () => {
                   </div>
                 ) : (
                   <>
+                  <>
+                    {/* ── Variant Search + Filter Bar ── */}
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ position: 'relative', flex: 1, minWidth: '140px' }}>
+                        <Search size={13} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', pointerEvents: 'none' }}/>
+                        <input
+                          className="inv-input"
+                          style={{ paddingLeft: '28px', height: '34px', fontSize: '0.75rem' }}
+                          placeholder="Search variants by SKU, barcode, or attribute…"
+                          value={variantSearch}
+                          onChange={e => setVariantSearch(e.target.value)}
+                        />
+                      </div>
+                      {(['all', 'Active', 'Inactive'] as const).map(f => (
+                        <button
+                          key={f}
+                          type="button"
+                          className={`inv-filter-btn ${variantStatusFilter === f ? 'active' : ''}`}
+                          style={{ fontSize: '0.7rem', padding: '5px 10px', height: '34px' }}
+                          onClick={() => setVariantStatusFilter(f)}
+                        >
+                          {f === 'all' ? 'All' : f}
+                        </button>
+                      ))}
+                      <div style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#6366f1', fontWeight: 600 }}>
+                        {localVariants.filter(v => {
+                          const q = variantSearch.toLowerCase();
+                          const matchSearch = !q || v.sku.toLowerCase().includes(q) || (v.barcode || '').toLowerCase().includes(q) || Object.values(v.attributes || {}).join(' ').toLowerCase().includes(q);
+                          const matchStatus = variantStatusFilter === 'all' || v.status === variantStatusFilter;
+                          return matchSearch && matchStatus;
+                        }).length} / {localVariants.length} variants
+                      </div>
+                    </div>
+
+                    {/* ── Bulk Operations Toolbar (shown when selections exist) ── */}
+                    {selectedVariantIds.size > 0 && (
+                      <div style={{
+                        margin: '0 0 10px',
+                        padding: '10px 14px',
+                        background: 'rgba(99,102,241,0.06)',
+                        border: '1px solid rgba(99,102,241,0.25)',
+                        borderRadius: '10px',
+                        display: 'flex',
+                        gap: '8px',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                      }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6366f1' }}>
+                          {selectedVariantIds.size} selected
+                        </span>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: 1 }}>
+
+                          {/* Bulk Price */}
+                          <button
+                            type="button"
+                            className={`inv-filter-btn ${bulkOpMode === 'price' ? 'active' : ''}`}
+                            style={{ fontSize: '0.7rem', padding: '4px 10px' }}
+                            onClick={() => setBulkOpMode(prev => prev === 'price' ? 'none' : 'price')}
+                          >
+                            <DollarSign size={12}/> Bulk Price
+                          </button>
+
+                          {/* Bulk Reorder Level */}
+                          <button
+                            type="button"
+                            className={`inv-filter-btn ${bulkOpMode === 'stock' ? 'active' : ''}`}
+                            style={{ fontSize: '0.7rem', padding: '4px 10px' }}
+                            onClick={() => setBulkOpMode(prev => prev === 'stock' ? 'none' : 'stock')}
+                          >
+                            <Target size={12}/> Bulk Reorder Level
+                          </button>
+
+                          {/* Bulk Status */}
+                          <button
+                            type="button"
+                            className={`inv-filter-btn ${bulkOpMode === 'status' ? 'active' : ''}`}
+                            style={{ fontSize: '0.7rem', padding: '4px 10px' }}
+                            onClick={() => setBulkOpMode(prev => prev === 'status' ? 'none' : 'status')}
+                          >
+                            <Activity size={12}/> Bulk Status
+                          </button>
+
+                          <button
+                            type="button"
+                            style={{ marginLeft: 'auto', fontSize: '0.7rem', padding: '4px 10px', color: '#64748b', background: 'transparent', border: '1px solid #e2e8f0', borderRadius: '6px', cursor: 'pointer' }}
+                            onClick={() => setSelectedVariantIds(new Set())}
+                          >
+                            <X size={11}/> Deselect
+                          </button>
+                        </div>
+
+                        {/* Bulk Price Panel */}
+                        {bulkOpMode === 'price' && (
+                          <div style={{ width: '100%', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '8px' }}>
+                            <select
+                              className="inv-input"
+                              style={{ height: '32px', fontSize: '0.75rem', width: 'auto' }}
+                              value={bulkPriceTarget}
+                              onChange={e => setBulkPriceTarget(e.target.value as any)}
+                            >
+                              <option value="selling">Selling Price</option>
+                              <option value="buying">Buying Price</option>
+                            </select>
+                            <select
+                              className="inv-input"
+                              style={{ height: '32px', fontSize: '0.75rem', width: 'auto' }}
+                              value={bulkPriceMode}
+                              onChange={e => setBulkPriceMode(e.target.value as any)}
+                            >
+                              <option value="fixed">Fixed Amount (Tsh)</option>
+                              <option value="markup_pct">Markup % over Parent</option>
+                              <option value="discount_pct">Discount % off Parent</option>
+                            </select>
+                            {!bulkPriceInherit && (
+                              <input
+                                className="inv-input"
+                                type="number" min="0"
+                                style={{ height: '32px', fontSize: '0.75rem', width: '110px' }}
+                                placeholder={bulkPriceMode === 'fixed' ? 'Price (Tsh)' : 'Percent (%)'}
+                                value={bulkPriceValue || ''}
+                                onChange={e => setBulkPriceValue(Number(e.target.value))}
+                              />
+                            )}
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', fontWeight: 600, color: '#6366f1', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={bulkPriceInherit} onChange={e => setBulkPriceInherit(e.target.checked)} />
+                              Inherit parent
+                            </label>
+                            <button
+                              type="button"
+                              className="inv-add-btn"
+                              style={{ fontSize: '0.75rem', padding: '5px 12px' }}
+                              onClick={() => {
+                                const ids = Array.from(selectedVariantIds);
+                                const parentPrice = bulkPriceTarget === 'selling' ? pSellingPrice : pBuyingPrice;
+                                setLocalVariants(prev => prev.map((v, idx) => {
+                                  if (!ids.includes(v.id)) return v;
+                                  if (bulkPriceInherit) {
+                                    return bulkPriceTarget === 'selling'
+                                      ? { ...v, inheritSellingPrice: true, sellingPrice: undefined }
+                                      : { ...v, inheritBuyingPrice: true, buyingPrice: undefined };
+                                  }
+                                  let newVal = bulkPriceValue;
+                                  if (bulkPriceMode === 'markup_pct') newVal = parentPrice * (1 + bulkPriceValue / 100);
+                                  else if (bulkPriceMode === 'discount_pct') newVal = parentPrice * (1 - bulkPriceValue / 100);
+                                  return bulkPriceTarget === 'selling'
+                                    ? { ...v, inheritSellingPrice: false, sellingPrice: Math.round(newVal) }
+                                    : { ...v, inheritBuyingPrice: false, buyingPrice: Math.round(newVal) };
+                                }));
+                                setBulkOpMode('none');
+                              }}
+                            >
+                              <Check size={12}/> Apply
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Bulk Reorder Level Panel */}
+                        {bulkOpMode === 'stock' && (
+                          <div style={{ width: '100%', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '8px' }}>
+                            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#374151' }}>Set Reorder Level:</label>
+                            <input
+                              className="inv-input"
+                              type="number" min="0"
+                              style={{ height: '32px', fontSize: '0.75rem', width: '100px' }}
+                              placeholder="Min qty"
+                              value={bulkStockValue || ''}
+                              onChange={e => setBulkStockValue(Number(e.target.value))}
+                            />
+                            <button
+                              type="button"
+                              className="inv-add-btn"
+                              style={{ fontSize: '0.75rem', padding: '5px 12px' }}
+                              onClick={() => {
+                                const ids = Array.from(selectedVariantIds);
+                                setLocalVariants(prev => prev.map(v =>
+                                  ids.includes(v.id) ? { ...v, reorderLevel: bulkStockValue } : v
+                                ));
+                                setBulkOpMode('none');
+                              }}
+                            >
+                              <Check size={12}/> Apply
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Bulk Status Panel */}
+                        {bulkOpMode === 'status' && (
+                          <div style={{ width: '100%', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '8px' }}>
+                            <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#374151' }}>Set Status to:</label>
+                            <select
+                              className="inv-input"
+                              style={{ height: '32px', fontSize: '0.75rem', width: 'auto' }}
+                              value={bulkStatusTarget}
+                              onChange={e => setBulkStatusTarget(e.target.value as any)}
+                            >
+                              <option value="Active">Active</option>
+                              <option value="Inactive">Inactive (Archive)</option>
+                            </select>
+                            <button
+                              type="button"
+                              className="inv-add-btn"
+                              style={{ fontSize: '0.75rem', padding: '5px 12px' }}
+                              onClick={() => {
+                                const ids = Array.from(selectedVariantIds);
+                                setLocalVariants(prev => prev.map(v =>
+                                  ids.includes(v.id) ? { ...v, status: bulkStatusTarget } : v
+                                ));
+                                setBulkOpMode('none');
+                              }}
+                            >
+                              <Check size={12}/> Apply
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="inv-attr-builder">
                       <h4>Attribute Builder</h4>
                       <div className="inv-attr-row">
@@ -3835,6 +4290,10 @@ export const Inventory: React.FC = () => {
                           const v = blankVariant(pId, currentTenant.id, currentBranch.id);
                           setLocalVariants(prev => { setEditingVariantIdx(prev.length); return [...prev, v]; });
                         }}><Plus size={14}/> Manual Variant</button>
+                        {/* Variant count badge */}
+                        <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: 'auto', alignSelf: 'center' }}>
+                          {localVariants.length} variant{localVariants.length !== 1 ? 's' : ''} · {localVariants.filter(v => v.status !== 'Inactive').length} active
+                        </span>
                       </div>
                     </div>
                     <div className="inv-variants-table-wrap">
@@ -3850,9 +4309,243 @@ export const Inventory: React.FC = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {localVariants.map((v, idx) => (
-                            <React.Fragment key={v.id}>
-                              <tr className={`inv-var-row ${editingVariantIdx === idx ? 'editing' : ''}`} onClick={() => setEditingVariantIdx(editingVariantIdx === idx ? null : idx)}>
+                                                 {(() => {
+                          const filtered = localVariants.filter(v => {
+                            const q = variantSearch.toLowerCase();
+                            const matchSearch = !q || v.sku.toLowerCase().includes(q) || (v.barcode || '').toLowerCase().includes(q) || Object.values(v.attributes || {}).join(' ').toLowerCase().includes(q);
+                            const matchStatus = variantStatusFilter === 'all' || v.status === variantStatusFilter;
+                            return matchSearch && matchStatus;
+                          });
+                          if (filtered.length === 0) {
+                            return (
+                              <div className="inv-empty-state small">
+                                <Layers size={24} opacity={0.3}/>
+                                <p>{localVariants.length === 0 ? 'No variants yet. Use the Attribute Builder above.' : 'No variants match your search.'}</p>
+                              </div>
+                            );
+                          }
+                          return filtered.map((v) => {
+                            const idx = localVariants.findIndex(lv => lv.id === v.id);
+                            return (
+                              <React.Fragment key={v.id}>
+                                <tr className={`inv-var-row ${editingVariantIdx === idx ? 'editing' : ''}`} onClick={() => setEditingVariantIdx(editingVariantIdx === idx ? null : idx)}>
+                                  <td onClick={e => e.stopPropagation()}>
+                                    <input type="checkbox" checked={selectedVariantIds.has(v.id)} onChange={() => {
+                                      setSelectedVariantIds(prev => { const n = new Set(prev); if (n.has(v.id)) n.delete(v.id); else n.add(v.id); return n; });
+                                    }}/>
+                                  </td>
+                                  <td>
+                                    <div className="flex flex-wrap gap-1 items-center">
+                                      {Object.entries(v.attributes).map(([k, val]) => {
+                                        const cleanKey = k.includes(',') ? k.split(',').join(' / ') : k;
+                                        return (
+                                          <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60">
+                                            <Tag className="h-3 w-3 text-indigo-500 shrink-0" />
+                                            <span>{cleanKey}:</span>
+                                            <span className="font-extrabold text-indigo-900 dark:text-indigo-100">{val}</span>
+                                          </span>
+                                        );
+                                      })}
+                                      {Object.keys(v.attributes).length === 0 && <span className="text-slate-400 italic text-xs">No attributes</span>}
+                                    </div>
+                                  </td>
+                                  <td><code className="font-mono text-xs bg-slate-100 dark:bg-darkbg px-1.5 py-0.5 rounded border border-slate-200 dark:border-darkbg-border">{v.sku}</code></td>
+                                  <td><span className="font-mono text-xs text-slate-500">{v.barcode || '—'}</span></td>
+                                  <td><span className="font-semibold text-slate-700 dark:text-slate-300">{v.inheritBuyingPrice ? `↑${fmtCcy(pBuyingPrice)}` : fmtCcy(v.buyingPrice ?? 0)}</span></td>
+                                  <td><span className="font-semibold text-slate-700 dark:text-slate-300">{v.inheritSellingPrice ? `↑${fmtCcy(pSellingPrice)}` : fmtCcy(v.sellingPrice ?? 0)}</span></td>
+                                  <td><span className="font-extrabold font-mono" style={{color: v.stock <= 0 ? '#ef4444' : v.stock < 5 ? '#f59e0b' : '#10b981'}}>{v.stock}</span></td>
+                                  <td><span className={`inv-status-pill ${v.status.toLowerCase()}`}>{v.status}</span></td>
+                                  <td onClick={e => e.stopPropagation()}>
+                                    <button onClick={() => handleDeleteVariant(v.id)} className="inv-icon-btn delete" title={isOwnerOrAdmin ? 'Delete variant (Privileged)' : 'Delete variant (no transactions only)'}><Trash2 size={13}/></button>
+                                  </td>
+                                </tr>
+                                {editingVariantIdx === idx && (
+                                  <tr className="inv-var-expand">
+                                    <td colSpan={9} className="p-0 border-b border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/30 dark:bg-indigo-950/20">
+                                      <div className="p-4 bg-white dark:bg-darkbg-card border border-indigo-100 dark:border-indigo-900/40 rounded-xl m-2 shadow-xs space-y-4">
+                                        {/* Header Bar */}
+                                        <div className="flex items-center justify-between border-b border-slate-100 dark:border-darkbg-border/40 pb-2.5">
+                                          <div className="flex items-center gap-2">
+                                            <span className="h-2 w-2 rounded-full bg-indigo-600 animate-pulse" />
+                                            <span className="text-xs font-bold text-slate-800 dark:text-white uppercase tracking-wider">
+                                              Editing Variant Configuration
+                                            </span>
+                                            <span className="text-xs text-indigo-600 dark:text-indigo-400 font-semibold bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-100 dark:border-indigo-900/40">
+                                              {Object.entries(v.attributes).map(([k, val]) => `${k.includes(',') ? k.split(',').join(' / ') : k}: ${val}`).join(' · ') || v.sku}
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-white font-bold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-darkbg dark:hover:bg-darkbg/80 transition-all border border-slate-200/80 dark:border-darkbg-border"
+                                            onClick={(e) => { e.stopPropagation(); setEditingVariantIdx(null); }}
+                                          >
+                                            <X className="h-3.5 w-3.5" /> Close Editor
+                                          </button>
+                                        </div>
+
+                                        {/* Section 1: Identifiers */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                          <div className="inv-field">
+                                            <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                              <span>SKU *</span>
+                                              <span className="text-[10px] text-slate-400 font-normal">Unique Stock Keeping Unit</span>
+                                            </label>
+                                            <input
+                                              className="inv-input h-9 font-mono text-xs font-semibold"
+                                              value={v.sku}
+                                              onChange={e => handleUpdateVariant(idx, { sku: e.target.value })}
+                                              placeholder="e.g. SERE-S"
+                                            />
+                                          </div>
+
+                                          <div className="inv-field">
+                                            <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                              <span>Barcode</span>
+                                              <span className="text-[10px] text-slate-400 font-normal">Optional EAN/UPC Code</span>
+                                            </label>
+                                            <div className="flex gap-1.5 items-center">
+                                              <input
+                                                className="inv-input h-9 font-mono text-xs flex-1"
+                                                value={v.barcode || ''}
+                                                onChange={e => handleUpdateVariant(idx, { barcode: e.target.value })}
+                                                placeholder="Scan or enter barcode"
+                                              />
+                                              <Button
+                                                type="button"
+                                                variant="outline"
+                                                className="h-9 px-2.5 text-xs font-bold flex items-center gap-1 shrink-0"
+                                                onClick={() => {
+                                                  setScannerTargetField('variant');
+                                                  setActiveVariantIndexForScan(idx);
+                                                  setIsCameraScannerOpen(true);
+                                                }}
+                                                title="Scan barcode with camera"
+                                              >
+                                                <Barcode className="h-3.5 w-3.5" />
+                                                <span>Scan</span>
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        {/* Section 2: Pricing Strategy Cards */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                          {/* Buying Price Card */}
+                                          <div className="p-3 bg-slate-50/80 dark:bg-darkbg/60 border border-slate-200/80 dark:border-darkbg-border rounded-xl space-y-2">
+                                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                              <input
+                                                type="checkbox"
+                                                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                                                checked={!!v.inheritBuyingPrice}
+                                                onChange={e => handleUpdateVariant(idx, { inheritBuyingPrice: e.target.checked })}
+                                              />
+                                              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                                                Inherit Parent Buy Price ({fmtCcy(pBuyingPrice)})
+                                              </span>
+                                            </label>
+                                            {v.inheritBuyingPrice ? (
+                                              <div className="p-2 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-900/40 rounded-lg text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1.5">
+                                                <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                                <span>Inheriting Base Cost: <strong>{fmtCcy(pBuyingPrice)}</strong></span>
+                                              </div>
+                                            ) : (
+                                              <div className="inv-field mt-1">
+                                                <label className="text-[11px] font-bold text-slate-500">Custom Buying Price Override (Tsh)</label>
+                                                <input
+                                                  className="inv-input h-9 text-xs font-mono font-semibold"
+                                                  type="number"
+                                                  min="0"
+                                                  value={v.buyingPrice ?? 0}
+                                                  onChange={e => handleUpdateVariant(idx, { buyingPrice: Number(e.target.value) })}
+                                                  placeholder="Enter custom buy price"
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Selling Price Card */}
+                                          <div className="p-3 bg-slate-50/80 dark:bg-darkbg/60 border border-slate-200/80 dark:border-darkbg-border rounded-xl space-y-2">
+                                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                              <input
+                                                type="checkbox"
+                                                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                                                checked={!!v.inheritSellingPrice}
+                                                onChange={e => handleUpdateVariant(idx, { inheritSellingPrice: e.target.checked })}
+                                              />
+                                              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                                                Inherit Parent Sell Price ({fmtCcy(pSellingPrice)})
+                                              </span>
+                                            </label>
+                                            {v.inheritSellingPrice ? (
+                                              <div className="p-2 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-200/60 dark:border-indigo-900/40 rounded-lg text-[11px] text-indigo-700 dark:text-indigo-400 font-semibold flex items-center gap-1.5">
+                                                <Check className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                                                <span>Inheriting Base Retail: <strong>{fmtCcy(pSellingPrice)}</strong></span>
+                                              </div>
+                                            ) : (
+                                              <div className="inv-field mt-1">
+                                                <label className="text-[11px] font-bold text-slate-500">Custom Selling Price Override (Tsh)</label>
+                                                <input
+                                                  className="inv-input h-9 text-xs font-mono font-semibold"
+                                                  type="number"
+                                                  min="0"
+                                                  value={v.sellingPrice ?? 0}
+                                                  onChange={e => handleUpdateVariant(idx, { sellingPrice: Number(e.target.value) })}
+                                                  placeholder="Enter custom sell price"
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        {/* Section 3: Status & Stock */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                          <div className="inv-field">
+                                            <label className="text-xs font-bold text-slate-700 dark:text-slate-200">Operational Status</label>
+                                            <select
+                                              className="inv-input h-9 text-xs rounded-lg border border-slate-200 bg-slate-50 dark:border-darkbg-border dark:bg-darkbg dark:text-white font-medium"
+                                              value={v.status}
+                                              onChange={e => handleUpdateVariant(idx, { status: e.target.value as any })}
+                                            >
+                                              <option value="Active">Active (Available for POS & Sales)</option>
+                                              <option value="Inactive">Inactive (Hidden from POS)</option>
+                                            </select>
+                                          </div>
+
+                                          <div className="inv-field">
+                                            <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                                              <span>{selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Current Stock (Ledger-Managed)' : 'Opening Stock'}</span>
+                                              {selectedProduct && originalVariants.some(ov => ov.id === v.id) && (
+                                                <span className="text-[10px] text-amber-600 font-normal">Use Stock Adjustments tab to change</span>
+                                              )}
+                                            </label>
+                                            <input
+                                              className="inv-input h-9 text-xs font-mono font-bold"
+                                              type="number"
+                                              min="0"
+                                              value={v.stock || 0}
+                                              onChange={e => handleUpdateVariant(idx, { stock: Number(e.target.value) })}
+                                              disabled={!!selectedProduct && originalVariants.some(ov => ov.id === v.id)}
+                                              title={selectedProduct && originalVariants.some(ov => ov.id === v.id) ? 'Stock is managed via ledger. Use Adjustments tab.' : ''}
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          });
+                        })()}
+                       {localVariants.length === 0 && (
+                         <tr><td colSpan={9}>
+                           <div className="inv-empty-state small">
+                             <Layers size={24} opacity={0.3}/>
+                             <p>No variants yet. Use the Attribute Builder above.</p>
+                           </div>
+                         </td></tr>
+                       )}
+
                                 <td onClick={e => e.stopPropagation()}>
                                   <input type="checkbox" checked={selectedVariantIds.has(v.id)} onChange={() => {
                                     setSelectedVariantIds(prev => { const n = new Set(prev); if (n.has(v.id)) n.delete(v.id); else n.add(v.id); return n; });
@@ -4073,8 +4766,233 @@ export const Inventory: React.FC = () => {
               </div>
             )}
 
+            {/* Images Tab */}
+            {editorTab === 'images' && (
+              <div style={{ padding: '4px 0' }}>
+                {/* Primary Image */}
+                <div style={{ fontWeight: 700, fontSize: '0.75rem', color: '#374151', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '10px' }}>Product Images</div>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {/* Existing gallery images */}
+                  {pGalleryImages.map((img, gIdx) => (
+                    <div
+                      key={gIdx}
+                      style={{
+                        position: 'relative', width: '90px', height: '90px',
+                        borderRadius: '10px', overflow: 'hidden',
+                        border: gIdx === pPrimaryImageIdx ? '2.5px solid #6366f1' : '2px solid #e2e8f0',
+                        cursor: 'pointer', flexShrink: 0,
+                        boxShadow: gIdx === pPrimaryImageIdx ? '0 0 0 2px #6366f150' : 'none',
+                        transition: 'all 0.15s',
+                      }}
+                      onClick={() => setPPrimaryImageIdx(gIdx)}
+                      title={gIdx === pPrimaryImageIdx ? 'Primary image' : 'Click to set as primary'}
+                    >
+                      <img src={img} alt={`Product ${gIdx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      {gIdx === pPrimaryImageIdx && (
+                        <div style={{ position: 'absolute', bottom: 4, left: '50%', transform: 'translateX(-50%)', background: '#6366f1', color: 'white', fontSize: '9px', fontWeight: 700, borderRadius: '4px', padding: '1px 6px' }}>PRIMARY</div>
+                      )}
+                      <button
+                        type="button"
+                        style={{ position: 'absolute', top: 3, right: 3, background: '#ef4444', color: 'white', border: 'none', borderRadius: '50%', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.25)' }}
+                        onClick={e => { e.stopPropagation(); const next = pGalleryImages.filter((_, i) => i !== gIdx); setPGalleryImages(next); if (pPrimaryImageIdx >= next.length) setPPrimaryImageIdx(Math.max(0, next.length - 1)); }}
+                        title="Remove image"
+                      >
+                        <X size={10}/>
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* Add new image */}
+                  <div
+                    style={{
+                      width: '90px', height: '90px', borderRadius: '10px',
+                      border: '2px dashed #6366f1', display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                      gap: '4px', color: '#6366f1', flexShrink: 0, transition: 'all 0.15s',
+                      background: 'rgba(99,102,241,0.04)',
+                    }}
+                    onClick={() => (document.getElementById('gallery-image-file-input') as HTMLInputElement)?.click()}
+                    title="Add image"
+                  >
+                    <Plus size={20} />
+                    <span style={{ fontSize: '10px', fontWeight: 700 }}>Add Photo</span>
+                  </div>
+                  <input
+                    id="gallery-image-file-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      files.forEach(file => {
+                        if (file.size > 5 * 1024 * 1024) return;
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                          const dataUrl = ev.target?.result as string;
+                          setPGalleryImages(prev => {
+                            const next = [...prev, dataUrl];
+                            // Sync primary image to first in gallery
+                            if (next.length === 1) { setPImageUrl(dataUrl); setPImagePreview(dataUrl); }
+                            return next;
+                          });
+                        };
+                        reader.readAsDataURL(file);
+                      });
+                    }}
+                  />
+                </div>
+
+                {/* Primary image sync hint */}
+                {pGalleryImages.length > 0 && (
+                  <div style={{ padding: '10px 14px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '10px', fontSize: '0.75rem', color: '#6366f1', fontWeight: 600, marginBottom: '12px' }}>
+                    🖼️ The <strong>PRIMARY</strong> image is used in product cards, POS, and receipts.
+                    Click any image to set it as primary.
+                    {pGalleryImages.length > 1 && <span style={{ marginLeft: '8px', color: '#94a3b8', fontWeight: 400 }}>({pGalleryImages.length} images in gallery)</span>}
+                  </div>
+                )}
+
+                {/* Camera + URL import */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="inv-add-btn outline"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={startImageCamera}
+                  >
+                    <Camera size={14}/> Take Photo
+                  </button>
+                  <div style={{ flex: 1, minWidth: '200px' }}>
+                    <input
+                      className="inv-input"
+                      placeholder="Or paste image URL and press Enter…"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const url = (e.target as HTMLInputElement).value.trim();
+                          if (url) { setPGalleryImages(prev => [...prev, url]); (e.target as HTMLInputElement).value = ''; }
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {pGalleryImages.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '24px', color: '#94a3b8', fontSize: '0.8rem' }}>
+                    <Camera size={32} style={{ margin: '0 auto 8px', opacity: 0.3 }} />
+                    <div>No images yet. Add photos to enhance this product's presentation.</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Suppliers Tab */}
+            {editorTab === 'suppliers' && (
+              <div style={{ padding: '4px 0' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.75rem', color: '#374151', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '12px' }}>Supplier Product Link</div>
+
+                {/* Supplier selector (reuse existing field) */}
+                <div className="inv-form-grid" style={{ marginBottom: '10px' }}>
+                  <div className="inv-field">
+                    <label className="flex items-center justify-between text-xs font-bold mb-1">
+                      <span>Primary Supplier</span>
+                      {allSuppliers.length === 0 && (
+                        <span className="text-[10px] text-amber-500 font-normal">No suppliers found — add via Purchasing</span>
+                      )}
+                    </label>
+                    {allSuppliers.length > 0 ? (
+                      <select
+                        className="inv-input h-10 rounded-lg border border-slate-200 bg-slate-50 text-xs px-2.5 dark:border-darkbg-border dark:bg-darkbg dark:text-white"
+                        value={pSupplierId}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const sup = allSuppliers.find(s => s.id === val);
+                          setPSupplierId(val);
+                          setPSupplier(sup?.name || '');
+                        }}
+                      >
+                        <option value="">— Select Supplier (Optional) —</option>
+                        {allSuppliers.map(s => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}{s.trading_name ? ` (${s.trading_name})` : ''} · {s.supplier_code}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input className="inv-input" value={pSupplier} onChange={e => setPSupplier(e.target.value)} placeholder="Supplier name" />
+                    )}
+                  </div>
+
+                  <div className="inv-field">
+                    <label>Supplier SKU / Part Number</label>
+                    <input
+                      className="inv-input font-mono"
+                      value={pSupplierSku}
+                      onChange={e => setPSupplierSku(e.target.value)}
+                      placeholder="Supplier's product code / catalog number"
+                    />
+                  </div>
+
+                  <div className="inv-field">
+                    <label>Lead Time (days)</label>
+                    <input
+                      className="inv-input"
+                      type="number"
+                      min="0"
+                      value={pSupplierLeadTimeDays || ''}
+                      onChange={e => setPSupplierLeadTimeDays(Number(e.target.value))}
+                      placeholder="Expected delivery time in days"
+                    />
+                  </div>
+
+                  <div className="inv-field">
+                    <label>Minimum Order Quantity</label>
+                    <input
+                      className="inv-input"
+                      type="number"
+                      min="0"
+                      value={pSupplierMinQty || ''}
+                      onChange={e => setPSupplierMinQty(Number(e.target.value))}
+                      placeholder="Min order qty required by supplier"
+                    />
+                  </div>
+
+                  <div className="inv-field full">
+                    <label>Supplier Notes</label>
+                    <textarea
+                      className="inv-input"
+                      rows={3}
+                      value={pSupplierNotes}
+                      onChange={e => setPSupplierNotes(e.target.value)}
+                      placeholder="Supplier terms, delivery conditions, special instructions…"
+                    />
+                  </div>
+                </div>
+
+                {/* Supplier info card if supplier is selected */}
+                {pSupplierId && (() => {
+                  const sup = allSuppliers.find(s => s.id === pSupplierId);
+                  if (!sup) return null;
+                  return (
+                    <div style={{ padding: '12px 16px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '10px', marginTop: '8px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px' }}>
+                        {sup.name}{sup.trading_name ? ` — ${sup.trading_name}` : ''}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '6px', fontSize: '0.75rem', color: '#64748b' }}>
+                        {sup.supplier_code && <div><strong>Code:</strong> {sup.supplier_code}</div>}
+                        {(sup as any).email && <div><strong>Email:</strong> {(sup as any).email}</div>}
+                        {(sup as any).phone && <div><strong>Phone:</strong> {(sup as any).phone}</div>}
+                        {(sup as any).contact_person && <div><strong>Contact:</strong> {(sup as any).contact_person}</div>}
+                        {(sup as any).payment_terms && <div><strong>Terms:</strong> {(sup as any).payment_terms}</div>}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
             {/* Batch/Lot Tab */}
             {editorTab === 'batch' && (
+
               <div className="inv-batch-tab">
                 {!selectedProduct ? (
                   <div className="inv-empty-state small"><Archive size={24} opacity={0.3}/><p>Save the product first to manage batches.</p></div>
