@@ -119,14 +119,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     db.tenantModules.where('tenant_id').equals(currentTenant?.id || '').and(m => m.enabled).toArray()
   , [currentTenant?.id]);
 
-  const subscribedModuleKeys = useMemo(() => (tenantModules || []).map(m => m.module_key), [tenantModules]);
 
-  const displayedModules = useMemo(() => {
-    const allKeys = Object.keys(MODULE_MANIFESTS) as IndustryModule[];
-    if (isSuperAdminView) return allKeys;
-    if (!tenantModules || tenantModules.length === 0) return [(currentIndustry?.name as IndustryModule) || activeModule];
-    return allKeys.filter(mod => subscribedModuleKeys.includes(mod));
-  }, [tenantModules, subscribedModuleKeys, activeModule, isSuperAdminView, currentIndustry?.name]);
 
   // ─── Real-time Notification Queries ───
   // All queries are SCOPED to the current tenant's branch.
@@ -473,7 +466,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                           : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-darkbg'
                       }`}
                     >
-                      <span>{MODULE_MANIFESTS[mod]?.title || mod}</span>
+                      <span>{MODULE_MANIFESTS[mod]?.name || mod}</span>
                       {activeModule === mod && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}
                     </button>
                   ))}
@@ -501,7 +494,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                     <button
                       key={ctx.id}
                       onClick={() => {
-                        switchContext(ctx);
+                        switchContext(ctx.tenant_id, ctx.branch_id, ctx.industry_id, ctx.role);
                         setShowBranchDropdown(false);
                       }}
                       className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs transition ${
