@@ -348,7 +348,7 @@ export class ProductService {
   static async checkSalesHistory(productId: string): Promise<{ hasSales: boolean; salesCount: number }> {
     const ledgerCount = await db.stockLedger
       .where('product_id').equals(productId)
-      .and(l => l.movement_type === 'SALE' || l.movement_type === 'RETURN')
+      .and(l => (l.movement_type as string) === 'SALE' || (l.movement_type as string) === 'CUSTOMER_RETURN')
       .count();
 
     if (ledgerCount > 0) {
