@@ -638,6 +638,12 @@ export default defineConfig({
       }
     }
   ],
+  resolve: {
+    dedupe: ['react', 'react-dom', 'dexie', 'dexie-react-hooks']
+  },
+  optimizeDeps: {
+    include: ['react', 'react-dom', 'dexie', 'dexie-react-hooks']
+  },
   build: {
     rolldownOptions: {
       output: {
@@ -645,12 +651,12 @@ export default defineConfig({
           groups: [
             {
               name: 'vendor-react',
-              test: /node_modules[/\\](?:react|react-dom|scheduler)/,
+              test: /node_modules[/\\](?:react|react-dom|scheduler|dexie-react-hooks)/,
               priority: 40,
             },
             {
               name: 'vendor-dexie',
-              test: /node_modules[/\\](?:dexie|dexie-react-hooks)/,
+              test: /node_modules[/\\]dexie/,
               priority: 30,
             },
             {
@@ -669,3 +675,4 @@ export default defineConfig({
     }
   }
 })
+
