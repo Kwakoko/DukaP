@@ -18,9 +18,11 @@ export const SyncDashboard: React.FC = () => {
   const { isOnline, isSyncing, syncData, toggleOfflineSimulation, syncFromServer } = useSyncState();
 
   const [engineStatus, setEngineStatus] = useState<any>(null);
+  const [ledgerDiag, setLedgerDiag] = useState<any>(null);
   const [dbSizeMb, setDbSizeMb] = useState<string>('0.00');
   const [devicesList, setDevicesList] = useState<any[]>([]);
   const [isRebuilding, setIsRebuilding] = useState<boolean>(false);
+  const [isFlushing, setIsFlushing] = useState<boolean>(false);
   const [isClearingQueue, setIsClearingQueue] = useState<boolean>(false);
 
   // Live queries for real-time queue items
@@ -39,6 +41,11 @@ export const SyncDashboard: React.FC = () => {
       const status = await productionSyncEngine.getStatus();
       setEngineStatus(status);
 
+      if (currentTenant?.id && currentBranch?.id) {
+        const diag = await stockLedgerSyncEngine.getSyncEngineDiagnostics(currentTenant.id, currentBranch.id);
+        setLedgerDiag(diag);
+      }
+
       // Estimate IndexedDB size if Storage API is supported
       if (typeof navigator !== 'undefined' && 'storage' in navigator && navigator.storage.estimate) {
         try {
@@ -52,7 +59,7 @@ export const SyncDashboard: React.FC = () => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentTenant?.id, currentBranch?.id]);
 
   // Fetch connected devices
   useEffect(() => {
@@ -83,6 +90,19 @@ export const SyncDashboard: React.FC = () => {
     await syncData(true);
     if (currentTenant?.id) {
       await syncFromServer(currentTenant.id);
+    }
+  };
+
+  const handleFlushEvents = async () => {
+    if (!currentTenant?.id || !currentBranch?.id) return;
+    setIsFlushing(true);
+    try {
+      const res = await stockLedgerSyncEngine.syncPendingEvents(currentTenant.id, currentBranch.id);
+      alert(`✅ Flushed ${res.syncedCount} pending stock ledger event(s) into local sync queue.`);
+    } catch (err: any) {
+      alert(`Error flushing events: ${err.message}`);
+    } finally {
+      setIsFlushing(false);
     }
   };
 
@@ -296,21 +316,39 @@ export const SyncDashboard: React.FC = () => {
             <CardHeader className="pb-3 border-b border-slate-100 dark:border-darkbg-border/30">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
-                  <CardTitle className="text-sm font-bold flex items-center gap-2">
-                    <Database className="h-4.5 w-4.5 text-emerald-500" />
-                    Stock Ledger Movement Replay Stream
-                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      <Database className="h-4.5 w-4.5 text-emerald-500" />
+                      Stock Ledger Movement Replay Stream
+                    </CardTitle>
+                    {ledgerDiag && (
+                      <Badge variant={ledgerDiag.healthStatus === 'OPTIMAL' ? 'success' : ledgerDiag.healthStatus === 'DEGRADED' ? 'danger' : 'warning'} className="text-[9px] font-bold uppercase">
+                        {ledgerDiag.healthStatus} (v{ledgerDiag.lastSyncedVersion || 1})
+                      </Badge>
+                    )}
+                  </div>
                   <CardDescription>Immutable stock movement events. Stock balance is derived by replaying these entries.</CardDescription>
                 </div>
-                <Button
-                  onClick={handleRebuildBalances}
-                  disabled={isRebuilding}
-                  variant="outline"
-                  className="text-xs font-bold flex items-center gap-1.5"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isRebuilding ? 'animate-spin' : ''}`} />
-                  Rebuild Stock from Events
-                </Button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    onClick={handleFlushEvents}
+                    disabled={isFlushing}
+                    variant="outline"
+                    className="text-xs font-bold flex items-center gap-1.5 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800"
+                  >
+                    <Zap className={`h-3.5 w-3.5 ${isFlushing ? 'animate-spin' : ''}`} />
+                    Flush Pending Events
+                  </Button>
+                  <Button
+                    onClick={handleRebuildBalances}
+                    disabled={isRebuilding}
+                    variant="outline"
+                    className="text-xs font-bold flex items-center gap-1.5"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isRebuilding ? 'animate-spin' : ''}`} />
+                    Rebuild Stock from Events
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0 overflow-x-auto">

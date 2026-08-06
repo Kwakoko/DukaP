@@ -5609,6 +5609,7 @@ export const Inventory: React.FC = () => {
   const TOP_TABS: { id: InventoryTab; label: string; icon: React.ReactNode; badge?: number }[] = [
     { id: 'dashboard',   label: 'Dashboard',        icon: <BarChart3 size={15}/>, },
     { id: 'products',    label: 'Products',         icon: <Package size={15}/>,   badge: stats.total },
+    { id: 'stockSync' as any, label: 'Stock Sync Engine', icon: <RefreshCw size={15}/> },
     { id: 'ledger',      label: 'Ledger Drilldown', icon: <Activity size={15}/>, },
     { id: 'adjustments', label: 'Adjustments',      icon: <Sliders size={15}/>,  },
     { id: 'transfers',   label: 'Transfers',        icon: <ArrowLeftRight size={15}/>, badge: kpis?.pendingTransfers },
