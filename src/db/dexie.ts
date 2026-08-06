@@ -2969,7 +2969,7 @@ export async function syncParentStock(parentProductId: string): Promise<void> {
     // 4. Update Parent Product Container
     // CRITICAL: Preserve parent.sellingPrice, parent.price, and parent.buyingPrice.
     // Variant prices NEVER overwrite or propagate back to the parent container base price!
-    const hasVariantsFlag = activeVariants.length > 0;
+    const hasVariantsFlag = parent.hasVariants || variants.length > 0;
     const updatedProd: Product = {
       ...parent,
       hasVariants: hasVariantsFlag,

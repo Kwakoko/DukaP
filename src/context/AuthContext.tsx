@@ -6,6 +6,7 @@ import { sessionService } from '../services/sessionService';
 import { SettingsResolver, DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '../services/settingsService';
 import { tenantRecoveryService } from '../services/tenantRecoveryService';
 import { tenantHealthMonitor } from '../services/tenantHealthMonitor';
+import { stockLedgerSyncEngine } from '../services/stockLedgerSyncEngine';
 
 export type UserRole = 'Super Admin' | 'Business Owner' | 'Tenant Owner' | 'Business Administrator' | 'Branch Manager' | 'Cashier' | 'Inventory Officer' | 'Accountant' | (string & {});
 
@@ -891,6 +892,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await ProductService.reconcileCloudChanges(cloudProducts, tenantId);
       }
 
+      // Resolve primary branch for tenant
+      const tenantBranches = await db.branches.where('tenant_id').equals(tenantId).toArray();
+      const primaryBranchId = tenantBranches.length > 0 ? tenantBranches[0].id : 'branch-dar-hq';
+
       if (cloudVariants) {
         // Build a set of cloud variant IDs for targeted reconciliation
         const cloudVariantIds = new Set(cloudVariants.map((cv: any) => cv.id));
@@ -906,10 +911,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Resolve primary branch for tenant if not tenant-101
-        const tenantBranches = await db.branches.where('tenant_id').equals(tenantId).toArray();
-        const primaryBranchId = tenantBranches.length > 0 ? tenantBranches[0].id : 'branch-dar-hq';
-
         // Upsert cloud variants (skip if a PENDING local version exists)
         for (const cv of cloudVariants) {
           const existing = await db.productVariants.get(cv.id);
@@ -922,16 +923,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           await db.productVariants.put({
             id: cv.id,
-            productId: cv.productId,
+            productId: cv.productId || cv.product_id,
             sku: cv.sku,
             barcode: cv.barcode,
-            buyingPrice: cv.buyingPrice,
-            sellingPrice: cv.sellingPrice,
-            stock: cv.stock,
-            reservedStock: cv.reservedStock,
-            reorderLevel: cv.reorderLevel,
-            status: cv.status,
-            attributes: cv.attributes,
+            buyingPrice: cv.buyingPrice ?? cv.buying_price ?? cv.costPrice ?? cv.cost_price ?? 0,
+            sellingPrice: cv.sellingPrice ?? cv.selling_price ?? cv.price ?? 0,
+            stock: cv.stock ?? cv.quantity ?? 0,
+            reservedStock: cv.reservedStock ?? cv.reserved_stock ?? 0,
+            reorderLevel: cv.reorderLevel ?? cv.reorder_level ?? 5,
+            status: cv.status || 'Active',
+            attributes: cv.attributes || {},
             tenant_id: cv.tenant_id || cv.tenantId || tenantId,
             branch_id: resolvedBranchId
           });
@@ -946,6 +947,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
       }
+
+      // Rebuild all branch balances directly from stock ledger entries to guarantee stock accuracy across login/logout
+      await stockLedgerSyncEngine.rebuildAllBranchBalances(tenantId, primaryBranchId);
 
       console.log(`[Supabase Persistence] Cloud data sync completed. Loaded ${cloudProducts?.length || 0} products.`);
       return true;

@@ -3058,6 +3058,7 @@ export const Inventory: React.FC = () => {
             };
             const stockVal = isNew ? (lv.stock || 0) : (preSnapshotVars.find(ev => ev.id === lv.id)?.stock ?? 0);
             freshVar.stock = stockVal;
+            await db.productVariants.put(freshVar);
             await queueOperation(isNew ? 'INSERT' : 'UPDATE', 'productVariants' as any, freshVar);
 
             if (isNew && stockVal > 0) {

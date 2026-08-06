@@ -57,18 +57,23 @@ export function validateProductPermission(
 export function mapProductToLocal(prod: any): Product {
   const tenantId = prod.tenantId || prod.tenant_id || '';
   const branchId = prod.branchId || prod.branch_id || '';
+  const resolvedBuyingPrice = prod.buyingPrice ?? prod.buying_price ?? prod.costPrice ?? prod.cost_price ?? prod.unit_cost ?? 0;
+  const resolvedSellingPrice = prod.sellingPrice ?? prod.selling_price ?? prod.price ?? 0;
+  const resolvedStock = prod.stock ?? prod.quantity ?? prod.current_quantity ?? 0;
+
   return {
     ...prod,
     tenant_id: tenantId,
     branch_id: branchId,
     tenantId,
     branchId,
-    buyingPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
-    sellingPrice: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
-    price: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
+    buyingPrice: resolvedBuyingPrice,
+    costPrice: resolvedBuyingPrice,
+    sellingPrice: resolvedSellingPrice,
+    price: resolvedSellingPrice,
+    stock: resolvedStock,
     category: prod.category || prod.categoryId || '',
     module: prod.module || 'Retail',
-    costPrice: prod.costPrice !== undefined ? prod.costPrice : prod.buyingPrice,
     categoryId: prod.categoryId || prod.category,
     status: prod.status || 'Active',
     version: prod.version || 1,
@@ -83,15 +88,21 @@ export function mapProductToLocal(prod: any): Product {
 export function mapProductToCloud(prod: Product): any {
   const tenantId = prod.tenantId || prod.tenant_id || '';
   const branchId = prod.branchId || prod.branch_id || '';
+  const resolvedBuyingPrice = prod.buyingPrice ?? prod.costPrice ?? (prod as any).buying_price ?? (prod as any).cost_price ?? 0;
+  const resolvedSellingPrice = prod.sellingPrice ?? prod.price ?? (prod as any).selling_price ?? 0;
+
   return {
     id: prod.id,
     name: prod.name,
     categoryId: prod.categoryId || prod.category || '',
     category: prod.categoryId || prod.category || '',
-    costPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
-    buyingPrice: prod.costPrice !== undefined ? prod.costPrice : (prod.buyingPrice !== undefined ? prod.buyingPrice : 0),
-    sellingPrice: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
-    price: prod.sellingPrice !== undefined ? prod.sellingPrice : (prod.price !== undefined ? prod.price : 0),
+    costPrice: resolvedBuyingPrice,
+    buyingPrice: resolvedBuyingPrice,
+    cost_price: resolvedBuyingPrice,
+    buying_price: resolvedBuyingPrice,
+    sellingPrice: resolvedSellingPrice,
+    price: resolvedSellingPrice,
+    selling_price: resolvedSellingPrice,
     stock: prod.stock || 0,
     expiryDate: prod.expiryDate,
     tenantId,
@@ -477,16 +488,34 @@ export async function cleanDuplicateVariants(tenantId?: string): Promise<{ clean
     const allVariants = await query.toArray();
     if (allVariants.length === 0) return { cleanedCount: 0, mergedProducts: 0 };
 
-    const groupedByProduct = new Map<string, ProductVariant[]>();
+    let cleanedCount = 0;
+    const mergedProductIds = new Set<string>();
+
+    // Step 0: Purge orphaned variants with missing/invalid productId or non-existent parent product
+    let validProdQuery = db.products.toCollection();
+    if (tenantId) {
+      validProdQuery = db.products.where('tenant_id').equals(tenantId);
+    }
+    const validProducts = await validProdQuery.toArray();
+    const validProductIds = new Set(validProducts.map(p => p.id));
+
+    const activeVariants: ProductVariant[] = [];
     for (const v of allVariants) {
+      if (!v.productId || !validProductIds.has(v.productId)) {
+        await db.productVariants.delete(v.id);
+        cleanedCount++;
+      } else {
+        activeVariants.push(v);
+      }
+    }
+
+    const groupedByProduct = new Map<string, ProductVariant[]>();
+    for (const v of activeVariants) {
       if (!groupedByProduct.has(v.productId)) {
         groupedByProduct.set(v.productId, []);
       }
       groupedByProduct.get(v.productId)!.push(v);
     }
-
-    let cleanedCount = 0;
-    const mergedProductIds = new Set<string>();
 
     for (const [productId, vars] of groupedByProduct.entries()) {
       if (vars.length <= 1) continue;
