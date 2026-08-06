@@ -148,9 +148,47 @@ export const Sidebar: React.FC<SidebarProps> = () => {
       }
     }
 
+    if (!isSuperAdminView && !items.some(item => {
+      const n = (typeof item === 'string' ? item : item.name).toLowerCase();
+      return n === 'receipts' || n.includes('receipt');
+    })) {
+      const cashIdx = items.findIndex(item => {
+        const n = (typeof item === 'string' ? item : item.name).toLowerCase();
+        return n === 'cash drawer' || n === 'pos' || n.includes('sale');
+      });
+      const receiptsItem: SidebarItem = {
+        name: 'Receipts',
+        subItems: [
+          'Receipt History',
+          'Receipt Templates',
+          'Receipt Analytics',
+          'Receipt Verification',
+          'Receipt Archive'
+        ]
+      };
+      if (cashIdx !== -1) {
+        items.splice(cashIdx + 1, 0, receiptsItem);
+      } else {
+        items.push(receiptsItem);
+      }
+    }
+
     return items
       .map(item => {
         const name = typeof item === 'string' ? item : item.name;
+        if (name === 'Receipts' || name === 'Receipt Management' || name === 'Receipt') {
+          return {
+            name: 'Receipts',
+            subItems: [
+              'Receipt History',
+              'Receipt Templates',
+              'Receipt Analytics',
+              'Receipt Verification',
+              'Receipt Archive'
+            ]
+          };
+        }
+
         if (name === 'Settings' || name === 'System Settings' || name === 'General Settings') {
           return {
             name: 'Settings',
@@ -307,7 +345,8 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     if (n === 'services' || n === 'appointments') return <Briefcase className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'salon' || n === 'commission') return <Scissors className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'rooms' || n === 'reservations') return <Bed className="h-4.5 w-4.5 shrink-0" />;
-    if (n === 'expenses' || n === 'expense ledger' || n === 'operating expenses') return <Receipt className="h-4.5 w-4.5 shrink-0" />;
+    if (n === 'receipts' || n === 'receipt management' || n.includes('receipt')) return <Receipt className="h-4.5 w-4.5 shrink-0 text-indigo-500 dark:text-indigo-400" />;
+    if (n === 'expenses' || n === 'expense ledger' || n === 'operating expenses') return <Wallet className="h-4.5 w-4.5 shrink-0 text-amber-500" />;
     if (n.includes('cash drawer') || n.includes('drawer')) return <Wallet className="h-4.5 w-4.5 shrink-0 text-emerald-500" />;
     
     // Poultry & Livestock specific matches
