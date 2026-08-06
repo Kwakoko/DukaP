@@ -1,19 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { useAuth, type UserRole } from '../../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 import { useModule, type IndustryModule, MODULE_MANIFESTS } from '../../context/ModuleContext';
 import { useSyncState } from '../../context/SyncContext';
 import { 
-  Search, Sun, Moon, Wifi, WifiOff, RefreshCw, 
-  ChevronDown, User, Layers, MapPin, Lock, X, LogOut, CreditCard, Smartphone,
-  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, ShieldCheck, Check, Menu
+  Search, Wifi, WifiOff, RefreshCw, 
+  Lock, X, Smartphone,
+  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, Check, Menu
 } from 'lucide-react';
 import { db, safeGet } from '../../db/dexie';
 import { supabase } from '../../db/supabaseClient';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Dialog, Button } from '../UI/custom-ui';
-
-import { tenantIdentifierService } from '../../services/tenantIdentifierService';
-import { getShortModuleName, getShortBranchName } from '../../utils/mobileFormatters';
+import { Dialog } from '../UI/custom-ui';
 
 interface TopBarProps {
   onOpenSearch: () => void;
@@ -21,9 +18,7 @@ interface TopBarProps {
 
 export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { 
-    role, 
     currentBranch, 
-    toggleTheme, 
     currentTenant, 
     impersonatedTenant, 
     setImpersonatedTenant, 
@@ -31,17 +26,12 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     setIsSuperAdminView,
     user,
     setUser,
-    logout,
-    currentIndustry,
-    switchContext
+    currentIndustry
   } = useAuth();
   const { activeModule, setActiveModule, isMobileSidebarOpen, setIsMobileSidebarOpen } = useModule();
   const { isOnline, isSyncing, syncProgress, pendingCount, toggleOfflineSimulation, syncLogs, syncData } = useSyncState();
 
-  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
-  const [showModuleDropdown, setShowModuleDropdown] = useState(false);
   const [showSyncDropdown, setShowSyncDropdown] = useState(false);
-  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
 
   // User Profile Modals State
@@ -157,25 +147,13 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   };
 
   // Refs for click-outside detection
-  const profileContainerRef = useRef<HTMLDivElement>(null);
-  const moduleContainerRef = useRef<HTMLDivElement>(null);
-  const branchContainerRef = useRef<HTMLDivElement>(null);
+  // Refs for click-outside detection
   const syncContainerRef = useRef<HTMLDivElement>(null);
   const notifContainerRef = useRef<HTMLDivElement>(null);
 
   // Click-outside event listeners to close dropdowns when clicking away
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (profileContainerRef.current && !profileContainerRef.current.contains(event.target as Node)) {
-        setShowProfileDropdown(false);
-      }
-      if (moduleContainerRef.current && !moduleContainerRef.current.contains(event.target as Node)) {
-        setShowModuleDropdown(false);
-      }
-      if (branchContainerRef.current && !branchContainerRef.current.contains(event.target as Node)) {
-        setShowBranchDropdown(false);
-      }
-
       if (syncContainerRef.current && !syncContainerRef.current.contains(event.target as Node)) {
         setShowSyncDropdown(false);
       }
@@ -188,59 +166,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
-
-  // Toast auto-hide
-  useEffect(() => {
-    if (toastMsg) {
-      const timer = setTimeout(() => setToastMsg(null), 3500);
-      return () => clearTimeout(timer);
-    }
-  }, [toastMsg]);
-
-  const userInitials = useMemo(() => {
-    if (!user?.name) return 'U';
-    return user.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
-  }, [user]);
-
-
-  // Live query to fetch all branch contexts resolved for this user
-  const userContexts = useLiveQuery(async () => {
-    if (!user) return [];
-    const roles = await db.userBranchRoles.where('user_id').equals(user.id).toArray();
-    const list: Array<{
-      id: string;
-      tenant_id: string;
-      tenantName: string;
-      branch_id: string;
-      branchName: string;
-      branchLocation: string;
-      industry_id: string;
-      industryName: string;
-      role: UserRole;
-    }> = [];
-    for (const r of roles) {
-      const br = r.branch_id ? await safeGet(db.branches, r.branch_id) : null;
-      const ind = r.industry_id ? await safeGet(db.industries, r.industry_id) : null;
-      const t = r.tenant_id ? await safeGet(db.tenants, r.tenant_id) : null;
-      list.push({
-        id: r.id || '',
-        tenant_id: r.tenant_id,
-        tenantName: t?.name || 'Unknown Business',
-        branch_id: r.branch_id,
-        branchName: br?.name || r.branch_id,
-        branchLocation: br?.location || 'Unknown Location',
-        industry_id: r.industry_id,
-        industryName: ind?.name || 'Retail',
-        role: r.role_id as UserRole
-      });
-    }
-    return list;
-  }, [user]) || [];
-
-  const uniqueBranchesCount = useMemo(() => {
-    const branchIds = new Set(userContexts.map(ctx => ctx.branch_id));
-    return branchIds.size;
-  }, [userContexts]);
 
   // Live query to fetch enabled (subscribed) modules for this tenant
   const tenantModules = useLiveQuery(() => 
@@ -543,7 +468,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
           </button>
 
           <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-white p-0.5 shadow-md border border-slate-200/80 dark:border-darkbg-border overflow-hidden shrink-0">
-            <img src={currentTenant.logo_url || "/dukapos-logo.png"} alt={currentTenant.name || "Tenant Logo"} className="h-full w-full object-contain" />
+            <img src={(currentTenant as any)?.logo_url || (currentTenant as any)?.logoUrl || "/dukapos-logo.png"} alt={currentTenant.name || "Tenant Logo"} className="h-full w-full object-contain" />
           </div>
           <span className="font-bold text-sm text-slate-800 dark:text-white truncate max-w-[140px] sm:max-w-[200px]">
             {currentTenant.name || 'DukaPos'}
