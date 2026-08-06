@@ -3276,7 +3276,7 @@ export const Inventory: React.FC = () => {
       </div>
 
       {/* Product Editor Dialog */}
-      <Dialog isOpen={isEditorOpen} onClose={() => setIsEditorOpen(false)} title={selectedProduct ? `Edit: ${pName}` : 'New Product'} size="xl">
+      <Dialog isOpen={isEditorOpen} onClose={() => setIsEditorOpen(false)} title={selectedProduct ? `Edit: ${pName}` : 'New Product'} size="full">
         <div className="inv-editor">
           {/* Tab Nav */}
           <div className="inv-editor-tabs">
