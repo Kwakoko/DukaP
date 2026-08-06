@@ -4,13 +4,10 @@ import { useModule, type IndustryModule, MODULE_MANIFESTS } from '../../context/
 import { useSyncState } from '../../context/SyncContext';
 import { 
   Search, Wifi, WifiOff, RefreshCw, 
-  Lock, X, Smartphone,
-  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, Check, Menu
+  X, Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, Menu
 } from 'lucide-react';
 import { db, safeGet } from '../../db/dexie';
-import { supabase } from '../../db/supabaseClient';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Dialog } from '../UI/custom-ui';
 
 interface TopBarProps {
   onOpenSearch: () => void;
@@ -24,8 +21,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     setImpersonatedTenant, 
     isSuperAdminView, 
     setIsSuperAdminView,
-    user,
-    setUser,
     currentIndustry
   } = useAuth();
   const { activeModule, setActiveModule, isMobileSidebarOpen, setIsMobileSidebarOpen } = useModule();
@@ -33,8 +28,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
   const [showSyncDropdown, setShowSyncDropdown] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
-
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // Refs for click-outside detection
   // Refs for click-outside detection
@@ -565,13 +558,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
 
 
-      {/* Toast Notification Banner */}
-      {toastMsg && (
-        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl flex items-center space-x-2 text-xs font-bold animate-in fade-in slide-in-from-bottom-3 duration-200">
-          <Check className="h-4 w-4 text-emerald-400 shrink-0" />
-          <span>{toastMsg}</span>
-        </div>
-      )}
     </>
   );
 };
