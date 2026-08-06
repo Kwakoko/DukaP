@@ -748,6 +748,21 @@ const server = http.createServer(async (req, res) => {
               `;
             }
             processedIds.push(op.id || recordId);
+          } else if (entity === 'productVariants' || entity === 'product_variants') {
+            if (action === 'DELETE') {
+              await sql`DELETE FROM product_variants WHERE id = ${recordId}`;
+            } else {
+              await sql`
+                INSERT INTO product_variants (id, tenant_id, branch_id, product_id, sku, barcode, attributes, buying_price, selling_price, stock, status, created_at, updated_at)
+                VALUES (${recordId}, ${tenantId}, ${payload.branch_id || ''}, ${payload.productId || payload.product_id || ''}, ${payload.sku || ''}, ${payload.barcode || ''}, ${JSON.stringify(payload.attributes || {})}, ${payload.buyingPrice || payload.buying_price || 0}, ${payload.sellingPrice || payload.selling_price || 0}, ${payload.stock || 0}, ${payload.status || 'Active'}, ${payload.createdAt || payload.created_at || now}, ${now})
+                ON CONFLICT (id) DO UPDATE SET
+                  stock = EXCLUDED.stock,
+                  selling_price = EXCLUDED.selling_price,
+                  buying_price = EXCLUDED.buying_price,
+                  updated_at = ${now};
+              `;
+            }
+            processedIds.push(op.id || recordId);
           } else if (entity === 'stockLedger' || entity === 'stock_ledger') {
             await sql`
               INSERT INTO stock_ledger (id, tenant_id, branch_id, product_id, variant_id, movement_type, quantity_before, quantity_change, quantity_after, unit_cost, total_cost, user_id, device_id, idempotency_key, created_at)

@@ -3166,6 +3166,34 @@ export const Inventory: React.FC = () => {
     }
   };
 
+  const handleDeleteVariant = async (variantId: string) => {
+    if (!window.confirm('Are you sure you want to delete this variant?')) return;
+    try {
+      setLocalVariants(prev => prev.filter(v => v.id !== variantId));
+      setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
+      await db.productVariants.delete(variantId);
+      await db.stockBalance.where('variant_id').equals(variantId).delete();
+      await db.stockLedger.where('variant_id').equals(variantId).delete();
+
+      if (pId) {
+        await syncParentStock(pId);
+      }
+
+      await db.syncQueue.add({
+        actionType: 'DELETE',
+        entityName: 'productVariants',
+        payload: { id: variantId, tenant_id: currentTenant.id, productId: pId },
+        timestamp: Date.now(),
+        status: 'Pending',
+      });
+
+      setDeleteToastMessage('Variant deleted successfully.');
+      setTimeout(() => setDeleteToastMessage(''), 4000);
+    } catch (err: any) {
+      alert('Error deleting variant: ' + err.message);
+    }
+  };
+
   const handleSaveBatch = async () => {
     if (!batchNum.trim() || batchQty <= 0) { alert('Batch number and quantity are required.'); return; }
     setBatchSaving(true);
