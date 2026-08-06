@@ -784,7 +784,17 @@ export async function createCategory(
   _branchId?: string
 ): Promise<Category> {
   const catName = typeof input === 'string' ? input : (input.name || '');
-  const tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
+  let tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
+  if (!tid) {
+    try {
+      const sessStr = localStorage.getItem('dukapos_session');
+      if (sessStr) {
+        const sess = JSON.parse(sessStr);
+        tid = sess?.tenant?.id || sess?.user?.tenant_id || 'tenant-101';
+      }
+    } catch (_) {}
+    if (!tid) tid = 'tenant-101';
+  }
   const category: Category = {
     id: `cat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     name: catName.trim(),
@@ -847,7 +857,17 @@ export async function createBrand(
   tenantId?: string
 ): Promise<Brand> {
   const bName = typeof input === 'string' ? input : (input.name || '');
-  const tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
+  let tid = typeof input === 'string' ? (tenantId || '') : (input.tenant_id || tenantId || '');
+  if (!tid) {
+    try {
+      const sessStr = localStorage.getItem('dukapos_session');
+      if (sessStr) {
+        const sess = JSON.parse(sessStr);
+        tid = sess?.tenant?.id || sess?.user?.tenant_id || 'tenant-101';
+      }
+    } catch (_) {}
+    if (!tid) tid = 'tenant-101';
+  }
   const brand: Brand = {
     id: `brand-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     name: bName.trim(),

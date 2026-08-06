@@ -297,19 +297,21 @@ export const Inventory: React.FC = () => {
   // Live query for brands
   const allBrands = useLiveQuery(async () => {
     const prods = await db.products.where('tenant_id').equals(currentTenant.id).toArray();
-    const brandMap = new Map<string, number>();
+    const brandSet = new Map<string, number>();
     prods.forEach(p => {
-      if (p.brand) {
-        brandMap.set(p.brand, (brandMap.get(p.brand) || 0) + 1);
+      if (p.brand && p.brand.trim()) {
+        brandSet.set(p.brand.trim(), (brandSet.get(p.brand.trim()) || 0) + 1);
       }
     });
     try {
-      const dbBrands = await db.brands.where('tenant_id').equals(currentTenant.id).toArray();
-      dbBrands.forEach(b => {
-        if (!brandMap.has(b.name)) brandMap.set(b.name, 0);
+      const dbBrands = await db.brands.toArray();
+      dbBrands.filter(b => !b.tenant_id || b.tenant_id === currentTenant.id).forEach(b => {
+        if (b.name && b.name.trim() && !brandSet.has(b.name.trim())) {
+          brandSet.set(b.name.trim(), 0);
+        }
       });
     } catch {}
-    return Array.from(brandMap.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(brandSet.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
   }, [currentTenant.id]) || [];
 
   // Live query for categories
