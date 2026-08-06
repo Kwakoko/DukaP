@@ -205,9 +205,34 @@ export const stockLedgerSyncEngine = {
    * Full event-replay audit tool that recalculates stock balances for every product in a branch.
    */
   async rebuildAllBranchBalances(tenantId: string, branchId: string): Promise<{ productsRecalculated: number; totalEventsReplayed: number }> {
+    // 1. Get active non-deleted product IDs for tenant
+    const activeProducts = await db.products
+      .where('tenant_id').equals(tenantId)
+      .and(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive')
+      .toArray();
+
+    const activeProductIds = new Set(activeProducts.map(p => p.id));
+
+    // 2. Clean up orphaned stock balances for products that no longer exist or are deleted
+    const allBalances = await db.stockBalance.where('tenant_id').equals(tenantId).toArray();
+    for (const bal of allBalances) {
+      if (!activeProductIds.has(bal.product_id)) {
+        await db.stockBalance.delete(bal.id);
+      }
+    }
+
+    // 3. Clean up orphaned product variants whose parent product no longer exists or is deleted
+    const allVariants = await db.productVariants.where('tenant_id').equals(tenantId).toArray();
+    for (const v of allVariants) {
+      if (!activeProductIds.has(v.productId)) {
+        await db.productVariants.delete(v.id);
+      }
+    }
+
+    // 4. Fetch ledger events and filter strictly for active products
     const events = await db.stockLedger
       .where('tenant_id').equals(tenantId)
-      .and(e => e.branch_id === branchId)
+      .and(e => e.branch_id === branchId && activeProductIds.has(e.product_id))
       .toArray();
 
     // Group events by product_id & variant_id
@@ -227,7 +252,7 @@ export const stockLedgerSyncEngine = {
 
     await reconcileAllParentProductStocks().catch(() => {});
 
-    console.info(`[StockLedgerSyncEngine] Successfully rebuilt ${recalculatedCount} product balances from ${events.length} events.`);
+    console.info(`[StockLedgerSyncEngine] Successfully rebuilt ${recalculatedCount} product balances from ${events.length} events for ${activeProductIds.size} active products.`);
     return { productsRecalculated: recalculatedCount, totalEventsReplayed: events.length };
   },
 

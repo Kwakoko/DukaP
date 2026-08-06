@@ -275,10 +275,16 @@ export const Inventory: React.FC = () => {
       .toArray()
   , [currentTenant?.id]) || [];
 
-  const productVariants = useLiveQuery(() =>
-    db.productVariants.where('tenant_id').equals(currentTenant?.id || '')
-      .toArray()
-  , [currentTenant?.id]) || [];
+  const productVariants = useLiveQuery(async () => {
+    if (!currentTenant?.id) return [];
+    const validProds = await db.products
+      .where('tenant_id').equals(currentTenant.id)
+      .and(p => !p.deletedAt && !(p as any).deleted_at && p.status !== 'Inactive')
+      .toArray();
+    const validIds = new Set(validProds.map(p => p.id));
+    const vars = await db.productVariants.where('tenant_id').equals(currentTenant.id).toArray();
+    return vars.filter(v => validIds.has(v.productId));
+  }, [currentTenant?.id]) || [];
 
   const allBranches = useLiveQuery(() => db.branches.where('tenant_id').equals(currentTenant?.id || '').toArray(), [currentTenant?.id]) || [];
 

@@ -125,6 +125,7 @@ export const SyncDashboard: React.FC = () => {
     try {
       await db.products.clear();
       await db.productVariants.clear();
+      await db.stockBalance.clear();
       await db.categories.clear();
       if (currentTenant?.id) {
         await syncFromServer(currentTenant.id);
