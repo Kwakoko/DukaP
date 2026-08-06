@@ -827,6 +827,68 @@
 textarea.inv-input { resize: vertical; min-height: 80px; }
 select.inv-input { cursor: pointer; }
 
+/* Custom Stepper System for Stock Adjustment -/+ Buttons */
+.inv-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+  transition: all 0.2s;
+}
+.dark .inv-stepper {
+  border-color: #334155;
+  background: #0f172a;
+}
+.inv-stepper-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: #f1f5f9;
+  border: none;
+  color: #334155;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+}
+.dark .inv-stepper-btn {
+  background: #1e293b;
+  color: #94a3b8;
+}
+.inv-stepper-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.dark .inv-stepper-btn:hover {
+  background: #334155;
+  color: #ffffff;
+}
+.inv-stepper-input {
+  width: 48px;
+  text-align: center;
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  font-weight: 700;
+  font-size: 13px;
+  color: #0f172a;
+  padding: 4px 0;
+  -moz-appearance: textfield;
+}
+.dark .inv-stepper-input {
+  color: #ffffff;
+}
+.inv-stepper-input::-webkit-outer-spin-button,
+.inv-stepper-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .inv-checkbox-label {
   display: flex;
   align-items: center;

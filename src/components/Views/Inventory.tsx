@@ -5782,15 +5782,34 @@ export const Inventory: React.FC = () => {
                           </optgroup>
                         </select>
                       </td>
-                      {/* Qty */}
-                      <td style={{minWidth:'90px'}}>
-                        <input
-                          className="inv-input" style={{width:'100%', textAlign:'center'}}
-                          type="number" min="1"
-                          value={line.qty || ''}
-                          onChange={e => updateLine(line.id, { qty: Number(e.target.value) })}
-                          required
-                        />
+                      {/* Qty with custom - / + stepper buttons */}
+                      <td style={{ minWidth: '110px' }}>
+                        <div className="inv-stepper">
+                          <button
+                            type="button"
+                            className="inv-stepper-btn"
+                            onClick={() => updateLine(line.id, { qty: Math.max(1, (line.qty || 1) - 1) })}
+                            title="Decrease quantity"
+                          >
+                            −
+                          </button>
+                          <input
+                            className="inv-stepper-input"
+                            type="number"
+                            min="1"
+                            value={line.qty || ''}
+                            onChange={e => updateLine(line.id, { qty: Math.max(1, Number(e.target.value) || 1) })}
+                            required
+                          />
+                          <button
+                            type="button"
+                            className="inv-stepper-btn"
+                            onClick={() => updateLine(line.id, { qty: (line.qty || 0) + 1 })}
+                            title="Increase quantity"
+                          >
+                            +
+                          </button>
+                        </div>
                       </td>
                       {/* Notes */}
                       <td>
