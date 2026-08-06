@@ -2926,11 +2926,43 @@ export const Inventory: React.FC = () => {
   };
 
   const handleDeleteVariant = async (variantId: string) => {
-    const ledgerCount = await db.stockLedger.where('variant_id').equals(variantId).count();
-    if (ledgerCount > 0) { alert(`⚠️ Cannot delete variant. It has ${ledgerCount} stock transaction records.\n\nSet status to Inactive instead.`); return; }
-    setLocalVariants(prev => prev.filter(v => v.id !== variantId));
-    setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
-    if (editingVariantIdx !== null) setEditingVariantIdx(null);
+    if (!window.confirm('Are you sure you want to delete this variant?')) return;
+    try {
+      const ledgerCount = await db.stockLedger.where('variant_id').equals(variantId).count();
+      if (ledgerCount > 0) {
+        const choice = window.confirm(`⚠️ This variant has ${ledgerCount} stock transaction record(s).\n\nClick OK to deactivate/archive this variant, or Cancel to abort.`);
+        if (choice) {
+          setLocalVariants(prev => prev.map(v => v.id === variantId ? { ...v, status: 'Inactive' } : v));
+          setDeleteToastMessage('Variant deactivated successfully.');
+          setTimeout(() => setDeleteToastMessage(''), 4000);
+        }
+        return;
+      }
+
+      setLocalVariants(prev => prev.filter(v => v.id !== variantId));
+      setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
+      if (editingVariantIdx !== null) setEditingVariantIdx(null);
+
+      await db.productVariants.delete(variantId);
+      await db.stockBalance.where('variant_id').equals(variantId).delete();
+
+      if (pId) {
+        await syncParentStock(pId);
+      }
+
+      await db.syncQueue.add({
+        actionType: 'DELETE',
+        entityName: 'productVariants',
+        payload: { id: variantId, tenant_id: currentTenant.id, productId: pId },
+        timestamp: Date.now(),
+        status: 'Pending',
+      });
+
+      setDeleteToastMessage('Variant deleted successfully.');
+      setTimeout(() => setDeleteToastMessage(''), 4000);
+    } catch (err: any) {
+      alert('Error deleting variant: ' + err.message);
+    }
   };
 
   const handleUpdateVariant = (idx: number, updates: Partial<ProductVariant>) => {
@@ -3163,34 +3195,6 @@ export const Inventory: React.FC = () => {
       setIsDeleting(false);
       setIsDeleteConfirmOpen(false);
       setProductToDelete(null);
-    }
-  };
-
-  const handleDeleteVariant = async (variantId: string) => {
-    if (!window.confirm('Are you sure you want to delete this variant?')) return;
-    try {
-      setLocalVariants(prev => prev.filter(v => v.id !== variantId));
-      setSelectedVariantIds(prev => { const n = new Set(prev); n.delete(variantId); return n; });
-      await db.productVariants.delete(variantId);
-      await db.stockBalance.where('variant_id').equals(variantId).delete();
-      await db.stockLedger.where('variant_id').equals(variantId).delete();
-
-      if (pId) {
-        await syncParentStock(pId);
-      }
-
-      await db.syncQueue.add({
-        actionType: 'DELETE',
-        entityName: 'productVariants',
-        payload: { id: variantId, tenant_id: currentTenant.id, productId: pId },
-        timestamp: Date.now(),
-        status: 'Pending',
-      });
-
-      setDeleteToastMessage('Variant deleted successfully.');
-      setTimeout(() => setDeleteToastMessage(''), 4000);
-    } catch (err: any) {
-      alert('Error deleting variant: ' + err.message);
     }
   };
 
