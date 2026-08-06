@@ -53,6 +53,10 @@ const DukaPosAppContent: React.FC = () => {
       syncFromServer(user.tenant_id).catch(err =>
         console.warn('[SyncBootstrap] Initial server pull failed:', err)
       );
+
+      import('./services/offlineSyncWorker').then(({ offlineSyncWorker }) => {
+        offlineSyncWorker.startWorker(user.tenant_id, user.branch_id || 'branch-main');
+      }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);

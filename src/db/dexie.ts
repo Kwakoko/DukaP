@@ -3548,6 +3548,25 @@ export async function recordStockMovement(entryInput: Omit<StockLedgerEntry, 'id
     }
   }
 
+  // 6. Enqueue into Transactional Outbox for resilient background delivery
+  try {
+    await db.syncOutbox.put({
+      outbox_id: `outbox-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      operation_id: `op-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      idempotency_key,
+      tenant_id: entryInput.tenant_id,
+      branch_id: entryInput.branch_id,
+      entity: 'stockLedger',
+      action: 'INSERT_EVENT',
+      payload: ledgerEntry,
+      status: 'PENDING',
+      retry_count: 0,
+      max_retries: 5,
+      created_at: created_at,
+      updated_at: created_at,
+    });
+  } catch (_) {}
+
   return ledgerEntry;
 }
 
