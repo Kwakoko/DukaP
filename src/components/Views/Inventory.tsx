@@ -6848,36 +6848,54 @@ export const Inventory: React.FC = () => {
             </div>
           </div>
 
-          {deleteHasSalesHistory && (
-            <div className="bg-amber-50 border border-amber-200 dark:bg-amber-950/40 dark:border-amber-800 p-3.5 rounded-lg space-y-2">
-              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
-                <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0" /> This product has {deleteSalesCount} historical sales record(s).
-              </p>
-              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">Choose deletion mode:</p>
-              <div className="space-y-2 pl-1">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="deleteChoice"
-                    value="archive"
-                    checked={deleteModeChoice === 'archive'}
-                    onChange={() => setDeleteModeChoice('archive')}
-                  />
-                  <span>Archive Product (Recommended)</span>
-                </label>
-                <label className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="deleteChoice"
-                    value="permanent"
-                    checked={deleteModeChoice === 'permanent'}
-                    onChange={() => setDeleteModeChoice('permanent')}
-                  />
-                  <span>Permanently Delete Product and Historical References</span>
-                </label>
-              </div>
+          <div className="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-lg border border-slate-200 dark:border-slate-700 space-y-3">
+            <div>
+              <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">Select Deletion Mode:</p>
+              {deleteHasSalesHistory ? (
+                <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 p-2 rounded border border-amber-200 dark:border-amber-800 flex items-center gap-1.5 font-semibold">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                  This product has {deleteSalesCount} historical sales record(s). Archiving is recommended to preserve tax and accounting integrity.
+                </p>
+              ) : (
+                <p className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 p-2 rounded border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5 font-semibold">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  No sales history found for this product.
+                </p>
+              )}
             </div>
-          )}
+
+            <div className="space-y-2.5 pl-1 pt-1">
+              <label className="flex items-start gap-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                <input
+                  type="radio"
+                  name="deleteChoice"
+                  value="archive"
+                  checked={deleteModeChoice === 'archive'}
+                  onChange={() => setDeleteModeChoice('archive')}
+                  className="mt-0.5"
+                />
+                <div>
+                  <div className="font-bold text-indigo-700 dark:text-indigo-400">Archive Product (Recommended)</div>
+                  <div className="text-[11px] text-slate-500 font-normal">Hides product from POS, Search & Product list while preserving sales history for audit reports.</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                <input
+                  type="radio"
+                  name="deleteChoice"
+                  value="permanent"
+                  checked={deleteModeChoice === 'permanent'}
+                  onChange={() => setDeleteModeChoice('permanent')}
+                  className="mt-0.5"
+                />
+                <div>
+                  <div className="font-bold text-red-600 dark:text-red-400">Permanently Delete Product & Historical References</div>
+                  <div className="text-[11px] text-slate-500 font-normal">Completely wipes product, variants, stock ledger, barcodes, and images from database and cloud.</div>
+                </div>
+              </label>
+            </div>
+          </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t dark:border-slate-700">
             <Button variant="outline" onClick={() => setIsDeleteConfirmOpen(false)} disabled={isDeleting}>

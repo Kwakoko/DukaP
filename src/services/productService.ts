@@ -344,16 +344,26 @@ export class ProductService {
   }
 
   // ─── Soft Delete Product ───────────────────────────────────────────────────
-  // ─── Sales History Detection ───────────────────────────────────────────────
-  static async checkSalesHistory(productId: string): Promise<{ hasSales: boolean; salesCount: number }> {
+  // ─── Pre-Deletion Dependency Scanner ───────────────────────────────────────
+  static async scanProductDependencies(productId: string): Promise<{
+    hasSales: boolean;
+    salesCount: number;
+    hasLedger: boolean;
+    ledgerCount: number;
+    hasVariants: boolean;
+    variantCount: number;
+    recommendedStrategy: 'archive' | 'permanent';
+  }> {
+    const variants = await db.productVariants.where('productId').equals(productId).toArray();
+
     const ledgerCount = await db.stockLedger
+      .where('product_id').equals(productId)
+      .count();
+
+    const saleLedgerCount = await db.stockLedger
       .where('product_id').equals(productId)
       .and(l => (l.movement_type as string) === 'SALE' || (l.movement_type as string) === 'CUSTOMER_RETURN')
       .count();
-
-    if (ledgerCount > 0) {
-      return { hasSales: true, salesCount: ledgerCount };
-    }
 
     const orders = await db.orders.toArray();
     let orderSalesCount = 0;
@@ -363,7 +373,24 @@ export class ProductService {
       }
     }
 
-    return { hasSales: orderSalesCount > 0, salesCount: orderSalesCount };
+    const totalSalesCount = saleLedgerCount + orderSalesCount;
+    const hasSales = totalSalesCount > 0;
+    const hasLedger = ledgerCount > 0;
+
+    return {
+      hasSales,
+      salesCount: totalSalesCount,
+      hasLedger,
+      ledgerCount,
+      hasVariants: variants.length > 0,
+      variantCount: variants.length,
+      recommendedStrategy: (hasSales || hasLedger) ? 'archive' : 'permanent'
+    };
+  }
+
+  static async checkSalesHistory(productId: string): Promise<{ hasSales: boolean; salesCount: number }> {
+    const deps = await this.scanProductDependencies(productId);
+    return { hasSales: deps.hasSales, salesCount: deps.salesCount };
   }
 
   // ─── Production-Grade Product Deletion Engine ──────────────────────────────
@@ -386,7 +413,7 @@ export class ProductService {
 
     const now = Date.now();
 
-    // 1. ARCHIVE MODE (Soft Delete / Status Change)
+    // 1. ARCHIVE MODE (Soft Delete / Deactivate / Preserve History)
     if (options?.archive && !options?.permanent) {
       const archivedProd: Product = {
         ...existing,
@@ -413,6 +440,8 @@ export class ProductService {
         timestamp: now,
         status: 'Pending',
       });
+
+      attemptDirectCloudWrite('UPDATE', mapProductToCloud(archivedProd), user.tenant_id, user.id).catch(() => {});
       return true;
     }
 
