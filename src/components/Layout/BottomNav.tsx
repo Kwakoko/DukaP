@@ -69,27 +69,29 @@ export const BottomNav: React.FC = () => {
   return (
     <nav 
       aria-label="Mobile Navigation Footer" 
-      className="fixed bottom-3 inset-x-3 z-40 flex h-14 max-w-lg mx-auto items-center justify-around rounded-2xl border border-slate-200/90 bg-white/90 px-3 py-1 shadow-2xl shadow-slate-900/15 backdrop-blur-xl dark:border-darkbg-border dark:bg-darkbg-card/90 md:hidden transition-all"
+      className="fixed bottom-0 inset-x-0 z-40 flex h-16 w-full items-center justify-around border-t border-slate-200/90 bg-white/95 px-4 py-1.5 shadow-2xl backdrop-blur-xl dark:border-darkbg-border dark:bg-darkbg-card/95 md:hidden transition-all"
     >
-      {navItems.map((item) => (
-        <button
-          key={item.name}
-          type="button"
-          onClick={() => setActiveTab(item.tabKey)}
-          aria-current={item.isActive ? 'page' : undefined}
-          className={`relative flex flex-col items-center justify-center space-y-0.5 rounded-xl px-3 py-1 transition-all duration-200 active:scale-95 ${
-            item.isActive
-              ? 'text-primary dark:text-primary-dark font-bold'
-              : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 font-medium'
-          }`}
-        >
-          {item.isActive && (
-            <span className="absolute -top-1.5 h-1 w-5 rounded-full bg-primary dark:bg-primary-dark" />
-          )}
-          {item.icon}
-          <span className="text-[10px] tracking-tight">{item.name}</span>
-        </button>
-      ))}
+      <div className="flex w-full max-w-md mx-auto items-center justify-around">
+        {navItems.map((item) => (
+          <button
+            key={item.name}
+            type="button"
+            onClick={() => setActiveTab(item.tabKey)}
+            aria-current={item.isActive ? 'page' : undefined}
+            className={`relative flex flex-col items-center justify-center space-y-0.5 rounded-xl px-3 py-1 transition-all duration-200 active:scale-95 ${
+              item.isActive
+                ? 'text-primary dark:text-primary-dark font-bold'
+                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 font-medium'
+            }`}
+          >
+            {item.isActive && (
+              <span className="absolute -top-1.5 h-1 w-5 rounded-full bg-primary dark:bg-primary-dark shadow-sm" />
+            )}
+            {item.icon}
+            <span className="text-[10px] tracking-tight">{item.name}</span>
+          </button>
+        ))}
+      </div>
     </nav>
   );
 };
