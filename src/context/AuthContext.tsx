@@ -766,6 +766,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsOfflineLocked(false);
     setIsInitializing(false);
     localStorage.removeItem('dukapos_session');
+    localStorage.removeItem('dukapos_active_tab');
+    localStorage.removeItem('dukapos_active_module');
   };
 
   const hasBranchAccess = (targetBranchId: string): boolean => {

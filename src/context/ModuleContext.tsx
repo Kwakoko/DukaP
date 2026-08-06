@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { db } from '../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { supabase } from '../db/supabaseClient';
@@ -683,9 +683,32 @@ const defaultModuleContext: ModuleContextType = {
 const ModuleContext = createContext<ModuleContextType>(defaultModuleContext);
 
 export const ModuleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeModule, setActiveModuleState] = useState<IndustryModule>('Retail');
+  const [activeModule, setActiveModuleState] = useState<IndustryModule>(() => {
+    try {
+      const saved = localStorage.getItem('dukapos_active_module');
+      if (saved && MODULE_MANIFESTS[saved as IndustryModule]) {
+        return saved as IndustryModule;
+      }
+    } catch (_) {}
+    return 'Retail';
+  });
+
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<string>('Dashboard');
+
+  const [activeTab, setActiveTabState] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('dukapos_active_tab');
+      if (saved) return saved;
+    } catch (_) {}
+    return 'Dashboard';
+  });
+
+  const setActiveTab = useCallback((tab: string) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem('dukapos_active_tab', tab);
+    } catch (_) {}
+  }, []);
 
   const [moduleStates, setModuleStates] = useState<Record<string, ModuleState>>(() => {
     try {
@@ -844,10 +867,12 @@ export const ModuleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     })
   };
 
-  const setActiveModule = (module: IndustryModule) => {
+  const setActiveModule = useCallback((module: IndustryModule) => {
     setActiveModuleState(module);
-    setActiveTab('Dashboard');
-  };
+    try {
+      localStorage.setItem('dukapos_active_module', module);
+    } catch (_) {}
+  }, []);
 
   return (
     <ModuleContext.Provider value={{ 
