@@ -818,7 +818,7 @@ export async function createCategory(
   }
 
   // Case-insensitive uniqueness validation within tenant
-  const existing = await db.categories.where('tenant_id').equals(tid).filter(c => c.name && c.name.toLowerCase() === trimmedName.toLowerCase()).first();
+  const existing = await db.categories.where('tenant_id').equals(tid).filter(c => Boolean(c.name && c.name.toLowerCase() === trimmedName.toLowerCase())).first();
   if (existing) {
     return existing;
   }
@@ -902,7 +902,7 @@ export async function createBrand(
   }
 
   // Case-insensitive uniqueness validation within tenant
-  const existing = await db.brands.where('tenant_id').equals(tid).filter(b => b.name && b.name.toLowerCase() === trimmedName.toLowerCase()).first();
+  const existing = await db.brands.where('tenant_id').equals(tid).filter(b => Boolean(b.name && b.name.toLowerCase() === trimmedName.toLowerCase())).first();
   if (existing) {
     return existing;
   }
