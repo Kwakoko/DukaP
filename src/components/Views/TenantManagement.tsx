@@ -1142,7 +1142,15 @@ export const TenantManagement: React.FC = () => {
 
         {/* 3. HIERARCHY VIEW */}
         {viewMode === 'hierarchy' && (
-          <TenantHierarchyTree tenants={filteredTenants} adminName={user?.name || 'Super Admin'} onSelectDetails={(id) => setDetailTenantId(id)} />
+          <TenantHierarchyTree 
+            tenants={filteredTenants} 
+            adminName={user?.name || 'Super Admin'} 
+            onSelectDetails={(id) => setDetailTenantId(id)}
+            onEdit={(t) => openEditPanel(t)}
+            onSubscription={(t) => openSubscriptionPanel(t)}
+            onSuspend={(t) => handleToggleSuspend(t)}
+            onDelete={(t) => handleDeleteTenant(t)}
+          />
         )}
 
         {/* 4. VISUAL FLOW VIEW */}
@@ -1274,7 +1282,21 @@ export const TenantManagement: React.FC = () => {
 
 // ─── Hierarchy Tree Component ──────────────────────────────────────────────────
 
-function TenantNodeItem({ tenant, onSelectDetails }: { tenant: any; onSelectDetails: (id: string) => void }) {
+function TenantNodeItem({ 
+  tenant, 
+  onSelectDetails,
+  onEdit,
+  onSubscription,
+  onSuspend,
+  onDelete
+}: { 
+  tenant: any; 
+  onSelectDetails: (id: string) => void;
+  onEdit?: (t: any) => void;
+  onSubscription?: (t: any) => void;
+  onSuspend?: (t: any) => void;
+  onDelete?: (t: any) => void;
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
   const branches = useLiveQuery(() => db.branches.where('tenant_id').equals(tenant.id).toArray(), [tenant.id]) || [];
 
@@ -1286,7 +1308,7 @@ function TenantNodeItem({ tenant, onSelectDetails }: { tenant: any; onSelectDeta
 
   return (
     <div className="relative">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={(e) => {
@@ -1335,6 +1357,62 @@ function TenantNodeItem({ tenant, onSelectDetails }: { tenant: any; onSelectDeta
             ({planFormatted})
           </span>
         </div>
+
+        {/* Node Actions Toolbar */}
+        <div className="flex items-center gap-1.5 ml-1">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onSelectDetails(tenant.id); }}
+            title="View 360° Profile"
+            className="px-2.5 py-1 text-[10px] font-extrabold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-darkbg hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-darkbg-border transition shadow-sm"
+          >
+            View
+          </button>
+          {onEdit && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onEdit(tenant); }}
+              title="Edit Tenant Details"
+              className="px-2.5 py-1 text-[10px] font-extrabold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 rounded-xl border border-indigo-200 dark:border-indigo-900/50 transition shadow-sm"
+            >
+              Edit
+            </button>
+          )}
+          {onSubscription && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onSubscription(tenant); }}
+              title="Manage Subscription & Plan"
+              className="px-2.5 py-1 text-[10px] font-extrabold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 rounded-xl border border-amber-200 dark:border-amber-900/50 transition shadow-sm"
+            >
+              Subscription
+            </button>
+          )}
+          {onSuspend && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onSuspend(tenant); }}
+              title={statusUpper === 'SUSPENDED' ? 'Activate Tenant Account' : 'Suspend Tenant Account'}
+              className={`px-2.5 py-1 text-[10px] font-extrabold rounded-xl border transition shadow-sm ${
+                statusUpper === 'SUSPENDED'
+                  ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-800'
+                  : 'text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-darkbg hover:bg-slate-200 dark:hover:bg-slate-800 border-slate-200 dark:border-darkbg-border'
+              }`}
+            >
+              {statusUpper === 'SUSPENDED' ? 'Activate' : 'Suspend'}
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onDelete(tenant); }}
+              title="Delete Tenant Account"
+              className="px-2.5 py-1 text-[10px] font-extrabold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 rounded-xl border border-rose-200 dark:border-rose-900/50 transition shadow-sm"
+            >
+              Delete
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Expanded Branches Subtree */}
@@ -1374,10 +1452,14 @@ function TenantNodeItem({ tenant, onSelectDetails }: { tenant: any; onSelectDeta
   );
 }
 
-function TenantHierarchyTree({ tenants, adminName: _adminName, onSelectDetails }: {
+function TenantHierarchyTree({ tenants, adminName: _adminName, onSelectDetails, onEdit, onSubscription, onSuspend, onDelete }: {
   tenants: any[];
   adminName: string;
   onSelectDetails: (id: string) => void;
+  onEdit?: (t: any) => void;
+  onSubscription?: (t: any) => void;
+  onSuspend?: (t: any) => void;
+  onDelete?: (t: any) => void;
 }) {
   const [rootLevel, setRootLevel] = useState<'business' | 'platform'>('platform');
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({
@@ -1483,7 +1565,15 @@ function TenantHierarchyTree({ tenants, adminName: _adminName, onSelectDetails }
                 {isSuperAdminExpanded && (
                   <div className="relative ml-3.5 pl-6 border-l border-slate-200 dark:border-slate-700/60 pt-2 space-y-3">
                     {tenants.map(t => (
-                      <TenantNodeItem key={t.id} tenant={t} onSelectDetails={onSelectDetails} />
+                      <TenantNodeItem 
+                        key={t.id} 
+                        tenant={t} 
+                        onSelectDetails={onSelectDetails}
+                        onEdit={onEdit}
+                        onSubscription={onSubscription}
+                        onSuspend={onSuspend}
+                        onDelete={onDelete}
+                      />
                     ))}
                   </div>
                 )}
@@ -1494,7 +1584,15 @@ function TenantHierarchyTree({ tenants, adminName: _adminName, onSelectDetails }
           /* BUSINESS ROOT VIEW (IMAGE 2) */
           <div className="space-y-3 pl-1">
             {tenants.map(t => (
-              <TenantNodeItem key={t.id} tenant={t} onSelectDetails={onSelectDetails} />
+              <TenantNodeItem 
+                key={t.id} 
+                tenant={t} 
+                onSelectDetails={onSelectDetails} 
+                onEdit={onEdit}
+                onSubscription={onSubscription}
+                onSuspend={onSuspend}
+                onDelete={onDelete}
+              />
             ))}
           </div>
         )}
