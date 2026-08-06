@@ -176,6 +176,19 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     return items
       .map(item => {
         const name = typeof item === 'string' ? item : item.name;
+        if (name === 'Purchasing' || name === 'Purchasing & Supplies' || name === 'Suppliers' || name === 'Distributors & Suppliers' || name === 'Procurement') {
+          return {
+            name: 'Purchasing',
+            subItems: [
+              'Suppliers',
+              'Purchase Orders',
+              'Goods Received',
+              'Supplier Ledgers',
+              'Warehouses'
+            ]
+          };
+        }
+
         if (name === 'Receipts' || name === 'Receipt Management' || name === 'Receipt') {
           return {
             name: 'Receipts',
@@ -240,6 +253,10 @@ export const Sidebar: React.FC<SidebarProps> = () => {
         }
 
         return item;
+      })
+      .filter((item, index, self) => {
+        const itemName = typeof item === 'string' ? item : item.name;
+        return self.findIndex(i => (typeof i === 'string' ? i : i.name) === itemName) === index;
       })
       .map(item => {
         if (typeof item === 'string') return item;
