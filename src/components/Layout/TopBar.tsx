@@ -439,7 +439,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
         {/* Right Actions */}
         <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
           {/* DESKTOP ONLY: Industry Module Selector */}
-          {displayedModules.length > 1 && (
+          {displayedModules.length > 0 && (
             <div className="relative hidden lg:block" ref={moduleContainerRef}>
               <button
                 onClick={() => setShowModuleDropdown(!showModuleDropdown)}
@@ -476,7 +476,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
           )}
 
           {/* DESKTOP ONLY: Branch Context Selector */}
-          {uniqueBranchesCount > 1 && (
+          {(uniqueBranchesCount > 0 || currentBranch) && (
             <div className="relative hidden md:block" ref={branchContainerRef}>
               <button
                 onClick={() => setShowBranchDropdown(!showBranchDropdown)}
