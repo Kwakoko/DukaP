@@ -1,13 +1,15 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, type UserRole } from '../../context/AuthContext';
 import { useModule, type IndustryModule, MODULE_MANIFESTS } from '../../context/ModuleContext';
 import { useSyncState } from '../../context/SyncContext';
 import { 
-  Search, Wifi, WifiOff, RefreshCw, 
-  X, Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, Menu
+  Search, Sun, Moon, Wifi, WifiOff, RefreshCw, 
+  ChevronDown, Layers, MapPin, X, LogOut,
+  Bell, AlertTriangle, PackageX, Clock, CheckCircle2, Zap, Menu
 } from 'lucide-react';
 import { db, safeGet } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { getShortModuleName, getShortBranchName } from '../../utils/mobileFormatters';
 
 interface TopBarProps {
   onOpenSearch: () => void;
@@ -15,28 +17,46 @@ interface TopBarProps {
 
 export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
   const { 
+    role, 
     currentBranch, 
+    toggleTheme, 
     currentTenant, 
     impersonatedTenant, 
     setImpersonatedTenant, 
     isSuperAdminView, 
     setIsSuperAdminView,
-    currentIndustry
+    user,
+    logout,
+    currentIndustry,
+    switchContext
   } = useAuth();
   const { activeModule, setActiveModule, isMobileSidebarOpen, setIsMobileSidebarOpen } = useModule();
   const { isOnline, isSyncing, syncProgress, pendingCount, toggleOfflineSimulation, syncLogs, syncData } = useSyncState();
 
+  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+  const [showModuleDropdown, setShowModuleDropdown] = useState(false);
   const [showSyncDropdown, setShowSyncDropdown] = useState(false);
+  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
 
   // Refs for click-outside detection
-  // Refs for click-outside detection
+  const profileContainerRef = useRef<HTMLDivElement>(null);
+  const moduleContainerRef = useRef<HTMLDivElement>(null);
+  const branchContainerRef = useRef<HTMLDivElement>(null);
   const syncContainerRef = useRef<HTMLDivElement>(null);
   const notifContainerRef = useRef<HTMLDivElement>(null);
 
-  // Click-outside event listeners to close dropdowns when clicking away
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      if (profileContainerRef.current && !profileContainerRef.current.contains(event.target as Node)) {
+        setShowProfileDropdown(false);
+      }
+      if (moduleContainerRef.current && !moduleContainerRef.current.contains(event.target as Node)) {
+        setShowModuleDropdown(false);
+      }
+      if (branchContainerRef.current && !branchContainerRef.current.contains(event.target as Node)) {
+        setShowBranchDropdown(false);
+      }
       if (syncContainerRef.current && !syncContainerRef.current.contains(event.target as Node)) {
         setShowSyncDropdown(false);
       }
@@ -50,10 +70,63 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
     };
   }, []);
 
+  const userInitials = useMemo(() => {
+    if (!user?.name) return 'U';
+    return user.name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
+  }, [user]);
+
+  // Live query to fetch all branch contexts resolved for this user
+  const userContexts = useLiveQuery(async () => {
+    if (!user) return [];
+    const roles = await db.userBranchRoles.where('user_id').equals(user.id).toArray();
+    const list: Array<{
+      id: string;
+      tenant_id: string;
+      tenantName: string;
+      branch_id: string;
+      branchName: string;
+      branchLocation: string;
+      industry_id: string;
+      industryName: string;
+      role: UserRole;
+    }> = [];
+    for (const r of roles) {
+      const br = r.branch_id ? await safeGet(db.branches, r.branch_id) : null;
+      const ind = r.industry_id ? await safeGet(db.industries, r.industry_id) : null;
+      const t = r.tenant_id ? await safeGet(db.tenants, r.tenant_id) : null;
+      list.push({
+        id: r.id || '',
+        tenant_id: r.tenant_id,
+        tenantName: t?.name || 'Unknown Business',
+        branch_id: r.branch_id,
+        branchName: br?.name || r.branch_id,
+        branchLocation: br?.location || 'Unknown Location',
+        industry_id: r.industry_id,
+        industryName: ind?.name || 'Retail',
+        role: r.role_id as UserRole
+      });
+    }
+    return list;
+  }, [user]) || [];
+
+  const uniqueBranchesCount = useMemo(() => {
+    const branchIds = new Set(userContexts.map(ctx => ctx.branch_id));
+    return branchIds.size;
+  }, [userContexts]);
+
   // Live query to fetch enabled (subscribed) modules for this tenant
   const tenantModules = useLiveQuery(() => 
     db.tenantModules.where('tenant_id').equals(currentTenant?.id || '').and(m => m.enabled).toArray()
   , [currentTenant?.id]);
+
+  const subscribedModuleKeys = useMemo(() => (tenantModules || []).map(m => m.module_key), [tenantModules]);
+
+  const displayedModules = useMemo(() => {
+    const allKeys = Object.keys(MODULE_MANIFESTS) as IndustryModule[];
+    if (isSuperAdminView) return allKeys;
+    if (!tenantModules || tenantModules.length === 0) return [(currentIndustry?.name as IndustryModule) || activeModule];
+    return allKeys.filter(mod => subscribedModuleKeys.includes(mod));
+  }, [tenantModules, subscribedModuleKeys, activeModule, isSuperAdminView, currentIndustry?.name]);
 
   // ─── Real-time Notification Queries ───
   // All queries are SCOPED to the current tenant's branch.
@@ -372,6 +445,92 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
 
         {/* Right Actions */}
         <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
+          {/* DESKTOP ONLY: Industry Module Selector */}
+          {displayedModules.length > 1 && (
+            <div className="relative hidden lg:block" ref={moduleContainerRef}>
+              <button
+                onClick={() => setShowModuleDropdown(!showModuleDropdown)}
+                className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-darkbg-border dark:bg-darkbg/50 dark:text-slate-200"
+              >
+                <Layers className="h-3.5 w-3.5 text-primary" />
+                <span className="max-w-[100px] truncate">{getShortModuleName(activeModule)}</span>
+                <ChevronDown className="h-3 w-3 text-slate-400" />
+              </button>
+
+              {showModuleDropdown && (
+                <div className="absolute right-0 mt-2 w-52 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card z-50">
+                  <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Industry Modules</div>
+                  {displayedModules.map((mod) => (
+                    <button
+                      key={mod}
+                      onClick={() => {
+                        setActiveModule(mod);
+                        setShowModuleDropdown(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                        activeModule === mod
+                          ? 'bg-primary/10 text-primary font-bold dark:bg-primary/20'
+                          : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-darkbg'
+                      }`}
+                    >
+                      <span>{MODULE_MANIFESTS[mod]?.title || mod}</span>
+                      {activeModule === mod && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* DESKTOP ONLY: Branch Context Selector */}
+          {uniqueBranchesCount > 1 && (
+            <div className="relative hidden md:block" ref={branchContainerRef}>
+              <button
+                onClick={() => setShowBranchDropdown(!showBranchDropdown)}
+                className="flex items-center space-x-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-darkbg-border dark:bg-darkbg/50 dark:text-slate-200"
+              >
+                <MapPin className="h-3.5 w-3.5 text-amber-500" />
+                <span className="max-w-[100px] truncate">{getShortBranchName(currentBranch?.name || 'Main Branch')}</span>
+                <ChevronDown className="h-3 w-3 text-slate-400" />
+              </button>
+
+              {showBranchDropdown && (
+                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card z-50">
+                  <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Switch Branch</div>
+                  {userContexts.map((ctx) => (
+                    <button
+                      key={ctx.id}
+                      onClick={() => {
+                        switchContext(ctx);
+                        setShowBranchDropdown(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs transition ${
+                        currentBranch?.id === ctx.branch_id
+                          ? 'bg-amber-50 text-amber-700 font-bold dark:bg-amber-950/40 dark:text-amber-300'
+                          : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-darkbg'
+                      }`}
+                    >
+                      <div className="text-left">
+                        <div className="font-semibold">{ctx.branchName}</div>
+                        <div className="text-[10px] text-slate-400">{ctx.tenantName}</div>
+                      </div>
+                      {currentBranch?.id === ctx.branch_id && <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* DESKTOP ONLY: Theme Toggle */}
+          <button
+            onClick={toggleTheme}
+            className="hidden md:flex rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
+            title="Toggle Theme"
+          >
+            <Sun className="hidden h-4 w-4 dark:block" />
+            <Moon className="h-4 w-4 dark:hidden" />
+          </button>
           {/* Offline Status & Sync Queue Indicator */}
           <div className="relative" ref={syncContainerRef}>
             <button
@@ -549,6 +708,39 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenSearch }) => {
                 <div className="px-4 py-2.5 border-t border-slate-100 dark:border-darkbg-border bg-slate-50/50 dark:bg-darkbg/20">
                   <p className="text-[10px] text-center text-slate-400">Alerts update live via IndexedDB sync</p>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* DESKTOP ONLY: Profile Menu */}
+          <div className="relative hidden md:block" ref={profileContainerRef}>
+            <button
+              onClick={() => setShowProfileDropdown(!showProfileDropdown)}
+              className="flex items-center space-x-2 rounded-xl p-1 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-xs font-bold text-white shadow-sm">
+                {userInitials}
+              </div>
+              <div className="hidden text-left xl:block">
+                <div className="text-xs font-bold text-slate-800 dark:text-white truncate max-w-[100px]">{user?.name || 'User'}</div>
+                <div className="text-[10px] text-slate-400 uppercase font-semibold">{role}</div>
+              </div>
+              <ChevronDown className="h-3 w-3 text-slate-400" />
+            </button>
+
+            {showProfileDropdown && (
+              <div className="absolute right-0 mt-2 w-48 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg dark:border-darkbg-border dark:bg-darkbg-card z-50">
+                <div className="px-3 py-2 border-b border-slate-100 dark:border-darkbg-border">
+                  <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{user?.name}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{user?.email}</p>
+                </div>
+                <button
+                  onClick={logout}
+                  className="flex w-full items-center space-x-2 rounded-lg px-2.5 py-2 text-xs text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition mt-1 font-semibold"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span>Logout</span>
+                </button>
               </div>
             )}
           </div>
