@@ -42,21 +42,35 @@ export class BootstrapEngine {
     tenantId: string,
     _user?: any,
     branchId?: string
-  ): Promise<{ success: boolean; syncVersion: number; restoredCounts: Record<string, number> }> {
+  ): Promise<{ success: boolean; syncVersion: number; restoredCounts: Record<string, number>; notModified?: boolean }> {
     const startTime = Date.now();
     console.log(`[BootstrapEngine] Initiating fast bootstrap snapshot for tenant: ${tenantId}`);
 
     try {
-      // 1. Single compressed bootstrap snapshot POST request
+      // 0. Get local watermark for conditional ETag re-validation
+      const localWatermark = await db.syncMetadata.get('lastSyncVersion');
+      const watermarkVal = localWatermark?.value || 1;
+      const clientETag = `W/"sync-${tenantId}-v${watermarkVal}"`;
+
+      // 1. Single compressed bootstrap snapshot POST request with If-None-Match ETag header
       const response = await fetch('/api/bootstrap', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-tenant-id': tenantId,
           'x-branch-id': branchId || '',
+          'If-None-Match': clientETag,
         },
-        body: JSON.stringify({ tenantId, branchId }),
+        body: JSON.stringify({ tenantId, branchId, ifNoneMatch: clientETag }),
       });
+
+      // 2. Handle 304 Not Modified Fast-Path (<50ms startup time)
+      if (response.status === 304) {
+        console.log(
+          `[BootstrapEngine] ⚡ 304 Not Modified (Watermark: ${watermarkVal}). Data unchanged. Bypassing restoration in ${Date.now() - startTime}ms!`
+        );
+        return { success: true, syncVersion: Number(watermarkVal), restoredCounts: {}, notModified: true };
+      }
 
       if (!response.ok) {
         throw new Error(`Bootstrap snapshot API failed with status ${response.status}`);
@@ -67,10 +81,10 @@ export class BootstrapEngine {
         `[BootstrapEngine] Snapshot received (${snapshot.syncVersion} watermark) in ${Date.now() - startTime}ms`
       );
 
-      // 2. Atomic Bulk IndexedDB Restore via Single Dexie Transaction
+      // 3. Parallelized Bulk IndexedDB Restore via Single Dexie Transaction
       const restoredCounts = await this.bulkRestoreIndexedDB(snapshot, tenantId);
 
-      // 3. Persist Monotonic Watermark Metadata
+      // 4. Persist Monotonic Watermark Metadata
       await db.syncMetadata.bulkPut([
         { key: 'lastSyncVersion', value: snapshot.syncVersion || 1, updatedAt: Date.now() },
         { key: 'lastBootstrapAt', value: Date.now(), updatedAt: Date.now() },
@@ -78,7 +92,7 @@ export class BootstrapEngine {
         { key: 'activeTenantId', value: tenantId, updatedAt: Date.now() },
       ]);
 
-      // 4. Multi-tab synchronization broadcast
+      // 5. Multi-tab synchronization broadcast
       if (this.syncChannel) {
         this.syncChannel.postMessage({
           type: 'BOOTSTRAP_COMPLETE',
@@ -99,13 +113,57 @@ export class BootstrapEngine {
   }
 
   /**
-   * Bulk Atomic IndexedDB Restoration
+   * Bulk Atomic IndexedDB Restoration (Parallel Write Throughput)
    */
   private async bulkRestoreIndexedDB(
     snapshot: BootstrapSnapshotPayload,
     tenantId: string
   ): Promise<Record<string, number>> {
     const counts: Record<string, number> = {};
+
+    // Pre-map snapshot data arrays
+    const catsToPut = Array.isArray(snapshot.categories) ? snapshot.categories.map((c) => ({
+      id: c.id,
+      name: c.name,
+      code: c.code || '',
+      description: c.description || '',
+      tenant_id: c.tenant_id || tenantId,
+      parent_id: c.parent_id || null,
+      sync_version: c.sync_version || 1,
+      created_at: c.created_at || Date.now(),
+    })) : [];
+
+    const brandsToPut = Array.isArray(snapshot.brands) ? snapshot.brands.map((b) => ({
+      id: b.id,
+      name: b.name,
+      code: b.code || '',
+      description: b.description || '',
+      tenant_id: b.tenant_id || tenantId,
+      sync_version: b.sync_version || 1,
+      created_at: b.created_at || Date.now(),
+    })) : [];
+
+    const prodsToPut = Array.isArray(snapshot.products) ? snapshot.products.map((p) => ({
+      ...p,
+      tenant_id: p.tenant_id || tenantId,
+      price: Number(p.selling_price || p.price || 0),
+      buyingPrice: Number(p.buying_price || p.cost_price || 0),
+      sellingPrice: Number(p.selling_price || p.price || 0),
+      stock: Number(p.stock || 0),
+      hasVariants: Boolean(p.has_variants || p.hasVariants),
+      syncStatus: 'SYNCED',
+    })) : [];
+
+    const varsToPut = Array.isArray(snapshot.variants) ? snapshot.variants.map((v) => ({
+      ...v,
+      productId: v.product_id || v.productId,
+      tenant_id: v.tenant_id || tenantId,
+      buyingPrice: Number(v.buying_price || 0),
+      sellingPrice: Number(v.selling_price || 0),
+      stock: Number(v.stock || 0),
+      reservedStock: Number(v.reserved_stock || 0),
+      syncStatus: 'SYNCED',
+    })) : [];
 
     await db.transaction(
       'rw',
@@ -122,96 +180,37 @@ export class BootstrapEngine {
         db.syncMetadata,
       ],
       async () => {
-        // Tenants & Branches
+        const tasks: Promise<void>[] = [];
+
         if (snapshot.tenant?.id) {
-          await db.tenants.put(snapshot.tenant);
-          counts.tenants = 1;
+          tasks.push(db.tenants.put(snapshot.tenant).then(() => { counts.tenants = 1; }));
         }
         if (Array.isArray(snapshot.branches) && snapshot.branches.length > 0) {
-          await db.branches.bulkPut(snapshot.branches);
-          counts.branches = snapshot.branches.length;
+          tasks.push(db.branches.bulkPut(snapshot.branches).then(() => { counts.branches = snapshot.branches.length; }));
         }
-
-        // Categories
-        if (Array.isArray(snapshot.categories) && snapshot.categories.length > 0) {
-          const catsToPut = snapshot.categories.map((c) => ({
-            id: c.id,
-            name: c.name,
-            code: c.code || '',
-            description: c.description || '',
-            tenant_id: c.tenant_id || tenantId,
-            parent_id: c.parent_id || null,
-            sync_version: c.sync_version || 1,
-            created_at: c.created_at || Date.now(),
-          }));
-          await db.categories.bulkPut(catsToPut);
-          counts.categories = catsToPut.length;
+        if (catsToPut.length > 0) {
+          tasks.push(db.categories.bulkPut(catsToPut).then(() => { counts.categories = catsToPut.length; }));
         }
-
-        // Brands
-        if (Array.isArray(snapshot.brands) && snapshot.brands.length > 0) {
-          const brandsToPut = snapshot.brands.map((b) => ({
-            id: b.id,
-            name: b.name,
-            code: b.code || '',
-            description: b.description || '',
-            tenant_id: b.tenant_id || tenantId,
-            sync_version: b.sync_version || 1,
-            created_at: b.created_at || Date.now(),
-          }));
-          await db.brands.bulkPut(brandsToPut);
-          counts.brands = brandsToPut.length;
+        if (brandsToPut.length > 0) {
+          tasks.push(db.brands.bulkPut(brandsToPut).then(() => { counts.brands = brandsToPut.length; }));
         }
-
-        // Products
-        if (Array.isArray(snapshot.products) && snapshot.products.length > 0) {
-          const prodsToPut = snapshot.products.map((p) => ({
-            ...p,
-            tenant_id: p.tenant_id || tenantId,
-            price: Number(p.selling_price || p.price || 0),
-            buyingPrice: Number(p.buying_price || p.cost_price || 0),
-            sellingPrice: Number(p.selling_price || p.price || 0),
-            stock: Number(p.stock || 0),
-            hasVariants: Boolean(p.has_variants || p.hasVariants),
-            syncStatus: 'SYNCED',
-          }));
-          await db.products.bulkPut(prodsToPut);
-          counts.products = prodsToPut.length;
+        if (prodsToPut.length > 0) {
+          tasks.push(db.products.bulkPut(prodsToPut).then(() => { counts.products = prodsToPut.length; }));
         }
-
-        // Variants
-        if (Array.isArray(snapshot.variants) && snapshot.variants.length > 0) {
-          const varsToPut = snapshot.variants.map((v) => ({
-            ...v,
-            productId: v.product_id || v.productId,
-            tenant_id: v.tenant_id || tenantId,
-            buyingPrice: Number(v.buying_price || 0),
-            sellingPrice: Number(v.selling_price || 0),
-            stock: Number(v.stock || 0),
-            reservedStock: Number(v.reserved_stock || 0),
-            syncStatus: 'SYNCED',
-          }));
-          await db.productVariants.bulkPut(varsToPut);
-          counts.variants = varsToPut.length;
+        if (varsToPut.length > 0) {
+          tasks.push(db.productVariants.bulkPut(varsToPut).then(() => { counts.variants = varsToPut.length; }));
         }
-
-        // Stock Ledger
         if (Array.isArray(snapshot.stockLedger) && snapshot.stockLedger.length > 0) {
-          await db.stockLedger.bulkPut(snapshot.stockLedger);
-          counts.stockLedger = snapshot.stockLedger.length;
+          tasks.push(db.stockLedger.bulkPut(snapshot.stockLedger).then(() => { counts.stockLedger = snapshot.stockLedger.length; }));
         }
-
-        // Customers
         if (Array.isArray(snapshot.customers) && snapshot.customers.length > 0) {
-          await db.customers.bulkPut(snapshot.customers);
-          counts.customers = snapshot.customers.length;
+          tasks.push(db.customers.bulkPut(snapshot.customers).then(() => { counts.customers = snapshot.customers.length; }));
+        }
+        if (Array.isArray(snapshot.subscriptionPlans) && snapshot.subscriptionPlans.length > 0) {
+          tasks.push(db.subscriptionPlans.bulkPut(snapshot.subscriptionPlans).then(() => { counts.subscriptionPlans = snapshot.subscriptionPlans.length; }));
         }
 
-        // Subscription Plans
-        if (Array.isArray(snapshot.subscriptionPlans) && snapshot.subscriptionPlans.length > 0) {
-          await db.subscriptionPlans.bulkPut(snapshot.subscriptionPlans);
-          counts.subscriptionPlans = snapshot.subscriptionPlans.length;
-        }
+        await Promise.all(tasks);
       }
     );
 

@@ -388,7 +388,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // 0.1 POST /api/bootstrap — Fast Bootstrap Snapshot Endpoint (Parallel Queries + Redis/Memory Cache)
+      // 0.1 POST /api/bootstrap — Optimized Fast Bootstrap Snapshot Endpoint (ETag 304 + Pre-Stringified Buffer Caching)
       if (pathname === '/api/bootstrap' && (req.method === 'POST' || req.method === 'GET')) {
         let body = {};
         if (req.method === 'POST') {
@@ -396,16 +396,29 @@ const server = http.createServer(async (req, res) => {
         }
         const targetTenant = tenantId || body.tenantId || fullUrl.searchParams.get('tenantId') || 'tenant-101';
         const targetBranch = body.branchId || fullUrl.searchParams.get('branchId') || '';
+        const clientETag = req.headers['if-none-match'] || req.headers['x-if-none-match'] || body.ifNoneMatch || '';
         const cacheKey = `${targetTenant}:${targetBranch}`;
 
         const cached = bootstrapCache.get(cacheKey);
         if (cached && (Date.now() - cached.generatedAt < BOOTSTRAP_CACHE_TTL_MS)) {
+          // Check 304 Not Modified Re-validation
+          if (clientETag && clientETag === cached.etag) {
+            res.writeHead(304, {
+              'ETag': cached.etag,
+              'X-Bootstrap-Cache': 'REVALIDATED_304',
+              'Cache-Control': 'private, no-cache, revalidate',
+            });
+            res.end();
+            return;
+          }
+
           res.writeHead(200, {
             'Content-Type': 'application/json; charset=utf-8',
+            'ETag': cached.etag,
             'X-Bootstrap-Cache': 'HIT',
             'Cache-Control': 'public, max-age=60',
           });
-          res.end(JSON.stringify(cached.payload));
+          res.end(cached.jsonString);
           return;
         }
 
@@ -434,6 +447,18 @@ const server = http.createServer(async (req, res) => {
           if (v > maxSyncVer) maxSyncVer = v;
         }
 
+        const etag = `W/"sync-${targetTenant}-v${maxSyncVer}"`;
+
+        if (clientETag && clientETag === etag) {
+          res.writeHead(304, {
+            'ETag': etag,
+            'X-Bootstrap-Cache': 'REVALIDATED_304',
+            'Cache-Control': 'private, no-cache, revalidate',
+          });
+          res.end();
+          return;
+        }
+
         const payload = {
           tenant: tenants[0] || { id: targetTenant, name: 'Bravados', plan: 'Enterprise', status: 'Active' },
           user: users[0] || null,
@@ -453,14 +478,16 @@ const server = http.createServer(async (req, res) => {
           serverTimestamp: Date.now()
         };
 
-        bootstrapCache.set(cacheKey, { payload, generatedAt: Date.now() });
+        const jsonString = JSON.stringify(payload);
+        bootstrapCache.set(cacheKey, { payload, jsonString, etag, maxSyncVer, generatedAt: Date.now() });
 
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
+          'ETag': etag,
           'X-Bootstrap-Cache': 'MISS',
           'Cache-Control': 'public, max-age=60',
         });
-        res.end(JSON.stringify(payload));
+        res.end(jsonString);
         return;
       }
 

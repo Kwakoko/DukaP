@@ -183,6 +183,7 @@ export default defineConfig({
             // ── POST /api/bootstrap — Fast Bootstrap Snapshot Endpoint ──
             if (url.pathname === '/api/bootstrap' && (req.method === 'POST' || req.method === 'GET')) {
               const tenantId = reqTenantId || '8f1109a3-9ab8-4922-a4e0-d706a3a2d85d'
+              const clientETag = req.headers['if-none-match'] || req.headers['x-if-none-match'] || ''
               const tenant = (db.tenants || []).find((t: any) => t.id === tenantId) || { id: tenantId, name: 'Bravados', plan: 'Enterprise' }
               const user = (db.users || []).find((u: any) => u.tenant_id === tenantId || u.tenantId === tenantId) || null
               const branches = (db.branches || []).filter((b: any) => (b.tenant_id === tenantId || b.tenantId === tenantId) && !b.deletedAt)
@@ -194,7 +195,25 @@ export default defineConfig({
               const customers = (db.customers || []).filter((c: any) => c.tenant_id === tenantId || c.tenantId === tenantId)
               const subscriptionPlans = db.subscriptionPlans || []
 
+              let maxSyncVer = 1
+              const allEntities = [...categories, ...brands, ...products, ...variants, ...stockLedger, ...customers]
+              for (const e of allEntities) {
+                const v = parseInt(e.sync_version || e.version || '1', 10)
+                if (v > maxSyncVer) maxSyncVer = v
+              }
+
+              const etag = `W/"sync-${tenantId}-v${maxSyncVer}"`
+              if (clientETag && clientETag === etag) {
+                res.statusCode = 304
+                res.setHeader('ETag', etag)
+                res.setHeader('X-Bootstrap-Cache', 'REVALIDATED_304')
+                res.end()
+                return
+              }
+
               res.statusCode = 200
+              res.setHeader('ETag', etag)
+              res.setHeader('X-Bootstrap-Cache', 'MISS')
               res.end(JSON.stringify({
                 tenant,
                 user,
@@ -208,7 +227,7 @@ export default defineConfig({
                 customers,
                 permissions: [],
                 subscriptionPlans,
-                syncVersion: Date.now(),
+                syncVersion: maxSyncVer,
                 schemaVersion: 8,
                 generatedAt: new Date().toISOString(),
                 serverTimestamp: Date.now()
