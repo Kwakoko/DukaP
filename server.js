@@ -2,18 +2,59 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { neon } from '@neondatabase/serverless';
+import pg from 'pg';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env file if available locally
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8');
+  envContent.split('\n').forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+      const [key, ...valParts] = trimmed.split('=');
+      const val = valParts.join('=').trim().replace(/^["']|["']$/g, '');
+      if (key.trim() && !process.env[key.trim()]) {
+        process.env[key.trim()] = val;
+      }
+    }
+  });
+}
+
 const PORT = process.env.PORT || 8080;
 const DIST_DIR = path.join(__dirname, 'dist');
 
-const DEFAULT_NEON_URL = 'postgresql://neondb_owner:npg_h1k4wASpWoGx@ep-polished-dawn-axwcu8hf-pooler.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
-const DATABASE_URL = process.env.DATABASE_URL || process.env.VITE_POSTGRES_URL || DEFAULT_NEON_URL;
+const DEFAULT_LOCAL_PG_URL = 'postgresql://postgres:postgres@localhost:5432/dukapos';
+const DATABASE_URL = process.env.DATABASE_URL || process.env.VITE_POSTGRES_URL || DEFAULT_LOCAL_PG_URL;
+const isSSLRequired = DATABASE_URL.includes('sslmode=require') || DATABASE_URL.includes('neon.tech');
 
-console.log(`[Neon Backend Engine] Initializing database connection pool to Neon PostgreSQL...`);
-const sql = neon(DATABASE_URL);
+console.log(`[PostgreSQL Engine] Initializing database connection pool...`);
+console.log(`[PostgreSQL Engine] Connection target: ${DATABASE_URL.replace(/:[^:@]+@/, ':****@')}`);
+
+const pool = new pg.Pool({
+  connectionString: DATABASE_URL,
+  ssl: isSSLRequired ? { rejectUnauthorized: false } : false,
+});
+
+pool.on('error', (err) => {
+  console.error('[PostgreSQL Engine] Idle client error:', err.message);
+});
+
+// Universal tagged template & function query executor for PostgreSQL
+async function sql(strings, ...values) {
+  if (typeof strings === 'string') {
+    const result = await pool.query(strings, values[0] || []);
+    return result.rows;
+  }
+  let queryText = strings[0];
+  for (let i = 1; i < strings.length; i++) {
+    queryText += `$${i}` + strings[i];
+  }
+  const result = await pool.query(queryText, values);
+  return result.rows;
+}
 
 // Auto-initialize Neon PostgreSQL schema on startup
 async function initDatabaseSchema() {
