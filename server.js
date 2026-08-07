@@ -219,6 +219,15 @@ async function initDatabaseSchema() {
         created_at BIGINT
       );
     `;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS movement_type TEXT;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS quantity_before NUMERIC DEFAULT 0;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS quantity_change NUMERIC DEFAULT 0;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS quantity_after NUMERIC DEFAULT 0;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS unit_cost NUMERIC DEFAULT 0;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS total_cost NUMERIC DEFAULT 0;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS user_id TEXT;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS device_id TEXT;`;
+    await sql`ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS idempotency_key TEXT;`;
     await sql`
       CREATE TABLE IF NOT EXISTS user_branch_roles (
         id TEXT PRIMARY KEY,
@@ -1062,7 +1071,7 @@ const server = http.createServer(async (req, res) => {
           } else if (entity === 'stockLedger' || entity === 'stock_ledger') {
             await sql`
               INSERT INTO stock_ledger (id, tenant_id, branch_id, product_id, variant_id, movement_type, quantity_before, quantity_change, quantity_after, unit_cost, total_cost, user_id, device_id, idempotency_key, created_at)
-              VALUES (${recordId}, ${tenantId}, ${payload.branch_id || ''}, ${payload.product_id || ''}, ${payload.variant_id || ''}, ${payload.movement_type || 'ADJUSTMENT'}, ${payload.quantity_before || 0}, ${payload.quantity_change || 0}, ${payload.quantity_after || 0}, ${payload.unit_cost || 0}, ${payload.total_cost || 0}, ${payload.user_id || ''}, ${deviceId}, ${payload.idempotency_key || recordId}, ${payload.created_at || now})
+              VALUES (${recordId}, ${opTenant}, ${payload.branch_id || ''}, ${payload.product_id || ''}, ${payload.variant_id || ''}, ${payload.movement_type || 'ADJUSTMENT'}, ${payload.quantity_before || 0}, ${payload.quantity_change || 0}, ${payload.quantity_after || 0}, ${payload.unit_cost || 0}, ${payload.total_cost || 0}, ${payload.user_id || ''}, ${deviceId}, ${payload.idempotency_key || recordId}, ${payload.created_at || now})
               ON CONFLICT (id) DO NOTHING;
             `;
             processedIds.push(op.id || recordId);
