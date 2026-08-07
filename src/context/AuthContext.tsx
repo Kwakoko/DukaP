@@ -956,7 +956,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Execute Production-Grade Fast Bootstrap Snapshot Restoration (<2-5 seconds target)
       try {
-        await bootstrapEngine.executeFastBootstrap(tenantId, authUser, primaryBranchId);
+        await bootstrapEngine.executeFastBootstrap(tenantId, tempUser, primaryBranchId);
         // Launch background non-blocking delta sync & real-time updates
         bootstrapEngine.executeDeltaSync(tenantId).catch(() => {});
       } catch (bsErr) {

@@ -40,7 +40,7 @@ export class BootstrapEngine {
    */
   public async executeFastBootstrap(
     tenantId: string,
-    user?: any,
+    _user?: any,
     branchId?: string
   ): Promise<{ success: boolean; syncVersion: number; restoredCounts: Record<string, number> }> {
     const startTime = Date.now();
