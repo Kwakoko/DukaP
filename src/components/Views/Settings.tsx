@@ -3,14 +3,12 @@ import { useAuth } from '../../context/AuthContext';
 import { useModule } from '../../context/ModuleContext';
 import { 
   db, 
-  purgeAllProducts, 
-  purgeAllSales, 
-  purgeAllDefaultsAndUsers, 
   type TableEntity, 
   type PricingRule, 
   type UserDevice, 
   type UserSession 
 } from '../../db/dexie';
+import { TenantStoreCleanupService } from '../../services/tenantStoreCleanupService';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Input, Badge } from '../UI/custom-ui';
 import { 
@@ -1165,16 +1163,19 @@ const HoldToPurgeButton: React.FC<{
   const timerRef = React.useRef<any>(null);
   const intervalRef = React.useRef<any>(null);
 
+  // Circle radius 10 -> Circumference = 2 * PI * 10 = 62.8318
+  const circumference = 62.8318;
+  const strokeDashoffset = circumference - (circumference * (progress / 100));
+
   const startHold = (e?: React.SyntheticEvent) => {
     if (!isAuthorized) {
       alert('Permission Denied: Only Business Owners, Administrators, and Super Admins can execute tenant purge routines.');
       return;
     }
     if (e && e.type.startsWith('touch')) {
-      // Prevent context menus or text selection on touch screens
       try { e.preventDefault(); } catch (_) {}
     }
-    console.info('[DeveloperPurge] Hold initiated for action:', label);
+    console.info('[TenantCleanup] Hold initiated for action:', label);
     setHolding(true);
     setProgress(0);
     const startTime = Date.now();
@@ -1186,33 +1187,32 @@ const HoldToPurgeButton: React.FC<{
       const elapsed = Date.now() - startTime;
       const pct = Math.min(100, (elapsed / 2000) * 100);
       setProgress(pct);
-    }, 50);
+    }, 30);
 
     timerRef.current = setTimeout(async () => {
       clearInterval(intervalRef.current);
       setProgress(100);
       setLoading(true);
-      console.info('[DeveloperPurge] 2-second hold threshold reached for action:', label);
+      console.info('[TenantCleanup] 2-second hold threshold reached for action:', label);
 
       const confirmPurge = window.confirm(
-        `⚠️ DESTRUCTIVE DEVELOPER ACTION:\n\n` +
+        `⚠️ DESTRUCTIVE TENANT DATA PURGE:\n\n` +
         `Are you sure you want to permanently execute:\n"${label}"?\n\n` +
-        `This operation will purge records directly from IndexedDB and cannot be reversed.`
+        `This operation will purge records directly from IndexedDB and PostgreSQL database and cannot be reversed.`
       );
 
       if (confirmPurge) {
         try {
-          console.info('[DeveloperPurge] Calling purge function...');
+          console.info('[TenantCleanup] Calling purge function...');
           await onPurge();
-          console.info('[DeveloperPurge] Purge operation finished successfully.');
-          window.dispatchEvent(new CustomEvent('DUKAPOS_DATA_PURGED', { detail: { label } }));
+          console.info('[TenantCleanup] Purge operation finished successfully.');
           alert(successMessage);
         } catch (err: any) {
-          console.error('[DeveloperPurge] Error executing purge:', err);
-          alert('Purge Error: ' + err.message);
+          console.error('[TenantCleanup] Error executing purge:', err);
+          alert('Purge Error: ' + (err?.message || 'Failed to complete purge operation.'));
         }
       } else {
-        console.info('[DeveloperPurge] Purge cancelled by user in confirmation dialog.');
+        console.info('[TenantCleanup] Purge cancelled by user in confirmation dialog.');
       }
 
       setLoading(false);
@@ -1223,7 +1223,7 @@ const HoldToPurgeButton: React.FC<{
 
   const endHold = () => {
     if (holding) {
-      console.info('[DeveloperPurge] Hold released before 2s threshold.');
+      console.info('[TenantCleanup] Hold released before 2s threshold.');
     }
     if (timerRef.current) clearTimeout(timerRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -1231,21 +1231,32 @@ const HoldToPurgeButton: React.FC<{
     setProgress(0);
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && holding) {
+        endHold();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [holding]);
+
   return (
     <div className="relative overflow-hidden rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50/40 dark:bg-red-950/20 p-4 space-y-3">
       {holding && (
         <div 
-          className="absolute inset-0 bg-red-500/20 transition-all duration-75"
-          style={{ width: `${progress}%` }}
+          className="absolute inset-0 bg-red-500/20 transition-all duration-75 origin-left"
+          style={{ transform: `scaleX(${progress / 100})` }}
         />
       )}
       <div className="relative z-10 flex flex-col justify-between h-full space-y-3">
         <div>
           <h4 className="text-xs font-black text-red-900 dark:text-red-300">{label}</h4>
           <p className="text-[10px] text-red-700 dark:text-red-400 mt-1 leading-snug">
-            Hold down continuously for 2 seconds to purge isolated records.
+            Press & hold continuously for 2 seconds to execute cleanup.
           </p>
         </div>
+
         <button
           type="button"
           onMouseDown={startHold}
@@ -1255,17 +1266,40 @@ const HoldToPurgeButton: React.FC<{
           onTouchEnd={endHold}
           onTouchCancel={endHold}
           disabled={loading}
-          className="w-full py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-wider shadow-sm transition active:scale-95 select-none cursor-pointer flex items-center justify-center gap-1.5"
+          className={`purge-btn w-full py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black uppercase tracking-wider shadow-sm transition active:scale-95 select-none cursor-pointer flex items-center justify-center gap-2 ${holding ? 'holding scale-[0.98]' : ''}`}
         >
           {loading ? (
-            <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Purging...</span>
-          ) : holding ? (
-            <span>Hold for 2s... ({Math.round(progress)}%)</span>
+            <span className="flex items-center gap-1.5">
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              Purging Store...
+            </span>
           ) : (
-            <>
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Press & Hold (2s) to Purge</span>
-            </>
+            <div className="flex items-center justify-center gap-2">
+              {/* Circular Radial Countdown SVG Ring */}
+              <svg className="progress-ring -rotate-90" width="20" height="20" viewBox="0 0 24 24">
+                <circle 
+                  className="progress-ring__track" 
+                  cx="12" cy="12" r="10" 
+                  stroke="rgba(255,255,255,0.3)" 
+                  strokeWidth="2.5" 
+                  fill="transparent"
+                />
+                <circle 
+                  className="progress-ring__circle transition-all duration-75" 
+                  cx="12" cy="12" r="10" 
+                  stroke="#ffffff" 
+                  strokeWidth="2.5" 
+                  strokeLinecap="round"
+                  fill="transparent"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={strokeDashoffset}
+                />
+              </svg>
+              
+              <span>
+                {holding ? `HOLD FOR 2S... (${Math.round(progress)}%)` : 'PRESS & HOLD (2S) TO PURGE'}
+              </span>
+            </div>
           )}
         </button>
       </div>
@@ -1320,7 +1354,7 @@ const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) =
           <div className="space-y-1 bg-white dark:bg-darkbg p-3 rounded-xl border border-slate-200 dark:border-darkbg-border font-mono text-[10px]">
             <div className="flex justify-between text-slate-500">
               <span>Database Engine:</span>
-              <span className="font-bold text-slate-800 dark:text-slate-200">Dexie IndexedDB (v21)</span>
+              <span className="font-bold text-slate-800 dark:text-slate-200">Dexie IndexedDB (v21) & PostgreSQL</span>
             </div>
             <div className="flex justify-between text-slate-500">
               <span>Isolation Tenant ID:</span>
@@ -1341,7 +1375,7 @@ const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) =
           <h3 className="font-extrabold text-slate-900 dark:text-white text-xs">Tenant Store Cleanup Tools</h3>
         </div>
         <p className="text-[11px] text-slate-500">
-          Hold down buttons for 2 continuous seconds to purge sample demo registry entries safely.
+          Hold down buttons for 2 continuous seconds to purge tenant store records safely.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1350,7 +1384,7 @@ const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) =
             successMessage="All products catalog and stock transaction logs have been purged successfully."
             isAuthorized={isAuthorized}
             onPurge={async () => {
-              await purgeAllProducts(tenantId);
+              await TenantStoreCleanupService.purgeProductsAndLedgers(tenantId);
             }}
           />
           <HoldToPurgeButton
@@ -1358,7 +1392,7 @@ const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) =
             successMessage="All point of sales receipts history and shift records have been purged permanently."
             isAuthorized={isAuthorized}
             onPurge={async () => {
-              await purgeAllSales(tenantId);
+              await TenantStoreCleanupService.purgeSalesAndReceipts(tenantId);
             }}
           />
           <HoldToPurgeButton
@@ -1366,7 +1400,7 @@ const DeveloperOptionsSection: React.FC<{ tenantId: string }> = ({ tenantId }) =
             successMessage="All customer, supplier, and expense ledgers have been cleared successfully."
             isAuthorized={isAuthorized}
             onPurge={async () => {
-              await purgeAllDefaultsAndUsers(tenantId);
+              await TenantStoreCleanupService.purgeContactsAndExpenses(tenantId);
             }}
           />
         </div>

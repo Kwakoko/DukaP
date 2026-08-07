@@ -295,6 +295,46 @@ export default defineConfig({
               return;
             }
 
+            // ── POST /api/tenant/purge — Isolated Tenant Store Data Cleanup ──
+            if (url.pathname === '/api/tenant/purge' && req.method === 'POST') {
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', () => {
+                try {
+                  const parsedBody = body ? JSON.parse(body) : {};
+                  const targetTenant = reqTenantId || parsedBody.tenantId || parsedBody.tenant_id;
+                  const scope = parsedBody.scope;
+
+                  if (!targetTenant) {
+                    res.statusCode = 400;
+                    res.end(JSON.stringify({ error: 'Tenant ID required' }));
+                    return;
+                  }
+
+                  if (scope === 'products') {
+                    if (db.products) db.products = db.products.filter((p: any) => (p.tenant_id || p.tenantId) !== targetTenant);
+                    if (db.variants) db.variants = db.variants.filter((v: any) => (v.tenant_id || v.tenantId) !== targetTenant);
+                    if (db.stockLedger) db.stockLedger = db.stockLedger.filter((s: any) => (s.tenant_id || s.tenantId) !== targetTenant);
+                  } else if (scope === 'sales') {
+                    if (db.orders) db.orders = db.orders.filter((o: any) => (o.tenant_id || o.tenantId) !== targetTenant);
+                    if (db.receipts) db.receipts = db.receipts.filter((r: any) => (r.tenant_id || r.tenantId) !== targetTenant);
+                  } else if (scope === 'contacts') {
+                    if (db.customers) db.customers = db.customers.filter((c: any) => (c.tenant_id || c.tenantId) !== targetTenant);
+                    if (db.suppliers) db.suppliers = db.suppliers.filter((s: any) => (s.tenant_id || s.tenantId) !== targetTenant);
+                    if (db.expenses) db.expenses = db.expenses.filter((e: any) => (e.tenant_id || e.tenantId) !== targetTenant);
+                  }
+
+                  writeDb(db);
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({ success: true, scope, tenantId: targetTenant }));
+                } catch (err: any) {
+                  res.statusCode = 500;
+                  res.end(JSON.stringify({ error: err?.message }));
+                }
+              });
+              return;
+            }
+
             // ── POST /api/sync/push — Batch Queue Push Endpoint ──
             if (url.pathname === '/api/sync/push' && req.method === 'POST') {
               let body = '';

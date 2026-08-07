@@ -1060,6 +1060,43 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      // 20. POST /api/tenant/purge — Isolated Tenant Store Data Cleanup
+      if (pathname === '/api/tenant/purge' && req.method === 'POST') {
+        const body = await parseRequestBody(req);
+        const targetTenant = tenantId || body.tenantId || body.tenant_id;
+        const scope = body.scope; // 'products' | 'sales' | 'contacts'
+
+        if (!targetTenant) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Tenant ID required for purge operation.' }));
+          return;
+        }
+
+        console.log(`[Neon Backend] Executing tenant purge [scope: ${scope}] for tenant ${targetTenant}...`);
+
+        if (scope === 'products') {
+          await sql`DELETE FROM stock_ledger WHERE tenant_id = ${targetTenant}`;
+          await sql`DELETE FROM product_variants WHERE tenant_id = ${targetTenant}`;
+          await sql`DELETE FROM products WHERE tenant_id = ${targetTenant}`;
+        } else if (scope === 'sales') {
+          await sql`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ${targetTenant})`;
+          await sql`DELETE FROM orders WHERE tenant_id = ${targetTenant}`;
+        } else if (scope === 'contacts') {
+          await sql`DELETE FROM customers WHERE tenant_id = ${targetTenant}`;
+        }
+
+        invalidateTenantBootstrapCache(targetTenant);
+
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          success: true,
+          scope,
+          tenantId: targetTenant,
+          message: `Tenant store cleanup completed for scope: ${scope}`
+        }));
+        return;
+      }
+
       // Generic 404 for unrecognized API routes
       res.writeHead(404);
       res.end(JSON.stringify({ error: `API endpoint ${pathname} not found on Neon backend` }));
