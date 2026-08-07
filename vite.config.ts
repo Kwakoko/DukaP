@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import http from 'http'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -89,20 +90,56 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           if (req.url && req.url.startsWith('/api/')) {
-            res.setHeader('Content-Type', 'application/json')
-            res.setHeader('Access-Control-Allow-Origin', '*')
-            res.setHeader('Access-Control-Allow-Headers', '*')
-            res.setHeader('Access-Control-Allow-Methods', '*')
+            // 1. Attempt to proxy to local PostgreSQL backend server (server.js on :8080)
+            const proxyReq = http.request(
+              {
+                hostname: '127.0.0.1',
+                port: 8080,
+                path: req.url,
+                method: req.method,
+                headers: {
+                  ...req.headers,
+                  host: '127.0.0.1:8080',
+                },
+              },
+              (backendRes) => {
+                if (backendRes.statusCode) {
+                  res.writeHead(backendRes.statusCode, backendRes.headers);
+                  backendRes.pipe(res, { end: true });
+                }
+              }
+            );
 
-            if (req.method === 'OPTIONS') {
-              res.statusCode = 200
-              res.end()
-              return
+            proxyReq.on('error', () => {
+              // 2. Fallback to local file-based mock db if server.js on :8080 is not running
+              executeMockFallback(req, res, next);
+            });
+
+            if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '')) {
+              req.pipe(proxyReq, { end: true });
+            } else {
+              proxyReq.end();
             }
+            return;
+          }
+          next();
+        });
 
-            // Parse URL safely
-            const url = new URL(req.url, 'http://localhost')
-            const db = readDb()
+        function executeMockFallback(req: any, res: any, next: any) {
+          res.setHeader('Content-Type', 'application/json')
+          res.setHeader('Access-Control-Allow-Origin', '*')
+          res.setHeader('Access-Control-Allow-Headers', '*')
+          res.setHeader('Access-Control-Allow-Methods', '*')
+
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 200
+            res.end()
+            return
+          }
+
+          // Parse URL safely
+          const url = new URL(req.url, 'http://localhost')
+          const db = readDb()
 
             // 1. Extract table name from URL and dynamically initialize if missing
             const pathParts = url.pathname.split('/')
@@ -633,8 +670,7 @@ export default defineConfig({
             })
             return
           }
-          next()
-        })
+        }
       }
     }
   ],

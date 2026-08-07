@@ -44,8 +44,8 @@ export const envConfig: ProductionConfig = {
   buildHash: 'rel-2026-07-26-v2.5-prod-ec89f',
   isProduction: true,
   isOfflineFirst: true,
-  apiUrl: getEnv('VITE_API_URL', 'https://api.dukapos.co.tz'),
-  postgresUrl: getEnv('VITE_POSTGRES_URL', 'postgresql://neondb_owner:npg_h1k4wASpWoGx@ep-polished-dawn-axwcu8hf-pooler.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require'),
+  apiUrl: getEnv('VITE_API_URL', 'http://localhost:8080'),
+  postgresUrl: getEnv('VITE_POSTGRES_URL', 'postgresql://postgres:postgres@localhost:5432/dukapos'),
   jwtSecret: getEnv('VITE_JWT_SECRET', 'dukapos_saas_prod_jwt_super_secret_key_2026_x89f'),
   jwtAccessExpirySec: 900, // 15 minutes
   jwtRefreshExpiryDays: 30, // 30 days
