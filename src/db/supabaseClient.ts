@@ -236,21 +236,31 @@ export const supabase: SupabaseClient = {
             const queryString = queryParams.toString();
             const fetchUrl = queryString ? `${apiPath}?${queryString}` : apiPath;
 
+            let records: any[] = [];
+            let fetchedFromServer = false;
+
             // 1. Fetch from server API or fall back to client-side master Cloud Database
             try {
               const res = await fetch(fetchUrl, { headers });
               const contentType = res.headers.get('content-type') || '';
               if (res.ok && contentType.includes('application/json')) {
-                const serverRecords: any[] = await res.json();
-                if (Array.isArray(serverRecords) && serverRecords.length > 0) {
-                  await table.bulkPut(serverRecords);
+                const json = await res.json();
+                const serverRecords: any[] = Array.isArray(json) ? json : (json.data || json.products || []);
+                if (Array.isArray(serverRecords)) {
+                  records = serverRecords;
+                  fetchedFromServer = true;
+                  if (serverRecords.length > 0) {
+                    await table.bulkPut(serverRecords).catch(() => {});
+                  }
                 }
               }
             } catch (err) {
               console.warn(`[Cloud Client] Endpoint ${fetchUrl} using client-side cloud database.`);
             }
 
-            let records: any[] = await table.toArray();
+            if (!fetchedFromServer) {
+              records = await table.toArray();
+            }
 
             // Filter out soft deleted records (for products, variants, and tenants)
             if (tableName === 'products' || tableName === 'product_variants' || tableName === 'tenants') {
