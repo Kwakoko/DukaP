@@ -671,9 +671,8 @@ export default defineConfig({
             return
           }
         }
-      })
+      }
     }
-  }
   ],
   resolve: {
     dedupe: ['react', 'react-dom', 'dexie', 'dexie-react-hooks']
