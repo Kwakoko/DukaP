@@ -182,7 +182,17 @@ export const PersistenceTest: React.FC = () => {
 
       addLog(id1, `Product saved locally. ID: ${savedProd.id}`);
       await syncData();
-      const { data: cloudProds } = await supabase.from('products').select('*').eq('id', savedProd.id);
+      
+      let cloudProds: any[] = [];
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const res = await supabase.from('products').select('*').eq('id', savedProd.id);
+        if (res.data && res.data.length > 0) {
+          cloudProds = res.data;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+
       if (cloudProds && cloudProds.length > 0) {
         addLog(id1, `SUCCESS: Verified product permanently saved in Server database.`);
         updateStatus(id1, 'PASSED');

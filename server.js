@@ -639,8 +639,15 @@ const server = http.createServer(async (req, res) => {
 
       // 8. GET /api/products, POST /api/products, DELETE /api/products
       if (pathname === '/api/products' && req.method === 'GET') {
+        const prodId = fullUrl.searchParams.get('id');
         let products = [];
-        if (tenantId && tenantId !== 'tenant-admin-system') {
+        if (prodId) {
+          if (tenantId && tenantId !== 'tenant-admin-system') {
+            products = await sql`SELECT * FROM products WHERE id = ${prodId} AND tenant_id = ${tenantId} AND (deleted_at IS NULL)`;
+          } else {
+            products = await sql`SELECT * FROM products WHERE id = ${prodId} AND (deleted_at IS NULL)`;
+          }
+        } else if (tenantId && tenantId !== 'tenant-admin-system') {
           products = await sql`SELECT * FROM products WHERE tenant_id = ${tenantId} AND (deleted_at IS NULL)`;
         } else {
           products = await sql`SELECT * FROM products WHERE (deleted_at IS NULL) LIMIT 300`;

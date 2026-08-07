@@ -573,6 +573,13 @@ export default defineConfig({
                   })
                 }
 
+                // Support single ID queries
+                const idFilter = url.searchParams.get('id')
+                if (idFilter) {
+                  const idKey = entityName === 'userSecurity' ? 'user_id' : 'id'
+                  table = table.filter((r: any) => r[idKey] === idFilter)
+                }
+
                 // Support username/email queries for authentication checking
                 const emailFilter = url.searchParams.get('email')
                 if (emailFilter && entityName === 'users') {

@@ -265,21 +265,25 @@ export class ProductService {
       details: `Created product '${newProd.name}' (${newProd.id})`,
     } as any);
 
-    attemptDirectCloudWrite('INSERT', mapProductToCloud(newProd), tenantId, user.id)
-      .then(success => {
+    if (_isOnline) {
+      try {
+        const success = await attemptDirectCloudWrite('INSERT', mapProductToCloud(newProd), tenantId, user.id);
         if (success) {
-          db.products.update(newProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any)
-            .then(() => {
-              db.syncQueue
-                .where('entityName').equals('products')
-                .and(item => item.payload?.id === newProd.id && item.status === 'Pending')
-                .delete()
-                .catch(() => {});
-            })
-            .catch(() => {});
+          await db.products.update(newProd.id, { syncStatus: 'SYNCED', isSynced: 1 } as any);
+          const rawItem = await db.syncQueue
+            .where('entityName').equals('products')
+            .and(item => item.payload?.id === newProd.id && item.status === 'Pending')
+            .last();
+          if (rawItem?.id !== undefined) {
+            await db.syncQueue.delete(rawItem.id);
+          }
         }
-      })
-      .catch(() => {});
+      } catch (err) {
+        console.warn('[ProductService] Direct cloud write error:', err);
+      }
+    } else {
+      attemptDirectCloudWrite('INSERT', mapProductToCloud(newProd), tenantId, user.id).catch(() => {});
+    }
 
     return newProd;
   }
