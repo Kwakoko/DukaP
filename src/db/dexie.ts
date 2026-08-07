@@ -1930,6 +1930,9 @@ class DukaPosDatabase extends Dexie {
   receiptSignatures!: Table<ReceiptSignature>;
   receiptNumberSequences!: Table<ReceiptNumberSequence>;
 
+  // Fast Sync Watermark & Metadata Store (v34)
+  syncMetadata!: Table<{ key: string; value: any; updatedAt: number }>;
+
   constructor() {
     super('DukaPosDatabase');
 
@@ -2646,6 +2649,11 @@ class DukaPosDatabase extends Dexie {
     // Version 33: Enterprise Stock Sync Engine Transactional Outbox Schema
     this.version(33).stores({
       syncOutbox: '++id, outbox_id, operation_id, idempotency_key, tenant_id, branch_id, status, created_at'
+    });
+
+    // Version 34: Fast Bootstrap & Monotonic Watermark Metadata Store
+    this.version(34).stores({
+      syncMetadata: 'key'
     });
 
     const tablesWithOrigin = [

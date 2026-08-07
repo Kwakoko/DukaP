@@ -7,6 +7,7 @@ import { SettingsResolver, DEFAULT_SECURITY_CONFIG, type SecurityConfig } from '
 import { tenantRecoveryService } from '../services/tenantRecoveryService';
 import { tenantHealthMonitor } from '../services/tenantHealthMonitor';
 import { stockLedgerSyncEngine } from '../services/stockLedgerSyncEngine';
+import { bootstrapEngine } from '../services/bootstrapEngine';
 
 export type UserRole = 'Super Admin' | 'Business Owner' | 'Tenant Owner' | 'Business Administrator' | 'Branch Manager' | 'Cashier' | 'Inventory Officer' | 'Accountant' | (string & {});
 
@@ -953,77 +954,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Rebuild all branch balances directly from stock ledger entries to guarantee stock accuracy across login/logout
       await stockLedgerSyncEngine.rebuildAllBranchBalances(tenantId, primaryBranchId);
 
-      // Reconcile tenant metadata: categories & brands via REST API server & Supabase
+      // Execute Production-Grade Fast Bootstrap Snapshot Restoration (<2-5 seconds target)
       try {
-        const syncRes = await fetch(`/api/sync?tenantId=${encodeURIComponent(tenantId)}&since=0`);
-        if (syncRes.ok) {
-          const syncData = await syncRes.json();
-          if (syncData?.changes) {
-            if (Array.isArray(syncData.changes.categories)) {
-              for (const cc of syncData.changes.categories) {
-                if (cc.id && cc.name && !cc.deleted_at) {
-                  await db.categories.put({
-                    id: cc.id,
-                    name: cc.name,
-                    tenant_id: cc.tenant_id || tenantId,
-                    parent_id: cc.parent_id,
-                    description: cc.description,
-                    created_at: cc.created_at || Date.now()
-                  });
-                }
-              }
-            }
-            if (Array.isArray(syncData.changes.brands)) {
-              for (const cb of syncData.changes.brands) {
-                if (cb.id && cb.name && !cb.deleted_at) {
-                  await db.brands.put({
-                    id: cb.id,
-                    name: cb.name,
-                    tenant_id: cb.tenant_id || tenantId,
-                    description: cb.description,
-                    created_at: cb.created_at || Date.now()
-                  });
-                }
-              }
-            }
-          }
-        }
-      } catch (_) {}
-
-      try {
-        const { data: cloudCats } = await supabase.from('categories').select('*').eq('tenant_id', tenantId);
-        if (cloudCats && cloudCats.length > 0) {
-          for (const cc of cloudCats) {
-            if (!cc.deleted_at) {
-              await db.categories.put({
-                id: cc.id,
-                name: cc.name,
-                tenant_id: cc.tenant_id || tenantId,
-                parent_id: cc.parent_id,
-                description: cc.description,
-                created_at: cc.created_at || Date.now()
-              });
-            }
-          }
-        }
-      } catch (_) {}
-
-      try {
-        const { data: cloudBrands } = await supabase.from('brands').select('*').eq('tenant_id', tenantId);
-        if (cloudBrands && cloudBrands.length > 0) {
-          for (const cb of cloudBrands) {
-            if (!cb.deleted_at) {
-              await db.brands.put({
-                id: cb.id,
-                name: cb.name,
-                tenant_id: cb.tenant_id || tenantId,
-                description: cb.description,
-                created_at: cb.created_at || Date.now()
-              });
-            }
-          }
-        }
-      } catch (_) {}
+        await bootstrapEngine.executeFastBootstrap(tenantId, authUser, primaryBranchId);
+        // Launch background non-blocking delta sync & real-time updates
+        bootstrapEngine.executeDeltaSync(tenantId).catch(() => {});
+      } catch (bsErr) {
+        console.warn('[AuthContext] Fast bootstrap engine error:', bsErr);
+      }
 
       // Ensure every category and brand referenced by products exists in db.categories & db.brands
       const allLocalProds = await db.products.where('tenant_id').equals(tenantId).toArray();

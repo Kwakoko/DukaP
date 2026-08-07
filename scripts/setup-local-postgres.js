@@ -156,6 +156,7 @@ async function setupPostgres() {
         origin TEXT DEFAULT 'PRODUCTION',
         status TEXT DEFAULT 'Active',
         version INT DEFAULT 1,
+        sync_version INT DEFAULT 1,
         created_at BIGINT,
         updated_at BIGINT,
         deleted_at BIGINT
@@ -175,6 +176,7 @@ async function setupPostgres() {
         reorder_level NUMERIC DEFAULT 5,
         status TEXT DEFAULT 'Active',
         attributes JSONB DEFAULT '{}'::jsonb,
+        sync_version INT DEFAULT 1,
         created_at BIGINT,
         updated_at BIGINT,
         deleted_at BIGINT
@@ -232,6 +234,7 @@ async function setupPostgres() {
         quantity_before NUMERIC DEFAULT 0,
         quantity_after NUMERIC DEFAULT 0,
         reference_id TEXT,
+        sync_version INT DEFAULT 1,
         created_at BIGINT
       );`,
 
@@ -243,6 +246,7 @@ async function setupPostgres() {
         total_amount NUMERIC DEFAULT 0,
         payment_method TEXT DEFAULT 'CASH',
         status TEXT DEFAULT 'COMPLETED',
+        sync_version INT DEFAULT 1,
         created_at BIGINT
       );`,
 
@@ -263,6 +267,7 @@ async function setupPostgres() {
         phone TEXT,
         email TEXT,
         outstanding_balance NUMERIC DEFAULT 0,
+        sync_version INT DEFAULT 1,
         created_at BIGINT
       );`,
 
@@ -289,12 +294,28 @@ async function setupPostgres() {
         is_active BOOLEAN DEFAULT true
       );`,
 
+      // Ensure sync_version column exists on existing pre-created tables
+      `ALTER TABLE products ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE brands ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE stock_ledger ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+      `ALTER TABLE customers ADD COLUMN IF NOT EXISTS sync_version INT DEFAULT 1;`,
+
       // Indexes
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_tenant_name ON categories(tenant_id, LOWER(name)) WHERE deleted_at IS NULL;`,
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_brands_tenant_name ON brands(tenant_id, LOWER(name)) WHERE deleted_at IS NULL;`,
       `CREATE INDEX IF NOT EXISTS idx_products_tenant_branch ON products(tenant_id, branch_id);`,
+      `CREATE INDEX IF NOT EXISTS idx_products_tenant_sync ON products(tenant_id, sync_version);`,
+      `CREATE INDEX IF NOT EXISTS idx_products_tenant_updated ON products(tenant_id, updated_at);`,
       `CREATE INDEX IF NOT EXISTS idx_product_variants_product ON product_variants(product_id);`,
-      `CREATE INDEX IF NOT EXISTS idx_stock_ledger_tenant ON stock_ledger(tenant_id, branch_id);`
+      `CREATE INDEX IF NOT EXISTS idx_variants_tenant_sync ON product_variants(tenant_id, sync_version);`,
+      `CREATE INDEX IF NOT EXISTS idx_categories_tenant_sync ON categories(tenant_id, sync_version);`,
+      `CREATE INDEX IF NOT EXISTS idx_brands_tenant_sync ON brands(tenant_id, sync_version);`,
+      `CREATE INDEX IF NOT EXISTS idx_stock_ledger_tenant ON stock_ledger(tenant_id, branch_id);`,
+      `CREATE INDEX IF NOT EXISTS idx_stock_ledger_tenant_sync ON stock_ledger(tenant_id, sync_version);`,
+      `CREATE INDEX IF NOT EXISTS idx_customers_tenant_sync ON customers(tenant_id, sync_version);`
     ];
 
     for (const query of ddlQueries) {

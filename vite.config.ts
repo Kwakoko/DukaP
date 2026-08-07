@@ -180,6 +180,42 @@ export default defineConfig({
               return
             }
 
+            // ── POST /api/bootstrap — Fast Bootstrap Snapshot Endpoint ──
+            if (url.pathname === '/api/bootstrap' && (req.method === 'POST' || req.method === 'GET')) {
+              const tenantId = reqTenantId || '8f1109a3-9ab8-4922-a4e0-d706a3a2d85d'
+              const tenant = (db.tenants || []).find((t: any) => t.id === tenantId) || { id: tenantId, name: 'Bravados', plan: 'Enterprise' }
+              const user = (db.users || []).find((u: any) => u.tenant_id === tenantId || u.tenantId === tenantId) || null
+              const branches = (db.branches || []).filter((b: any) => (b.tenant_id === tenantId || b.tenantId === tenantId) && !b.deletedAt)
+              const categories = (db.categories || []).filter((c: any) => (c.tenant_id === tenantId || c.tenantId === tenantId) && !c.deletedAt)
+              const brands = (db.brands || []).filter((b: any) => (b.tenant_id === tenantId || b.tenantId === tenantId) && !b.deletedAt)
+              const products = (db.products || []).filter((p: any) => (p.tenant_id === tenantId || p.tenantId === tenantId) && !p.deletedAt)
+              const variants = (db.variants || db.productVariants || []).filter((v: any) => (v.tenant_id === tenantId || v.tenantId === tenantId) && !v.deletedAt)
+              const stockLedger = (db.stockLedger || []).filter((s: any) => s.tenant_id === tenantId || s.tenantId === tenantId).slice(0, 500)
+              const customers = (db.customers || []).filter((c: any) => c.tenant_id === tenantId || c.tenantId === tenantId)
+              const subscriptionPlans = db.subscriptionPlans || []
+
+              res.statusCode = 200
+              res.end(JSON.stringify({
+                tenant,
+                user,
+                branches,
+                settings: {},
+                categories,
+                brands,
+                products,
+                variants,
+                stockLedger,
+                customers,
+                permissions: [],
+                subscriptionPlans,
+                syncVersion: Date.now(),
+                schemaVersion: 8,
+                generatedAt: new Date().toISOString(),
+                serverTimestamp: Date.now()
+              }))
+              return
+            }
+
             // ── GET /api/sync — Master Incremental Sync Endpoint ──
             if (url.pathname === '/api/sync' && req.method === 'GET') {
               const tenantId = url.searchParams.get('tenantId') || url.searchParams.get('tenant_id') || reqTenantId;

@@ -56,6 +56,19 @@ async function sql(strings, ...values) {
   return result.rows;
 }
 
+// In-Memory Bootstrap Snapshot Cache Engine (Redis Fallback)
+const bootstrapCache = new Map();
+const BOOTSTRAP_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
+
+function invalidateTenantBootstrapCache(targetTenantId) {
+  if (!targetTenantId) return;
+  for (const key of bootstrapCache.keys()) {
+    if (key.startsWith(`${targetTenantId}:`) || key === targetTenantId) {
+      bootstrapCache.delete(key);
+    }
+  }
+}
+
 // Auto-initialize Neon PostgreSQL schema on startup
 async function initDatabaseSchema() {
   try {
@@ -372,6 +385,82 @@ const server = http.createServer(async (req, res) => {
       if (pathname === '/api/ping') {
         res.writeHead(200);
         res.end(JSON.stringify({ status: 'ok', timestamp: Date.now(), database: 'Neon PostgreSQL' }));
+        return;
+      }
+
+      // 0.1 POST /api/bootstrap — Fast Bootstrap Snapshot Endpoint (Parallel Queries + Redis/Memory Cache)
+      if (pathname === '/api/bootstrap' && (req.method === 'POST' || req.method === 'GET')) {
+        let body = {};
+        if (req.method === 'POST') {
+          body = await parseRequestBody(req);
+        }
+        const targetTenant = tenantId || body.tenantId || fullUrl.searchParams.get('tenantId') || 'tenant-101';
+        const targetBranch = body.branchId || fullUrl.searchParams.get('branchId') || '';
+        const cacheKey = `${targetTenant}:${targetBranch}`;
+
+        const cached = bootstrapCache.get(cacheKey);
+        if (cached && (Date.now() - cached.generatedAt < BOOTSTRAP_CACHE_TTL_MS)) {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'X-Bootstrap-Cache': 'HIT',
+            'Cache-Control': 'public, max-age=60',
+          });
+          res.end(JSON.stringify(cached.payload));
+          return;
+        }
+
+        // Concurrently run all module queries using Promise.all to minimize latency
+        const [
+          tenants, users, branches, settings, categories, brands,
+          products, variants, stockLedger, customers, plans
+        ] = await Promise.all([
+          sql`SELECT * FROM tenants WHERE id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM users WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM branches WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM tenant_settings WHERE tenant_id = ${targetTenant}`,
+          sql`SELECT * FROM categories WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM brands WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM products WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM product_variants WHERE tenant_id = ${targetTenant} AND (deleted_at IS NULL)`,
+          sql`SELECT * FROM stock_ledger WHERE tenant_id = ${targetTenant} ORDER BY created_at DESC LIMIT 500`,
+          sql`SELECT * FROM customers WHERE tenant_id = ${targetTenant}`,
+          sql`SELECT * FROM subscription_plans WHERE is_active = true`
+        ]);
+
+        let maxSyncVer = 1;
+        const allEntities = [...categories, ...brands, ...products, ...variants, ...stockLedger, ...customers];
+        for (const e of allEntities) {
+          const v = parseInt(e.sync_version || e.version || '1', 10);
+          if (v > maxSyncVer) maxSyncVer = v;
+        }
+
+        const payload = {
+          tenant: tenants[0] || { id: targetTenant, name: 'Bravados', plan: 'Enterprise', status: 'Active' },
+          user: users[0] || null,
+          branches,
+          settings: settings.reduce((acc, s) => ({ ...acc, [s.setting_key]: s.setting_value }), {}),
+          categories,
+          brands,
+          products,
+          variants,
+          stockLedger,
+          customers,
+          permissions: [],
+          subscriptionPlans: plans,
+          syncVersion: maxSyncVer,
+          schemaVersion: 8,
+          generatedAt: new Date().toISOString(),
+          serverTimestamp: Date.now()
+        };
+
+        bootstrapCache.set(cacheKey, { payload, generatedAt: Date.now() });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'X-Bootstrap-Cache': 'MISS',
+          'Cache-Control': 'public, max-age=60',
+        });
+        res.end(JSON.stringify(payload));
         return;
       }
 
@@ -946,6 +1035,7 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
+        invalidateTenantBootstrapCache(tenantId);
         res.writeHead(200);
         res.end(JSON.stringify({
           success: true,
@@ -963,6 +1053,7 @@ const server = http.createServer(async (req, res) => {
           console.log(`[Neon Backend] Permanently deleting product ${prodId} and variants from PostgreSQL...`);
           await sql`DELETE FROM product_variants WHERE product_id = ${prodId}`;
           await sql`DELETE FROM products WHERE id = ${prodId}`;
+          invalidateTenantBootstrapCache(tenantId);
           res.writeHead(200);
           res.end(JSON.stringify({ success: true, id: prodId, message: 'Product and variants deleted from Neon PostgreSQL' }));
           return;
