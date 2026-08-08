@@ -144,10 +144,11 @@ export const PersistenceTest: React.FC = () => {
     setIsRunningAll(true);
     setTestCases(prev => prev.map(tc => ({ ...tc, status: 'PENDING', log: [] })));
 
-    // Resolve a valid tenant ID to run verification against (defaults to seeded development tenant)
+    // Dynamically resolve tenant ID for audit verification
+    const firstTenantId = (await db.tenants.toCollection().first())?.id || 'tenant-prod-main';
     const testTenantId = currentTenant?.id && currentTenant.id !== 'tenant-admin-system' && currentTenant.id !== ''
       ? currentTenant.id
-      : '8f1109a3-9ab8-4922-a4e0-d706a3a2d85d';
+      : firstTenantId;
 
     const defaultUserContext = {
       id: authUser?.id && authUser.id !== 'usr-superadmin' ? authUser.id : `usr-${testTenantId}-owner`,
