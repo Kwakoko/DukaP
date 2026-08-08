@@ -126,6 +126,9 @@ export const stockLedgerSyncEngine = {
       updated_at: NOW,
     });
 
+    // Proactively flush outbox queue in the background when network is available
+    this.syncPendingEvents(entryInput.tenant_id, entryInput.branch_id).catch(() => {});
+
     return { event: newEvent, isDuplicate: false };
   },
 
@@ -393,51 +396,11 @@ export const stockLedgerSyncEngine = {
    * Flushes pending local events to external sync queue and updates sync_status.
    */
   async syncPendingEvents(tenantId: string, branchId: string): Promise<{ syncedCount: number; failedCount: number }> {
-    const pendingEvents = await db.stockLedger
-      .where('tenant_id').equals(tenantId)
-      .and(e => e.branch_id === branchId && e.sync_status === 'PENDING')
-      .toArray();
-
-    if (pendingEvents.length === 0) {
-      await this.processOutboxQueue(tenantId, branchId).catch(() => {});
-      return { syncedCount: 0, failedCount: 0 };
-    }
-
-    let syncedCount = 0;
-    let failedCount = 0;
-    const NOW = Date.now();
-
-    for (const evt of pendingEvents) {
-      try {
-        await db.syncQueue.add({
-          actionType: 'INSERT',
-          entityName: 'stockLedger',
-          payload: evt,
-          timestamp: NOW,
-          status: 'Pending'
-        }).catch(() => {});
-
-        await db.stockLedger.update(evt.id, {
-          synced: true,
-          sync_status: 'SYNCED',
-          synced_at: NOW,
-          last_error: undefined
-        });
-
-        syncedCount++;
-      } catch (err: any) {
-        failedCount++;
-        const retryCount = (evt.retry_count || 0) + 1;
-        await db.stockLedger.update(evt.id, {
-          sync_status: 'FAILED',
-          retry_count: retryCount,
-          last_error: err?.message || 'Sync worker error'
-        });
-      }
-    }
-
-    await this.processOutboxQueue(tenantId, branchId).catch(() => {});
-    return { syncedCount, failedCount };
+    const res = await this.processOutboxQueue(tenantId, branchId).catch(() => ({ processed: 0, failed: 0 }));
+    return {
+      syncedCount: res.processed,
+      failedCount: res.failed
+    };
   },
 
   /**

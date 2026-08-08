@@ -23,8 +23,11 @@ export const offlineSyncWorker = {
     // 1. Online reconnection trigger
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
-        console.info('[OfflineSyncWorker] Network reconnected. Flushing stock sync outbox...');
+        console.info('[OfflineSyncWorker] Network reconnected. Flushing sync queues...');
         this.triggerSyncNow(tenantId, branchId);
+        import('./productionSyncEngine').then(({ productionSyncEngine }) => {
+          productionSyncEngine.processQueue(tenantId).catch(() => {});
+        });
       });
     }
 
@@ -32,6 +35,9 @@ export const offlineSyncWorker = {
     syncTimerId = setInterval(() => {
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       this.triggerSyncNow(tenantId, branchId);
+      import('./productionSyncEngine').then(({ productionSyncEngine }) => {
+        productionSyncEngine.processQueue(tenantId).catch(() => {});
+      });
     }, intervalMs);
 
     console.info(`[OfflineSyncWorker] Sync worker active (Interval: ${intervalMs}ms).`);

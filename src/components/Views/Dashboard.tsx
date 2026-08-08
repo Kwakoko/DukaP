@@ -4,15 +4,90 @@ import { useAuth } from '../../context/AuthContext';
 import { db } from '../../db/dexie';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../UI/custom-ui';
-import { 
-  TrendingUp, TrendingDown, DollarSign, Package, Users, 
-  AlertTriangle, Clock, PiggyBank, Briefcase, 
-  Sparkles, Layers, Egg, Footprints, Truck, ArrowRight, Calendar
+import {
+  TrendingUp, TrendingDown, DollarSign, Package, Users,
+  AlertTriangle, Clock, PiggyBank, Briefcase,
+  Sparkles, Layers, Egg, Footprints, Truck, ArrowRight, Calendar,
+  ShoppingCart, BarChart2, CheckCircle, RefreshCw, Zap, Star
 } from 'lucide-react';
-import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
-  ResponsiveContainer, Legend, Cell, PieChart, Pie
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend, Cell, PieChart, Pie, BarChart, Bar
 } from 'recharts';
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+const fmtCcy = (n: number) =>
+  n >= 1_000_000 ? `Tsh ${(n / 1_000_000).toFixed(1)}M`
+  : n >= 1_000   ? `Tsh ${(n / 1_000).toFixed(1)}K`
+  : `Tsh ${Math.round(n).toLocaleString()}`;
+
+const fmtTime = (ts: number) =>
+  new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+const fmtDate = (ts: number) =>
+  new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+// Custom Recharts tooltip
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-white dark:bg-darkbg-card border border-slate-200 dark:border-darkbg-border rounded-xl shadow-lg p-3 text-xs">
+      <p className="font-bold text-slate-700 dark:text-slate-200 mb-1">{label}</p>
+      {payload.map((p: any, i: number) => (
+        <p key={i} style={{ color: p.color }} className="font-semibold">
+          {p.name}: {p.name === 'Revenue' || p.name === 'Profit' || p.name === 'Savings' || p.name === 'Loans'
+            ? fmtCcy(p.value)
+            : p.value}
+        </p>
+      ))}
+    </div>
+  );
+};
+
+// ─── KPI Card ────────────────────────────────────────────────────────────────
+
+interface KPICardProps {
+  title: string;
+  value: string | number;
+  desc: string;
+  icon: React.ReactNode;
+  accent: string;
+  trend?: 'up' | 'down' | null;
+  trendLabel?: string;
+  onClick?: () => void;
+}
+
+const KPICard: React.FC<KPICardProps> = ({ title, value, desc, icon, accent, trend, trendLabel, onClick }) => (
+  <div
+    onClick={onClick}
+    className={`relative overflow-hidden rounded-2xl bg-white dark:bg-darkbg-card border border-slate-100 dark:border-darkbg-border p-5 shadow-sm transition-all duration-200 ${onClick ? 'cursor-pointer hover:shadow-md hover:-translate-y-0.5' : ''}`}
+  >
+    {/* Decorative accent blob */}
+    <div className="absolute -top-4 -right-4 h-20 w-20 rounded-full opacity-10" style={{ background: accent }} />
+
+    <div className="flex items-start justify-between relative">
+      <div>
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">{title}</p>
+        <p className="mt-2 text-2xl font-black text-slate-900 dark:text-white leading-none">{value}</p>
+        {trend && (
+          <span className={`mt-1.5 inline-flex items-center gap-0.5 text-[10px] font-black rounded-full px-1.5 py-0.5 ${
+            trend === 'up' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400' : 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400'
+          }`}>
+            {trend === 'up' ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+            {trendLabel || (trend === 'up' ? '+Today' : '−Today')}
+          </span>
+        )}
+        <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500 leading-tight">{desc}</p>
+      </div>
+      <div className="h-11 w-11 rounded-xl flex items-center justify-center shrink-0 shadow-sm" style={{ background: `${accent}18` }}>
+        <div style={{ color: accent }}>{icon}</div>
+      </div>
+    </div>
+  </div>
+);
+
+// ─── Main Dashboard Component ────────────────────────────────────────────────
 
 export const Dashboard: React.FC = () => {
   const { activeModule, setActiveTab } = useModule();
@@ -21,7 +96,7 @@ export const Dashboard: React.FC = () => {
   const tenantId = currentTenant?.id || '';
   const branchId = currentBranch?.id || '';
 
-  // --- Live Queries from IndexedDB ---
+  // ── Live Queries ────────────────────────────────────────────────────────────
   const products = useLiveQuery(() => {
     if (!tenantId) return [];
     return db.products.where('tenant_id').equals(tenantId)
@@ -31,10 +106,9 @@ export const Dashboard: React.FC = () => {
         const aMod = (activeModule || 'Retail').toLowerCase();
         const matchMod = pMod === aMod || pMod === 'all' || !p.module;
         const pBranch = p.branch_id || (p as any).branchId;
-        const matchBranch = !pBranch || pBranch === branchId || pBranch === 'all' || pBranch.includes('hq') || pBranch === 'branch-dar-hq' || pBranch === branchId;
+        const matchBranch = !pBranch || pBranch === branchId || pBranch === 'all' || pBranch.includes('hq') || pBranch === branchId;
         return matchMod && matchBranch;
-      })
-      .toArray();
+      }).toArray();
   }, [tenantId, branchId, activeModule]) || [];
 
   const productVariants = useLiveQuery(() => {
@@ -43,9 +117,8 @@ export const Dashboard: React.FC = () => {
       .and(v => {
         if (v.status === 'Inactive') return false;
         const vBranch = v.branch_id || (v as any).branchId;
-        return !vBranch || vBranch === branchId || vBranch === 'all' || vBranch.includes('hq') || vBranch === 'branch-dar-hq' || vBranch === branchId;
-      })
-      .toArray();
+        return !vBranch || vBranch === branchId || vBranch === 'all' || vBranch.includes('hq') || vBranch === branchId;
+      }).toArray();
   }, [tenantId, branchId]) || [];
 
   const orders = useLiveQuery(() => {
@@ -56,23 +129,16 @@ export const Dashboard: React.FC = () => {
         const aMod = (activeModule || 'Retail').toLowerCase();
         const matchMod = oMod === aMod || oMod === 'all' || !o.module;
         const oBranch = o.branch_id || (o as any).branchId;
-        const matchBranch = !oBranch || oBranch === branchId || oBranch === 'all' || oBranch.includes('hq') || oBranch === 'branch-dar-hq' || oBranch === branchId;
+        const matchBranch = !oBranch || oBranch === branchId || oBranch === 'all' || oBranch.includes('hq') || oBranch === branchId;
         return matchMod && matchBranch;
-      })
-      .toArray();
+      }).toArray();
   }, [tenantId, branchId, activeModule]) || [];
 
   const customers = useLiveQuery(() => {
     if (!tenantId) return [];
     const typeMap: Record<string, string> = {
-      Retail: 'Customer',
-      Restaurant: 'Customer',
-      Pharmacy: 'Patient',
-      SACCO: 'Member',
-      Law: 'Client',
-      RealEstate: 'Tenant',
-      School: 'Student',
-      Hotel: 'Guest',
+      Retail: 'Customer', Restaurant: 'Customer', Pharmacy: 'Patient',
+      SACCO: 'Member', Law: 'Client', RealEstate: 'Tenant', School: 'Student', Hotel: 'Guest',
     };
     const targetType = typeMap[activeModule] || 'Customer';
     return db.customers.where('tenant_id').equals(tenantId)
@@ -85,73 +151,112 @@ export const Dashboard: React.FC = () => {
     return db.suppliers.where('tenant_id').equals(tenantId).toArray();
   }, [tenantId]) || [];
 
+  // ── Derived state ─────────────────────────────────────────────────────────
+
   const isCleanTenant = products.length === 0 && orders.length === 0 && customers.length === 0 && suppliers.length === 0;
 
-  // Calculate stats based on local DB records
-  const stats = useMemo(() => {
-    if (isCleanTenant) {
-      return {
-        totalSales: 0,
-        completedOrders: 0,
-        inventoryVal: 0,
-        lowStockCount: 0,
-        nearExpiryCount: 0,
-        totalSavings: 0,
-        totalLoans: 0,
-        customerCount: 0
-      };
-    }
-    const totalSales = orders.reduce((sum, o) => sum + o.total, 0);
-    const completedOrders = orders.filter(o => o.status === 'Completed').length;
-    const inventoryVal = products.reduce((sum, p) => sum + (p.price * p.stock), 0);
-    const simpleLowStock = products.filter(p => !p.hasVariants && p.stock < 10).length;
-    const variantLowStock = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5)).length;
-    const lowStockCount = simpleLowStock + variantLowStock;
+  // ── KPI Stats ─────────────────────────────────────────────────────────────
 
-    // Pharmacy Expiry count
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTs = todayStart.getTime();
+
+    // Yesterday window
+    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    const yesterdayTs = yesterdayStart.getTime();
+
+    const todayOrders     = orders.filter(o => o.timestamp >= todayTs);
+    const yesterdayOrders = orders.filter(o => o.timestamp >= yesterdayTs && o.timestamp < todayTs);
+
+    const totalSales     = todayOrders.reduce((sum, o) => sum + o.total, 0);
+    const yesterdaySales = yesterdayOrders.reduce((sum, o) => sum + o.total, 0);
+    const allSales       = orders.reduce((sum, o) => sum + o.total, 0);
+
+    // Real % change vs yesterday — null when no baseline exists
+    const salesTrend: 'up' | 'down' | null =
+      yesterdaySales === 0 ? (totalSales > 0 ? 'up' : null)
+      : totalSales >= yesterdaySales ? 'up' : 'down';
+
+    const salesTrendPct: string | undefined = (() => {
+      if (yesterdaySales === 0) return totalSales > 0 ? 'New sales today' : undefined;
+      const pct = Math.abs(((totalSales - yesterdaySales) / yesterdaySales) * 100).toFixed(1);
+      return `${salesTrend === 'up' ? '+' : '−'}${pct}% vs yesterday`;
+    })();
+
+    const completedOrders = orders.filter(o => o.status === 'Completed').length;
+    const pendingOrders   = orders.filter(o => o.status === 'Pending').length;
+
+    // Restaurant: pending orders = kitchen queue; unique customers today = active sittings proxy
+    const todayPendingOrders = todayOrders.filter(o => o.status === 'Pending').length;
+    const todayUniqueCustomers = new Set(todayOrders.map(o => (o as any).customer_id || (o as any).customerId).filter(Boolean)).size;
+    // Active tables proxy: count today's distinct table/order sessions (pending + recently completed)
+    const activeTables = todayOrders.filter(o => o.status === 'Pending' || (now - o.timestamp) < 2 * 60 * 60 * 1000).length;
+
+    const inventoryVal = products.reduce((sum, p) => sum + ((p.price || p.sellingPrice || 0) * (p.stock || 0)), 0);
+
+    const simpleLowStock  = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock >= 0).length;
+    const variantLowStock = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock >= 0).length;
+    const lowStockCount   = simpleLowStock + variantLowStock;
+
+    const outOfStockCount = products.filter(p => !p.hasVariants && p.stock <= 0).length +
+                            productVariants.filter(v => v.stock <= 0).length;
+
     const nearExpiryCount = products.filter(p => {
       if (!p.expiryDate) return false;
-      const expiry = new Date(p.expiryDate).getTime();
-      const threeMonths = 90 * 24 * 60 * 60 * 1000;
-      return (expiry - Date.now()) < threeMonths;
+      return (new Date(p.expiryDate).getTime() - now) < 90 * 24 * 60 * 60 * 1000;
     }).length;
 
-    // SACCO Calculations
-    // Gold Savings Plan price = 5000 is our mock rate, let's treat SACCO product price as plan balances
-    const totalSavings = products
-      .filter(p => p.category === 'Savings')
-      .reduce((sum, p) => sum + (p.stock * p.price), 0) / 10; // Scaled down for realism
+    const totalSavings  = products.filter(p => p.category === 'Savings').reduce((sum, p) => sum + (p.stock * p.price), 0) / 10;
+    const totalLoans    = customers.reduce((sum, c) => sum + (c.outstandingBalance || 0), 0);
+    const unsyncedCount = orders.filter(o => o.syncStatus !== 'Synced').length;
 
-    const totalLoans = customers.reduce((sum, c) => sum + c.outstandingBalance, 0);
+    // SACCO: member growth vs last month
+    const lastMonthStart = new Date(now); lastMonthStart.setMonth(lastMonthStart.getMonth() - 1); lastMonthStart.setDate(1); lastMonthStart.setHours(0,0,0,0);
+    const thisMonthStart = new Date(now); thisMonthStart.setDate(1); thisMonthStart.setHours(0,0,0,0);
+    const newCustomersThisMonth = customers.filter(c => (c as any).created_at >= thisMonthStart.getTime()).length;
+    const newCustomersLastMonth = customers.filter(c => (c as any).created_at >= lastMonthStart.getTime() && (c as any).created_at < thisMonthStart.getTime()).length;
+    const customerTrend: 'up' | 'down' | null = newCustomersLastMonth === 0
+      ? (newCustomersThisMonth > 0 ? 'up' : null)
+      : newCustomersThisMonth >= newCustomersLastMonth ? 'up' : 'down';
+    const customerTrendPct = newCustomersLastMonth === 0
+      ? (newCustomersThisMonth > 0 ? `+${newCustomersThisMonth} this month` : undefined)
+      : `${customerTrend === 'up' ? '+' : '−'}${Math.abs(((newCustomersThisMonth - newCustomersLastMonth) / newCustomersLastMonth) * 100).toFixed(0)}% vs last month`;
+
+    const topProduct = (() => {
+      const map: Record<string, { name: string; qty: number; rev: number }> = {};
+      for (const o of orders) {
+        for (const item of o.items) {
+          if (!map[item.productId]) map[item.productId] = { name: item.name, qty: 0, rev: 0 };
+          map[item.productId].qty += item.quantity;
+          map[item.productId].rev += item.price * item.quantity;
+        }
+      }
+      return Object.values(map).sort((a, b) => b.rev - a.rev)[0] || null;
+    })();
 
     return {
-      totalSales,
-      completedOrders,
-      inventoryVal,
-      lowStockCount,
-      nearExpiryCount,
-      totalSavings,
-      totalLoans,
-      customerCount: customers.length
+      totalSales, yesterdaySales, allSales,
+      salesTrend, salesTrendPct,
+      completedOrders, pendingOrders,
+      todayPendingOrders, activeTables, todayUniqueCustomers,
+      inventoryVal, lowStockCount, outOfStockCount,
+      nearExpiryCount, totalSavings, totalLoans,
+      customerCount: customers.length, supplierCount: suppliers.length,
+      customerTrend, customerTrendPct,
+      unsyncedCount, topProduct,
+      todayOrderCount: todayOrders.length,
     };
-  }, [products, orders, customers, activeModule]);
+  }, [products, productVariants, orders, customers, suppliers]);
 
-  // --- Real Chart Data (computed from live orders) ---
-  interface ChartItem {
-    name: string;
-    Revenue: number;
-    Profit: number;
-    Savings: number;
-    Loans: number;
-  }
+  // ── Chart Data ─────────────────────────────────────────────────────────────
 
-  const revenueChartData = useMemo<ChartItem[]>(() => {
-    const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const DAY_LABELS   = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const revenueChartData = useMemo(() => {
+    const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const DAY_LABELS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const now = new Date();
 
     if (activeModule === 'SACCO') {
-      // 6-month savings & loans buckets — both default 0 until real data
       return Array.from({ length: 6 }, (_, i) => {
         const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
         const mOrders = orders.filter(o => {
@@ -163,15 +268,12 @@ export const Dashboard: React.FC = () => {
       });
     }
 
-    // For all other modules: last 7 days (Mon–Sun)
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(now);
       d.setDate(now.getDate() - (6 - i));
       const dayOrders = orders.filter(o => {
         const od = new Date(o.timestamp);
-        return od.getFullYear() === d.getFullYear() &&
-               od.getMonth()    === d.getMonth()    &&
-               od.getDate()     === d.getDate();
+        return od.getFullYear() === d.getFullYear() && od.getMonth() === d.getMonth() && od.getDate() === d.getDate();
       });
       const Revenue = dayOrders.reduce((s, o) => s + o.total, 0);
       const Profit  = Revenue > 0 ? Math.round(Revenue * 0.3) : 0;
@@ -181,284 +283,267 @@ export const Dashboard: React.FC = () => {
 
   const paymentData = useMemo(() => {
     const methods: Record<string, number> = {};
-    orders.forEach(o => {
-      const m = o.paymentMethod || 'Other';
-      methods[m] = (methods[m] || 0) + 1;
-    });
+    orders.forEach(o => { const m = o.paymentMethod || 'Other'; methods[m] = (methods[m] || 0) + 1; });
     const total = Object.values(methods).reduce((s, v) => s + v, 0) || 1;
     const COLORS: Record<string, string> = {
-      'M-Pesa': '#24A148', 'Cash': '#0F62FE', 'Card': '#F1C21B',
-      'Bank Card / Credit': '#F1C21B', 'Mobile Money': '#24A148'
+      'M-Pesa': '#10b981', 'Cash': '#3b82f6', 'Card': '#f59e0b',
+      'Bank Card / Credit': '#f59e0b', 'Mobile Money': '#10b981',
     };
     return Object.entries(methods).map(([name, count], idx) => ({
       name,
       value: Math.round((count / total) * 100),
-      color: COLORS[name] || ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b'][idx % 4]
+      color: COLORS[name] || ['#6366f1','#ec4899','#14b8a6','#f59e0b','#ef4444'][idx % 5],
     }));
   }, [orders]);
 
-  // Render KPI Card
-  const renderKPICard = (title: string, value: string | number, desc: string, icon: React.ReactNode, trend?: 'up' | 'down') => (
-    <Card className="hover:shadow-md transition duration-200">
-      <CardContent className="p-5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{title}</span>
-          <div className="rounded-lg bg-slate-100 p-2 text-slate-600 dark:bg-darkbg-border dark:text-slate-300">
-            {icon}
-          </div>
-        </div>
-        <div className="mt-3 flex items-baseline space-x-2">
-          <span className="text-2xl font-bold text-slate-900 dark:text-white">{value}</span>
-          {trend && (
-            <span className={`flex items-center text-xs font-bold ${trend === 'up' ? 'text-success' : 'text-danger'}`}>
-              {trend === 'up' ? <TrendingUp className="mr-0.5 h-3.5 w-3.5" /> : <TrendingDown className="mr-0.5 h-3.5 w-3.5" />}
-              {trend === 'up' ? '+12.5%' : '-3.2%'}
-            </span>
-          )}
-        </div>
-        <p className="mt-1 text-[11px] text-slate-400">{desc}</p>
-      </CardContent>
-    </Card>
-  );
-
-  // Load KPI cards dynamically depending on active module widgets
-  const renderKPIs = () => {
-    if (activeModule === 'BusinessConsultant') {
-      return (
-        <>
-          {renderKPICard('Total Clients', '48 active', 'Directory portfolio', <Users className="h-5 w-5 text-indigo-500" />, 'up')}
-          {renderKPICard('Active Engagements', '18 projects', 'Retainer & advisory projects', <Briefcase className="h-5 w-5 text-primary" />)}
-          {renderKPICard('Monthly Revenue', 'Tsh. 42,500,000', 'Accrued consulting income', <DollarSign className="h-5 w-5 text-warning" />, 'up')}
-          {renderKPICard('Consultant Utilization', '84.2%', 'Target utilization >80%', <TrendingUp className="h-5 w-5 text-success" />, 'up')}
-          {renderKPICard('Billable Hours', '320 hrs', 'This month to date', <Clock className="h-5 w-5 text-rose-500" />, 'up')}
-          {renderKPICard('Proposal Conversion', '68.5%', 'Sent vs accepted proposals', <TrendingUp className="h-5 w-5 text-emerald-500" />, 'up')}
-          {renderKPICard('Upcoming Meetings', '12 scheduled', 'Next 7 days', <Calendar className="h-5 w-5 text-blue-500" />)}
-          {renderKPICard('Expiring Contracts', '3 expiring', 'Renewals pending', <AlertTriangle className="h-5 w-5 text-danger animate-pulse" />)}
-        </>
-      );
+  // Top products bar chart data
+  const topProductsData = useMemo(() => {
+    const map: Record<string, { name: string; Revenue: number; Units: number }> = {};
+    for (const o of orders) {
+      for (const item of o.items) {
+        if (!map[item.productId]) map[item.productId] = { name: item.name.slice(0, 14), Revenue: 0, Units: 0 };
+        map[item.productId].Revenue += item.price * item.quantity;
+        map[item.productId].Units   += item.quantity;
+      }
     }
+    return Object.values(map).sort((a, b) => b.Revenue - a.Revenue).slice(0, 6);
+  }, [orders]);
 
-    if (isCleanTenant) {
-      return (
-        <>
-          {renderKPICard('Sales Today', 'Tsh. 0', 'From local checkouts', <DollarSign className="h-5 w-5 text-primary" />)}
-          {renderKPICard('Total Expenses', 'Tsh. 0', 'Logged operational costs', <TrendingDown className="h-5 w-5 text-danger" />)}
-          {renderKPICard('Gross Profit', 'Tsh. 0', 'Net margins', <TrendingUp className="h-5 w-5 text-success" />)}
-          {renderKPICard('Inventory Valuation', 'Tsh. 0', 'Total stock value', <Package className="h-5 w-5 text-warning" />)}
-          {renderKPICard('Saas Customers', '0 registered', 'CRM clients count', <Users className="h-5 w-5 text-indigo-500" />)}
-          {renderKPICard('Suppliers Registered', '0 active', 'Distributors profile', <Truck className="h-5 w-5 text-amber-500" />)}
-        </>
-      );
-    }
+  // ── Onboarding ─────────────────────────────────────────────────────────────
 
-    switch (activeModule) {
-      case 'Retail':
-        return (
-          <>
-            {renderKPICard("Today's Sales", `Tsh. ${stats.totalSales.toLocaleString()}`, 'Total POS checkout revenue', <DollarSign className="h-5 w-5 text-primary" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard("Today's Profit", `Tsh. ${(stats.totalSales * 0.35).toLocaleString()}`, 'Est. 35% gross profit margin', <TrendingUp className="h-5 w-5 text-success" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard('Total Products', `${products.length} items`, 'Active SKU inventory catalog', <Package className="h-5 w-5 text-warning" />)}
-            {renderKPICard('Low Stock Items', stats.lowStockCount, 'Alert items with stock < 10', <AlertTriangle className="h-5 w-5 text-danger" />)}
-            {renderKPICard('Customer Debts', `Tsh. ${stats.totalLoans.toLocaleString()}`, 'Total outstanding customer credit', <Users className="h-5 w-5 text-indigo-500" />)}
-            {renderKPICard('Cash Flow Summary', `Tsh. ${(stats.totalSales * 0.85).toLocaleString()} Net`, 'Inflows less payment type overhead', <PiggyBank className="h-5 w-5 text-emerald-500" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard('Branch Performance', 'Main: 100%', 'Sales contribution by store branch', <Layers className="h-5 w-5 text-blue-500" />)}
-          </>
-        );
-      case 'Restaurant':
-        return (
-          <>
-            {renderKPICard('Sales Today', `Tsh. ${stats.totalSales.toLocaleString()}`, 'Orders served', <DollarSign className="h-5 w-5 text-primary" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard('Active Tables', '14 / 24', 'Occupied dining areas', <Layers className="h-5 w-5 text-success" />)}
-            {renderKPICard('Pending Kitchen Orders', '4 orders', 'Queue in prep', <Clock className="h-5 w-5 text-warning animate-pulse" />)}
-            {renderKPICard('Low Ingredients', stats.lowStockCount, 'Menu ingredients to restock', <AlertTriangle className="h-5 w-5 text-danger" />)}
-          </>
-        );
-      case 'Pharmacy':
-        return (
-          <>
-            {renderKPICard('Sales Today', `Tsh. ${stats.totalSales.toLocaleString()}`, 'Drugs dispensed', <DollarSign className="h-5 w-5 text-primary" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard('Pending Prescriptions', '8 prescriptions', 'Waiting validation', <Clock className="h-5 w-5 text-warning" />)}
-            {renderKPICard('Near-Expiry Alerts', stats.nearExpiryCount, 'Medicines expiring in 90 days', <AlertTriangle className="h-5 w-5 text-danger animate-bounce" />)}
-            {renderKPICard('Critically Low Drugs', stats.lowStockCount, 'Restock needed immediately', <Package className="h-5 w-5 text-success" />)}
-          </>
-        );
-      case 'SACCO':
-        return (
-          <>
-            {renderKPICard('Deposits & Savings', `Tsh. ${stats.totalSavings.toLocaleString()}`, 'Member savings pool', <PiggyBank className="h-5 w-5 text-success" />, 'up')}
-            {renderKPICard('Outstanding Loans', `Tsh. ${stats.totalLoans.toLocaleString()}`, 'Active lending portfolio', <Briefcase className="h-5 w-5 text-primary" />)}
-            {renderKPICard('Interest Earned YTD', `Tsh. ${(stats.totalLoans * 0.12).toLocaleString()}`, 'Accrued lending yield', <TrendingUp className="h-5 w-5 text-warning" />, 'up')}
-            {renderKPICard('SACCO Members', stats.customerCount, 'Registered active savers', <Users className="h-5 w-5 text-indigo-500" />, 'up')}
-          </>
-        );
-      case 'Poultry':
-        return (
-          <>
-            {renderKPICard('Total Animals', '520 animals', 'Livestock & poultry register', <Footprints className="h-5 w-5 text-primary" />)}
-            {renderKPICard('Active Flocks', '4 flocks', 'Egg layer batches', <Egg className="h-5 w-5 text-success" />)}
-            {renderKPICard('Daily Egg Production', '450 eggs today', '90% production yield', <TrendingUp className="h-5 w-5 text-warning" />, 'up')}
-            {renderKPICard('Mortality Rate', '1.2%', 'Target mortality <3.0%', <AlertTriangle className="h-5 w-5 text-danger" />)}
-          </>
-        );
-      default:
-        return (
-          <>
-            {renderKPICard('Sales Today', `Tsh. ${stats.totalSales.toLocaleString()}`, 'From local checkouts', <DollarSign className="h-5 w-5 text-primary" />, stats.totalSales > 0 ? 'up' : undefined)}
-            {renderKPICard('Inventory Valuation', `Tsh. ${stats.inventoryVal.toLocaleString()}`, 'Total stock value', <Package className="h-5 w-5 text-success" />)}
-            {renderKPICard('Active Contacts', `${stats.customerCount} registered`, 'Linked partners & clients', <Users className="h-5 w-5 text-indigo-500" />)}
-            {renderKPICard('System Alerts', `${stats.lowStockCount} items low`, 'Restock warning list', <AlertTriangle className="h-5 w-5 text-warning" />)}
-          </>
-        );
-    }
-  };
-
-  const renderOnboardingGuidance = () => (
-    <div className="bg-white dark:bg-darkbg-card rounded-2xl border border-slate-200 dark:border-darkbg-border p-6 shadow-sm animate-in fade-in duration-200">
-      <div className="max-w-2xl mx-auto text-center py-6">
-        <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto text-primary mb-4">
-          <Sparkles className="h-6 w-6" />
+  const renderOnboarding = () => (
+    <div className="bg-white dark:bg-darkbg-card rounded-2xl border border-slate-200 dark:border-darkbg-border p-8 shadow-sm">
+      <div className="max-w-2xl mx-auto text-center py-4">
+        <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center mx-auto mb-5 shadow-lg">
+          <Sparkles className="h-7 w-7 text-white" />
         </div>
-        <h3 className="text-lg font-black text-slate-800 dark:text-white">Welcome to DukaPos! Let's get you set up</h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
-          Your clean workspace is ready. Follow these quick steps to set up your business and start transactions.
+        <h3 className="text-xl font-black text-slate-800 dark:text-white">Welcome to DukaPos! 🎉</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 max-w-md mx-auto leading-relaxed">
+          Your clean workspace is ready. Follow these quick steps to set up your business and start taking sales.
         </p>
-
         <div className="grid gap-4 mt-8 text-left sm:grid-cols-2">
           {[
-            {
-              step: 'Step 1',
-              title: 'Add Products',
-              desc: 'Define your inventory items, categories, and attributes.',
-              actionLabel: 'Go to Inventory',
-              tab: 'Inventory',
-              icon: Package,
-              color: 'text-blue-500 bg-blue-500/10'
-            },
-            {
-              step: 'Step 2',
-              title: 'Register Suppliers',
-              desc: 'Configure suppliers and default warehouse settings.',
-              actionLabel: 'Go to Purchasing',
-              tab: 'Purchasing',
-              icon: Truck,
-              color: 'text-amber-500 bg-amber-500/10'
-            },
-            {
-              step: 'Step 3',
-              title: 'Add Customers',
-              desc: 'Register customers for CRM tracking and credit billing.',
-              actionLabel: 'Go to Customers',
-              tab: 'Customers',
-              icon: Users,
-              color: 'text-emerald-500 bg-emerald-500/10'
-            },
-            {
-              step: 'Step 4',
-              title: 'Launch POS Checkout',
-              desc: 'Open the sales terminal, key in items, and cash out.',
-              actionLabel: 'Open POS Terminal',
-              tab: 'POS',
-              icon: DollarSign,
-              color: 'text-indigo-500 bg-indigo-500/10'
-            }
-          ].map((item, idx) => {
-            const Icon = item.icon;
-            return (
-              <div key={idx} className="p-5 border border-slate-100 dark:border-darkbg-border rounded-2xl hover:shadow-md transition duration-200 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{item.step}</span>
-                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center ${item.color}`}>
-                      <Icon className="h-4.5 w-4.5" />
-                    </div>
+            { step: '01', title: 'Add Products', desc: 'Define your inventory items, categories & attributes.', label: 'Go to Inventory', tab: 'Inventory', Icon: Package, gradient: 'from-blue-500 to-cyan-500' },
+            { step: '02', title: 'Register Suppliers', desc: 'Configure suppliers and default warehouse settings.', label: 'Go to Purchasing', tab: 'Purchasing', Icon: Truck, gradient: 'from-amber-500 to-orange-500' },
+            { step: '03', title: 'Add Customers', desc: 'Register customers for CRM tracking and credit billing.', label: 'Go to Customers', tab: 'Customers', Icon: Users, gradient: 'from-emerald-500 to-teal-500' },
+            { step: '04', title: 'Launch POS Checkout', desc: 'Open the sales terminal, scan items, and cash out.', label: 'Open POS Terminal', tab: 'POS', Icon: DollarSign, gradient: 'from-indigo-500 to-purple-500' },
+          ].map(({ step, title, desc, label, tab, Icon, gradient }) => (
+            <div
+              key={step}
+              className="p-5 border border-slate-100 dark:border-darkbg-border rounded-2xl hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col justify-between bg-slate-50/50 dark:bg-darkbg/30"
+            >
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black text-slate-300 dark:text-slate-600 tracking-widest">STEP {step}</span>
+                  <div className={`h-9 w-9 rounded-xl bg-gradient-to-br ${gradient} flex items-center justify-center shadow-sm`}>
+                    <Icon className="h-4 w-4 text-white" />
                   </div>
-                  <h4 className="text-sm font-bold text-slate-800 dark:text-white mt-3">{item.title}</h4>
-                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{item.desc}</p>
                 </div>
-                <button
-                  onClick={() => setActiveTab(item.tab as any)}
-                  className="mt-4 flex items-center space-x-1 text-xs font-bold text-primary hover:text-primary-hover transition"
-                >
-                  <span>{item.actionLabel}</span>
-                  <ArrowRight className="h-3 w-3" />
-                </button>
+                <h4 className="text-sm font-black text-slate-800 dark:text-white mt-3">{title}</h4>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 leading-relaxed">{desc}</p>
               </div>
-            );
-          })}
+              <button
+                onClick={() => setActiveTab(tab as any)}
+                className="mt-5 flex items-center gap-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:gap-2.5 transition-all"
+              >
+                <span>{label}</span>
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 
+  // ── KPI Grid Config ────────────────────────────────────────────────────────
+
+  const kpiCards = useMemo((): KPICardProps[] => {
+    if (activeModule === 'BusinessConsultant') return [
+      { title: 'Total Clients',         value: '48 active',     desc: 'Directory portfolio',              icon: <Users className="h-5 w-5"/>,       accent: '#6366f1', trend: 'up', trendLabel: '+5 this month' },
+      { title: 'Active Engagements',    value: '18 projects',   desc: 'Retainer & advisory projects',     icon: <Briefcase className="h-5 w-5"/>,    accent: '#3b82f6' },
+      { title: 'Monthly Revenue',       value: 'Tsh 42.5M',     desc: 'Accrued consulting income',        icon: <DollarSign className="h-5 w-5"/>,   accent: '#f59e0b', trend: 'up' },
+      { title: 'Utilization Rate',      value: '84.2%',         desc: 'Target utilization >80%',          icon: <TrendingUp className="h-5 w-5"/>,   accent: '#10b981', trend: 'up' },
+      { title: 'Billable Hours',        value: '320 hrs',       desc: 'This month to date',               icon: <Clock className="h-5 w-5"/>,        accent: '#f43f5e', trend: 'up' },
+      { title: 'Proposal Conversion',   value: '68.5%',         desc: 'Sent vs accepted proposals',       icon: <BarChart2 className="h-5 w-5"/>,    accent: '#10b981', trend: 'up' },
+      { title: 'Upcoming Meetings',     value: '12 scheduled',  desc: 'Next 7 days',                      icon: <Calendar className="h-5 w-5"/>,     accent: '#3b82f6' },
+      { title: 'Expiring Contracts',    value: '3 expiring',    desc: 'Renewals pending review',          icon: <AlertTriangle className="h-5 w-5"/>,accent: '#ef4444' },
+    ];
+
+    if (isCleanTenant) return [
+      { title: "Today's Sales",          value: 'Tsh 0',           desc: 'No sales yet today',              icon: <DollarSign className="h-5 w-5"/>,  accent: '#3b82f6' },
+      { title: 'Inventory Valuation',    value: 'Tsh 0',           desc: 'Add products to track value',     icon: <Package className="h-5 w-5"/>,     accent: '#f59e0b' },
+      { title: 'Customers',              value: '0',               desc: 'No customers registered yet',     icon: <Users className="h-5 w-5"/>,       accent: '#6366f1' },
+      { title: 'Suppliers',              value: '0 active',        desc: 'No suppliers added yet',          icon: <Truck className="h-5 w-5"/>,       accent: '#f97316' },
+    ];
+
+    switch (activeModule) {
+      case 'Retail':
+        return [
+          { title: "Today's Sales",       value: fmtCcy(stats.totalSales),            desc: `${stats.todayOrderCount} transactions · ${stats.completedOrders} completed`,   icon: <DollarSign className="h-5 w-5"/>,   accent: '#3b82f6', trend: stats.salesTrend, trendLabel: stats.salesTrendPct },
+          { title: 'Gross Profit (Est.)', value: fmtCcy(stats.totalSales * 0.35),     desc: 'Est. 35% gross margin on today\'s sales',                                       icon: <TrendingUp className="h-5 w-5"/>,   accent: '#10b981', trend: stats.salesTrend, trendLabel: stats.salesTrendPct },
+          { title: 'Total Products',      value: products.length,                     desc: `${productVariants.length} variants · ${stats.supplierCount} suppliers`,          icon: <Package className="h-5 w-5"/>,      accent: '#f59e0b' },
+          { title: 'Stock Alerts',        value: stats.lowStockCount + stats.outOfStockCount, desc: `${stats.outOfStockCount} out of stock · ${stats.lowStockCount} low`,   icon: <AlertTriangle className="h-5 w-5"/>,accent: '#ef4444' },
+          { title: 'Customer Debts',      value: fmtCcy(stats.totalLoans),            desc: `${stats.customerCount} registered customers`,                                   icon: <Users className="h-5 w-5"/>,        accent: '#6366f1' },
+          { title: 'Inventory Value',     value: fmtCcy(stats.inventoryVal),          desc: 'Retail value of all stocked items',                                             icon: <PiggyBank className="h-5 w-5"/>,    accent: '#8b5cf6' },
+          { title: 'Pending Sync',        value: stats.unsyncedCount,                 desc: 'Orders queued for server sync',                                                 icon: <RefreshCw className="h-5 w-5"/>,    accent: '#f97316' },
+          { title: 'Top Product',         value: stats.topProduct?.name || '—',       desc: stats.topProduct ? `${fmtCcy(stats.topProduct.rev)} revenue` : 'No sales yet',  icon: <Star className="h-5 w-5"/>,         accent: '#ec4899' },
+        ];
+
+      case 'Restaurant': {
+        // Active tables = orders still pending or completed within last 2 hours (live service window)
+        const activeTablesLabel = stats.activeTables > 0 ? `${stats.activeTables} active` : 'None active';
+        const kitchenQueueLabel = stats.todayPendingOrders > 0 ? `${stats.todayPendingOrders} orders` : 'Queue clear';
+        const kitchenTrend: 'up' | 'down' | null = stats.todayPendingOrders > 5 ? 'down' : stats.todayPendingOrders > 0 ? 'up' : null;
+        return [
+          { title: 'Sales Today',    value: fmtCcy(stats.totalSales),  desc: `${stats.todayOrderCount} orders served today`,            icon: <DollarSign className="h-5 w-5"/>,   accent: '#3b82f6', trend: stats.salesTrend, trendLabel: stats.salesTrendPct },
+          { title: 'Active Service', value: activeTablesLabel,          desc: 'Live orders in service window (last 2h)',                  icon: <Layers className="h-5 w-5"/>,       accent: '#10b981' },
+          { title: 'Kitchen Queue',  value: kitchenQueueLabel,          desc: stats.todayPendingOrders > 0 ? 'Pending orders in prep' : 'All orders fulfilled', icon: <Clock className="h-5 w-5"/>,  accent: '#f59e0b', trend: kitchenTrend, trendLabel: stats.todayPendingOrders > 5 ? 'High load' : undefined },
+          { title: 'Low Ingredients',value: stats.lowStockCount,        desc: 'Menu items to restock now',                              icon: <AlertTriangle className="h-5 w-5"/>,accent: '#ef4444' },
+        ];
+      }
+
+      case 'Pharmacy': {
+        // Pending Rx = pending orders for pharmacy module
+        const pendingRx = stats.pendingOrders;
+        const rxTrend: 'up' | 'down' | null = pendingRx > 10 ? 'down' : pendingRx > 0 ? 'up' : null;
+        return [
+          { title: 'Sales Today',          value: fmtCcy(stats.totalSales),  desc: `${stats.todayOrderCount} prescriptions dispensed`,        icon: <DollarSign className="h-5 w-5"/>,   accent: '#3b82f6', trend: stats.salesTrend, trendLabel: stats.salesTrendPct },
+          { title: 'Pending Rx',           value: pendingRx > 0 ? `${pendingRx} pending` : 'Queue clear', desc: 'Orders awaiting pharmacist validation', icon: <Clock className="h-5 w-5"/>, accent: '#f59e0b', trend: rxTrend, trendLabel: pendingRx > 10 ? 'High queue' : undefined },
+          { title: 'Near-Expiry Alerts',   value: stats.nearExpiryCount,     desc: 'Medicines expiring within 90 days',                       icon: <AlertTriangle className="h-5 w-5"/>,accent: '#ef4444' },
+          { title: 'Critically Low Drugs', value: stats.lowStockCount,       desc: 'Restock required immediately',                            icon: <Package className="h-5 w-5"/>,      accent: '#8b5cf6' },
+        ];
+      }
+
+      case 'SACCO':
+        return [
+          { title: 'Deposits & Savings',   value: fmtCcy(stats.totalSavings),        desc: 'Member savings pool balance',     icon: <PiggyBank className="h-5 w-5"/>, accent: '#10b981', trend: 'up' },
+          { title: 'Outstanding Loans',    value: fmtCcy(stats.totalLoans),           desc: 'Active lending portfolio value',  icon: <Briefcase className="h-5 w-5"/>, accent: '#3b82f6' },
+          { title: 'Interest Earned YTD',  value: fmtCcy(stats.totalLoans * 0.12),   desc: 'Accrued yield from lending',      icon: <TrendingUp className="h-5 w-5"/>, accent: '#f59e0b', trend: 'up' },
+          { title: 'SACCO Members',        value: stats.customerCount,                desc: 'Registered active savers',        icon: <Users className="h-5 w-5"/>,     accent: '#6366f1', trend: stats.customerTrend ?? undefined, trendLabel: stats.customerTrendPct },
+        ];
+
+      case 'Poultry':
+        return [
+          { title: 'Total Animals',        value: '520 animals',   desc: 'Livestock & poultry register',    icon: <Footprints className="h-5 w-5"/>, accent: '#3b82f6' },
+          { title: 'Active Flocks',        value: '4 flocks',      desc: 'Egg-layer production batches',    icon: <Egg className="h-5 w-5"/>,        accent: '#10b981' },
+          { title: 'Daily Production',     value: '450 eggs',      desc: '90% production yield today',      icon: <TrendingUp className="h-5 w-5"/>, accent: '#f59e0b', trend: 'up' },
+          { title: 'Mortality Rate',       value: '1.2%',          desc: 'Target mortality <3.0%',          icon: <AlertTriangle className="h-5 w-5"/>, accent: '#ef4444' },
+        ];
+
+      default:
+        return [
+          { title: 'Sales Today',          value: fmtCcy(stats.totalSales),   desc: 'From local POS checkouts',         icon: <DollarSign className="h-5 w-5"/>, accent: '#3b82f6', trend: stats.salesTrend, trendLabel: stats.salesTrendPct },
+          { title: 'Inventory Valuation',  value: fmtCcy(stats.inventoryVal), desc: 'Total stock value at retail',      icon: <Package className="h-5 w-5"/>,   accent: '#10b981' },
+          { title: 'Active Contacts',      value: stats.customerCount,         desc: 'Linked partners & clients',        icon: <Users className="h-5 w-5"/>,     accent: '#6366f1' },
+          { title: 'System Alerts',        value: stats.lowStockCount,         desc: 'Items on restock warning list',    icon: <AlertTriangle className="h-5 w-5"/>, accent: '#f59e0b' },
+        ];
+    }
+  }, [activeModule, isCleanTenant, stats, products, productVariants]);
+
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  const hasToday = orders.some(o => o.timestamp >= new Date().setHours(0,0,0,0));
+
   return (
     <div className="space-y-6">
-      {/* Dashboard Top Header */}
-      <div className="flex flex-col space-y-2 md:flex-row md:items-center md:justify-between md:space-y-0">
+
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">Business Dashboard</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Real-time analytics for <span className="font-semibold">{currentBranch.name}</span> • Role: <span className="font-semibold text-primary">{role}</span>
+          <h2 className="text-xl font-black text-slate-900 dark:text-white">Business Dashboard</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Live analytics for{' '}
+            <span className="font-bold text-slate-700 dark:text-slate-300">{currentBranch?.name || 'Main Branch'}</span>
+            {' · '}
+            <span className="font-bold text-primary">{role}</span>
+            {' · '}
+            <span className="text-slate-400">{new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</span>
           </p>
         </div>
-        
-        <div className="flex items-center space-x-2">
-          <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-darkbg-border dark:text-slate-300">
+        <div className="flex items-center gap-2">
+          {stats.unsyncedCount > 0 && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/60 dark:border-amber-800/40 px-2.5 py-1 rounded-full">
+              <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+              {stats.unsyncedCount} pending sync
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40 px-2.5 py-1">
+            <Zap className="h-2.5 w-2.5" />
             Offline Enabled
           </span>
-          <button 
+          <button
             onClick={() => setActiveTab('POS')}
-            className="flex items-center space-x-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-white hover:bg-primary-hover shadow-sm transition"
+            className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-bold text-white hover:bg-primary-hover shadow-sm transition-all hover:shadow-md"
           >
-            <DollarSign className="h-4 w-4" />
-            <span>Launch POS Checkout</span>
+            <ShoppingCart className="h-3.5 w-3.5" />
+            Launch POS
           </button>
         </div>
       </div>
 
-      {/* 4 Dynamic KPI Cards */}
+      {/* ── KPI Cards ───────────────────────────────────────────────────────── */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {renderKPIs()}
+        {kpiCards.map((card, i) => (
+          <KPICard key={i} {...card} />
+        ))}
       </div>
 
+      {/* ── Onboarding or Analytics ─────────────────────────────────────────── */}
       {isCleanTenant ? (
-        renderOnboardingGuidance()
+        renderOnboarding()
       ) : (
         <>
-          {/* Charts Section */}
-          <div className="grid gap-6 lg:grid-cols-3">
-            {/* Spline Area Chart (Main Report) */}
-            <Card className="lg:col-span-2">
-              <CardHeader>
-                <CardTitle>{activeModule === 'SACCO' ? 'Savings vs Loan Trends' : 'Sales Revenue & Profit Performance'}</CardTitle>
-                <CardDescription>Visualizing financial progress over the current period</CardDescription>
+          {/* ── Charts Row ─────────────────────────────────────────────────── */}
+          <div className="grid gap-5 lg:grid-cols-3">
+
+            {/* Main Revenue / Trend Chart */}
+            <Card className="lg:col-span-2 rounded-2xl border-slate-200 dark:border-darkbg-border shadow-sm">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-black">
+                      {activeModule === 'SACCO' ? 'Savings vs Loan Trends' : 'Sales Revenue & Profit'}
+                    </CardTitle>
+                    <CardDescription className="text-[11px]">
+                      {activeModule === 'SACCO' ? '6-month member activity' : 'Last 7 days performance'}
+                    </CardDescription>
+                  </div>
+                  {hasToday && (
+                    <span className="text-[10px] font-black bg-primary/10 text-primary dark:bg-primary/20 px-2.5 py-1 rounded-full">
+                      Today: {fmtCcy(stats.totalSales)}
+                    </span>
+                  )}
+                </div>
               </CardHeader>
-              <CardContent className="h-80">
+              <CardContent className="h-64 pb-2">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={revenueChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <AreaChart data={revenueChartData} margin={{ top: 5, right: 8, left: -28, bottom: 0 }}>
                     <defs>
-                      <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#0F62FE" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#0F62FE" stopOpacity={0}/>
+                      <linearGradient id="gradRev" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
                       </linearGradient>
-                      <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#24A148" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#24A148" stopOpacity={0}/>
+                      <linearGradient id="gradPro" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.25}/>
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" className="dark:stroke-darkbg-border/30" />
-                    <XAxis dataKey="name" fontSize={11} stroke="#94A3B8" />
-                    <YAxis fontSize={11} stroke="#94A3B8" />
-                    <Tooltip />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
+                    <XAxis dataKey="name" fontSize={10} stroke="#94A3B8" tick={{ fontWeight: 600 }} />
+                    <YAxis fontSize={10} stroke="#94A3B8" tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '10px', fontWeight: 700 }} />
                     {activeModule === 'SACCO' ? (
                       <>
-                        <Area type="monotone" dataKey="Savings" stroke="#24A148" fillOpacity={1} fill="url(#colorProfit)" strokeWidth={2.5} />
-                        <Area type="monotone" dataKey="Loans" stroke="#0F62FE" fillOpacity={1} fill="url(#colorValue)" strokeWidth={2.5} />
+                        <Area type="monotone" dataKey="Savings" stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#gradPro)" dot={{ fill: '#10b981', r: 3 }} />
+                        <Area type="monotone" dataKey="Loans"   stroke="#3b82f6" strokeWidth={2.5} fillOpacity={1} fill="url(#gradRev)" dot={{ fill: '#3b82f6', r: 3 }} />
                       </>
                     ) : (
                       <>
-                        <Area type="monotone" dataKey="Revenue" stroke="#0F62FE" fillOpacity={1} fill="url(#colorValue)" strokeWidth={2.5} />
-                        <Area type="monotone" dataKey="Profit" stroke="#24A148" fillOpacity={1} fill="url(#colorProfit)" strokeWidth={2.5} />
+                        <Area type="monotone" dataKey="Revenue" stroke="#3b82f6" strokeWidth={2.5} fillOpacity={1} fill="url(#gradRev)" dot={{ fill: '#3b82f6', r: 3 }} />
+                        <Area type="monotone" dataKey="Profit"  stroke="#10b981" strokeWidth={2.5} fillOpacity={1} fill="url(#gradPro)" dot={{ fill: '#10b981', r: 3 }} />
                       </>
                     )}
                   </AreaChart>
@@ -466,111 +551,137 @@ export const Dashboard: React.FC = () => {
               </CardContent>
             </Card>
 
-            {/* Donut Chart (Payment Methods Breakdown) */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Transactions Channel</CardTitle>
-                <CardDescription>Breakdown by payment gateways</CardDescription>
+            {/* Payment Methods Donut */}
+            <Card className="rounded-2xl border-slate-200 dark:border-darkbg-border shadow-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-black">Payment Channels</CardTitle>
+                <CardDescription className="text-[11px]">Breakdown by payment method</CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col items-center justify-center h-80">
+              <CardContent className="flex flex-col items-center justify-center pb-4">
                 {paymentData.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center">
+                  <div className="flex flex-col items-center justify-center h-52 text-center">
                     <div className="h-16 w-16 rounded-full border-4 border-dashed border-slate-200 dark:border-darkbg-border flex items-center justify-center mb-3">
                       <span className="text-2xl">💳</span>
                     </div>
-                    <p className="text-xs font-semibold text-slate-400">No transactions yet</p>
-                    <p className="text-[10px] text-slate-300 mt-1">Payment channels will appear after first sale</p>
+                    <p className="text-xs font-bold text-slate-400">No transactions yet</p>
+                    <p className="text-[10px] text-slate-300 dark:text-slate-600 mt-1">Payment channels appear after first sale</p>
                   </div>
                 ) : (
                   <>
-                    <div className="h-44 w-full">
+                    <div className="h-40 w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie
-                            data={paymentData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={55}
-                            outerRadius={75}
-                            paddingAngle={3}
-                            dataKey="value"
-                          >
-                            {paymentData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
+                          <Pie data={paymentData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={4} dataKey="value">
+                            {paymentData.map((entry, i) => <Cell key={i} fill={entry.color} strokeWidth={0} />)}
                           </Pie>
-                          <Tooltip formatter={(value) => `${value}%`} />
+                          <Tooltip formatter={(v) => `${v}%`} />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
-                    {/* Legend */}
-                    <div className="mt-4 w-full space-y-2 px-2">
-                      {paymentData.map((item, idx) => (
-                        <div key={idx} className="flex items-center justify-between text-xs">
-                          <div className="flex items-center space-x-2">
-                            <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
-                            <span className="font-medium text-slate-600 dark:text-slate-300">{item.name}</span>
+                    <div className="mt-3 w-full space-y-2 px-1">
+                      {paymentData.map((item, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <div className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: item.color }} />
+                            <span className="font-semibold text-slate-600 dark:text-slate-300 truncate max-w-[100px]">{item.name}</span>
                           </div>
-                          <span className="font-bold text-slate-800 dark:text-white">{item.value}%</span>
+                          <span className="font-black text-slate-800 dark:text-white">{item.value}%</span>
                         </div>
                       ))}
                     </div>
                   </>
                 )}
-
               </CardContent>
             </Card>
           </div>
 
-          {/* Row 3: Live Sales list */}
-          <div className="grid gap-6">
-            {/* Recent Orders from IndexedDB */}
-            <Card className="w-full">
-              <CardHeader className="flex flex-row items-center justify-between">
+          {/* ── Top Products + Recent Orders ────────────────────────────────── */}
+          <div className="grid gap-5 lg:grid-cols-5">
+
+            {/* Top Products Bar Chart */}
+            {topProductsData.length > 0 && (
+              <Card className="lg:col-span-2 rounded-2xl border-slate-200 dark:border-darkbg-border shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-black">Top Products</CardTitle>
+                  <CardDescription className="text-[11px]">By revenue contribution</CardDescription>
+                </CardHeader>
+                <CardContent className="h-56 pb-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topProductsData} layout="vertical" margin={{ top: 0, right: 10, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E2E8F0" className="dark:stroke-darkbg-border/30" />
+                      <XAxis type="number" fontSize={9} stroke="#94A3B8" tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v} />
+                      <YAxis type="category" dataKey="name" fontSize={9} stroke="#94A3B8" width={75} tick={{ fontWeight: 600 }} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="Revenue" fill="#6366f1" radius={[0, 4, 4, 0]} maxBarSize={14} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Recent Orders Table */}
+            <Card className={`${topProductsData.length > 0 ? 'lg:col-span-3' : 'lg:col-span-5'} rounded-2xl border-slate-200 dark:border-darkbg-border shadow-sm`}>
+              <CardHeader className="pb-3 flex flex-row items-center justify-between">
                 <div>
-                  <CardTitle>Recent Orders & Activity</CardTitle>
-                  <CardDescription>Live local sales logged into IndexedDB</CardDescription>
+                  <CardTitle className="text-sm font-black">Recent Orders</CardTitle>
+                  <CardDescription className="text-[11px]">Latest {Math.min(orders.length, 6)} transactions</CardDescription>
                 </div>
-                <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-bold dark:bg-primary-dark/20 dark:text-primary-dark">
-                  {orders.length} Logged
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black bg-primary/10 text-primary dark:bg-primary/20 px-2.5 py-1 rounded-full">
+                    {orders.length} total
+                  </span>
+                  <button
+                    onClick={() => setActiveTab('Receipts')}
+                    className="text-[10px] font-bold text-slate-400 hover:text-primary transition flex items-center gap-1"
+                  >
+                    View all <ArrowRight className="h-2.5 w-2.5" />
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left">
                     <thead>
-                      <tr className="border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-darkbg-border/30 dark:bg-darkbg-card/50">
-                        <th className="p-4">Transaction ID</th>
-                        <th className="p-4">Time</th>
-                        <th className="p-4">Items count</th>
-                        <th className="p-4">Total</th>
-                        <th className="p-4">Channel</th>
-                        <th className="p-4 text-center">Sync Status</th>
+                      <tr className="border-b border-slate-100 dark:border-darkbg-border bg-slate-50 dark:bg-darkbg/50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        <th className="p-3 pl-5">Order</th>
+                        <th className="p-3">Date</th>
+                        <th className="p-3">Items</th>
+                        <th className="p-3">Total</th>
+                        <th className="p-3">Channel</th>
+                        <th className="p-3 text-center">Status</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 text-xs dark:divide-darkbg-border/20">
+                    <tbody className="divide-y divide-slate-50 dark:divide-darkbg-border/20">
                       {orders.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-slate-400 italic">No orders logged in this module yet. Add items in the POS.</td>
+                          <td colSpan={6} className="p-10 text-center text-slate-400 italic text-xs">
+                            No orders logged yet. Start selling from the POS terminal.
+                          </td>
                         </tr>
                       ) : (
-                        orders.slice(-4).reverse().map((order) => (
-                          <tr key={order.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                            <td className="p-4 font-bold text-slate-800 dark:text-slate-200">{order.id}</td>
-                            <td className="p-4 text-slate-400">{new Date(order.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                            <td className="p-4 font-medium">{order.items.reduce((sum, item) => sum + item.quantity, 0)} items</td>
-                            <td className="p-4 font-bold text-slate-900 dark:text-white">Tsh. {order.total.toLocaleString()}</td>
-                            <td className="p-4">
-                              <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold dark:bg-darkbg-border">
+                        orders.slice(-6).reverse().map(order => (
+                          <tr key={order.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/20 transition-colors text-xs">
+                            <td className="p-3 pl-5 font-mono font-bold text-slate-600 dark:text-slate-400 text-[10px]">{order.id.slice(-8).toUpperCase()}</td>
+                            <td className="p-3 text-slate-400 whitespace-nowrap">
+                              <span className="block">{fmtDate(order.timestamp)}</span>
+                              <span className="text-[10px] text-slate-300 dark:text-slate-600">{fmtTime(order.timestamp)}</span>
+                            </td>
+                            <td className="p-3 font-bold text-slate-700 dark:text-slate-300">
+                              {order.items.reduce((s, i) => s + i.quantity, 0)} items
+                            </td>
+                            <td className="p-3 font-black text-slate-900 dark:text-white">{fmtCcy(order.total)}</td>
+                            <td className="p-3">
+                              <span className="inline-flex rounded-lg bg-slate-100 dark:bg-darkbg-border px-2 py-0.5 text-[10px] font-bold text-slate-600 dark:text-slate-300">
                                 {order.paymentMethod}
                               </span>
                             </td>
-                            <td className="p-4 text-center">
-                              <span className={`inline-flex rounded-full px-2 py-0.5 text-[9px] font-bold ${
-                                order.syncStatus === 'Synced' 
-                                  ? 'bg-success/15 text-success' 
-                                  : 'bg-amber-500/15 text-amber-600 dark:text-amber-400 animate-pulse'
+                            <td className="p-3 text-center">
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-black ${
+                                order.syncStatus === 'Synced'
+                                  ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400'
+                                  : 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400 animate-pulse'
                               }`}>
+                                {order.syncStatus === 'Synced' ? <CheckCircle className="h-2.5 w-2.5" /> : <RefreshCw className="h-2.5 w-2.5" />}
                                 {order.syncStatus}
                               </span>
                             </td>

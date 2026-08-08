@@ -13,15 +13,21 @@ import {
 import { TenantManagement } from './TenantManagement';
 import { UsersRoles } from './UsersRoles';
 import { PersistenceTest } from './PersistenceTest';
-import { DemoDataEngine } from './DemoDataEngine';
 import { Subscriptions } from './Subscriptions';
 import { ProductionReadinessControl } from './ProductionReadinessControl';
 import { ReleaseCenter } from './ReleaseCenter';
 import { AppVersionFooter } from '../Layout/AppVersionFooter';
 import { cloudDb } from '../../db/supabaseMock';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { SuperAdminService } from '../../services/superAdminService';
 
 export const SuperAdmin: React.FC = () => {
+  React.useEffect(() => {
+    SuperAdminService.syncPlatformRegistry().catch(err => {
+      console.warn('[SuperAdmin Console] Registry auto-sync warning:', err);
+    });
+  }, []);
+
   const { activeTab, moduleStates, toggleModuleState } = useModule();
   const [moduleSearchQuery, setModuleSearchQuery] = useState('');
   const [selectedModuleFilter, setSelectedModuleFilter] = useState<'ALL' | 'ENABLED' | 'DISABLED'>('ALL');
@@ -243,8 +249,6 @@ export const SuperAdmin: React.FC = () => {
       {/* ── Subscription Tiers & Billing Tab ── */}
       {(activeTab === 'Subscription Tiers' || activeTab === 'Billing & Finance') && <Subscriptions />}
 
-      {activeTab === 'Demo Data Engine' && <DemoDataEngine />}
-
       {(activeTab === 'Business Categories' || activeTab === 'Marketplace') && (
         <div className="space-y-6">
           <Card className="rounded-2xl border-slate-200 dark:border-darkbg-border bg-white dark:bg-darkbg-card p-6 shadow-sm">
@@ -379,7 +383,7 @@ export const SuperAdmin: React.FC = () => {
       {activeTab === 'Persistence Auditor' && <PersistenceTest />}
 
       {/* Other Super Admin Views Placeholder fallback */}
-      {activeTab !== 'Dashboard' && activeTab !== 'Tenant Management' && activeTab !== 'Subscription Tiers' && activeTab !== 'Billing & Finance' && activeTab !== 'Business Categories' && activeTab !== 'Users & Roles' && activeTab !== 'Persistence Auditor' && activeTab !== 'Demo Data Engine' && activeTab !== 'Production Readiness' && activeTab !== 'Release Center' && activeTab !== 'Release Management' && activeTab !== 'Releases' && activeTab !== 'CI/CD Pipeline' && (
+      {activeTab !== 'Dashboard' && activeTab !== 'Tenant Management' && activeTab !== 'Subscription Tiers' && activeTab !== 'Billing & Finance' && activeTab !== 'Business Categories' && activeTab !== 'Users & Roles' && activeTab !== 'Persistence Auditor' && activeTab !== 'Production Readiness' && activeTab !== 'Release Center' && activeTab !== 'Release Management' && activeTab !== 'Releases' && activeTab !== 'CI/CD Pipeline' && (
         <Card>
           <CardHeader>
             <CardTitle>{activeTab}</CardTitle>

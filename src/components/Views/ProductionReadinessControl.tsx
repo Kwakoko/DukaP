@@ -125,9 +125,9 @@ export const ProductionReadinessControl: React.FC = () => {
               {isLocked ? <Lock className="w-5 h-5 text-emerald-400" /> : <Unlock className="w-5 h-5 text-amber-400" />}
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Production Clean System & Demo Data Removal Engine</h2>
+              <h2 className="text-sm font-bold text-white">Production System Sanitizer & Artifact Purge Engine</h2>
               <p className="text-xs text-slate-400">
-                Purges all demo businesses, products, sales, customers, stock ledgers, and dev artifacts while preserving Super Admin & Core SaaS infrastructure.
+                Purges test businesses, orphaned products, sales, customers, stock ledgers, and dev artifacts while preserving Super Admin & Core SaaS infrastructure.
               </p>
             </div>
           </div>
@@ -135,7 +135,7 @@ export const ProductionReadinessControl: React.FC = () => {
             onClick={() => setShowConfirmCleanupModal(true)}
             className="px-3.5 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-600/40 text-rose-300 font-bold text-xs rounded-lg transition flex items-center gap-1.5"
           >
-            <Sparkles className="w-3.5 h-3.5" /> Purge Demo Data
+            <Sparkles className="w-3.5 h-3.5" /> Sanitize & Purge System
           </button>
         </div>
 
@@ -291,7 +291,7 @@ export const ProductionReadinessControl: React.FC = () => {
         isOpen={showConfirmCleanupModal}
         onClose={() => setShowConfirmCleanupModal(false)}
         title="Execute Production Clean System"
-        description="Permanently remove all demo tenants, businesses, products, sales & dev artifacts."
+        description="Permanently remove all test tenants, businesses, products, sales & dev artifacts."
       >
         <div className="space-y-4 pt-2 text-xs">
           <div className="p-3 bg-rose-50 border border-rose-200 dark:bg-rose-950/40 dark:border-rose-900/50 rounded-xl text-rose-700 dark:text-rose-300 space-y-1">
@@ -299,7 +299,7 @@ export const ProductionReadinessControl: React.FC = () => {
               <AlertTriangle className="w-4 h-4 text-rose-500" /> Irreversible Production Action
             </div>
             <p className="text-[11px] leading-relaxed">
-              This action will delete all demo business records, products, inventory movements, transactions, and user accounts. Only the Super Admin account (<strong className="font-mono">admin@dukapos.com</strong>) and core SaaS infrastructure will be preserved.
+              This action will delete all test business records, products, inventory movements, transactions, and user accounts. Only the Super Admin account (<strong className="font-mono">admin@dukapos.com</strong>) and core SaaS infrastructure will be preserved.
             </p>
           </div>
 
@@ -316,7 +316,7 @@ export const ProductionReadinessControl: React.FC = () => {
           <div className="flex justify-end gap-2 pt-4 border-t dark:border-darkbg-border">
             <Button variant="secondary" onClick={() => setShowConfirmCleanupModal(false)}>Cancel</Button>
             <Button variant="danger" onClick={handleExecuteProductionCleanup}>
-              Confirm & Purge Demo Data
+              Confirm & Sanitize System
             </Button>
           </div>
         </div>

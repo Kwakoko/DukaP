@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/dexie';
 import { cloudDb } from '../../db/supabaseMock';
@@ -60,14 +60,30 @@ function getBadgeVariant(status: string): 'success' | 'warning' | 'danger' | 'in
   return 'info';
 }
 
+const safeParseDateMs = (value: any): number => {
+  if (!value) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    if (/^\d+$/.test(value)) {
+      return Number(value);
+    }
+    const parsed = Date.parse(value);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return 0;
+};
+
 function formatDate(value: string | number | null | undefined) {
   if (!value) return 'Not set';
-  return new Date(value).toLocaleDateString();
+  const ms = safeParseDateMs(value);
+  if (!ms) return 'Not set';
+  return new Date(ms).toLocaleDateString();
 }
 
-const formatTenantRegistrationDate = (ts?: number) => {
-  if (!ts) return { formatted: 'N/A', relative: 'Unknown', iso: 'N/A' };
-  const d = new Date(ts);
+const formatTenantRegistrationDate = (ts?: any) => {
+  const ms = safeParseDateMs(ts);
+  if (!ms) return { formatted: 'N/A', relative: 'Unknown', iso: 'N/A' };
+  const d = new Date(ms);
   const formatted = d.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -77,7 +93,7 @@ const formatTenantRegistrationDate = (ts?: number) => {
     hour12: false
   });
   
-  const diff = Math.max(0, Date.now() - ts);
+  const diff = Math.max(0, Date.now() - ms);
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
@@ -270,13 +286,13 @@ export const TenantManagement: React.FC = () => {
         subscription: tSub ? {
           planName: tSub.plan_id || t.plan,
           status: tSub.status || t.status,
-          trialEndDate: t.created_at ? new Date(t.created_at + 14 * 86400000).toISOString() : null,
-          renewalDate: tSub.current_period_end ? new Date(tSub.current_period_end).toISOString() : null,
+          trialEndDate: t.created_at ? new Date(safeParseDateMs(t.created_at) + 14 * 86400000).toISOString() : null,
+          renewalDate: tSub.current_period_end ? new Date(safeParseDateMs(tSub.current_period_end)).toISOString() : null,
         } : {
           planName: t.plan,
           status: t.status,
-          trialEndDate: t.created_at ? new Date(t.created_at + 14 * 86400000).toISOString() : null,
-          renewalDate: t.created_at ? new Date(t.created_at + 30 * 86400000).toISOString() : null,
+          trialEndDate: t.created_at ? new Date(safeParseDateMs(t.created_at) + 14 * 86400000).toISOString() : null,
+          renewalDate: t.created_at ? new Date(safeParseDateMs(t.created_at) + 30 * 86400000).toISOString() : null,
         }
       };
     });
@@ -383,8 +399,8 @@ export const TenantManagement: React.FC = () => {
       businessType: t.business_type || (t as any).industry || 'Retail',
       planName: t.plan,
       status: (t.status.toUpperCase() as any) || 'ACTIVE',
-      trialEndDate: t.created_at ? new Date(t.created_at + 14 * 86400000).toISOString().slice(0, 10) : '',
-      renewalDate: sub?.current_period_end ? new Date(sub.current_period_end).toISOString().slice(0, 10) : ''
+      trialEndDate: t.created_at ? new Date(safeParseDateMs(t.created_at) + 14 * 86400000).toISOString().slice(0, 10) : '',
+      renewalDate: sub?.current_period_end ? new Date(safeParseDateMs(sub.current_period_end)).toISOString().slice(0, 10) : ''
     });
   };
 
@@ -545,7 +561,7 @@ export const TenantManagement: React.FC = () => {
 
   // Purge Seed Tenants Action
   const handlePurgeAllSeedTenants = async () => {
-    if (window.confirm('⚠️ PURGE SEED DATA\nAre you sure you want to remove all seed/demo data tenants from Super Admin Cpanel? This will purge mock tenants like tenant-101, tenant-102, tenant-103, tenant-106, and all demo workspaces.')) {
+    if (window.confirm('⚠️ PURGE TEST DATA\nAre you sure you want to remove all test data tenants from Super Admin Cpanel? This will purge test tenants like tenant-101, tenant-102, tenant-103, tenant-106, and test workspaces.')) {
       try {
         const allTenants = await db.tenants.toArray();
         const seedIds = ['tenant-101', 'tenant-102', 'tenant-103', 'tenant-104', 'tenant-105', 'tenant-106'];
@@ -568,9 +584,9 @@ export const TenantManagement: React.FC = () => {
           await db.tenantSubscriptions.where('tenant_id').equals(t.id).delete();
         }
 
-        alert(`✅ Cleaned out ${seedTenants.length} seed/demo tenants from Super Admin Cpanel.`);
+        alert(`✅ Cleaned out ${seedTenants.length} test tenants from Super Admin Cpanel.`);
       } catch (err: any) {
-        alert(`Error purging seed data: ${err.message}`);
+        alert(`Error purging test data: ${err.message}`);
       }
     }
   };
@@ -1679,9 +1695,54 @@ function TenantDetailsView({ tenant, onBack, onImpersonate, onForceLogout }: {
 }) {
   const [activeTab, setActiveTab] = useState<'overview' | 'performance'>('overview');
 
-  const tenantUsers = useLiveQuery(() => db.users.where('tenant_id').equals(tenant.id).toArray(), [tenant.id]) || [];
-  const tenantBranches = useLiveQuery(() => db.branches.where('tenant_id').equals(tenant.id).toArray(), [tenant.id]) || [];
-  const auditLogs = useLiveQuery(() => db.auditLogs.where('tenant_id').equals(tenant.id).reverse().limit(10).toArray(), [tenant.id]) || [];
+  const [tenantUsers, setTenantUsers] = useState<any[]>([]);
+  const [tenantBranches, setTenantBranches] = useState<any[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [loadingDetails, setLoadingDetails] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    const loadData = async () => {
+      setLoadingDetails(true);
+      try {
+        const [usersRes, branchesRes, logsRes] = await Promise.all([
+          fetch(`/api/users?filterTenantId=${tenant.id}&_t=${Date.now()}`),
+          fetch(`/api/branches?filterTenantId=${tenant.id}&_t=${Date.now()}`),
+          fetch(`/api/securityAuditLogs?filterTenantId=${tenant.id}&_t=${Date.now()}`)
+        ]);
+
+        if (usersRes.ok && branchesRes.ok && active) {
+          const u = await usersRes.json();
+          const b = await branchesRes.json();
+          const l = logsRes.ok ? await logsRes.json() : [];
+          setTenantUsers(u);
+          setTenantBranches(b);
+          setAuditLogs(l);
+          return;
+        }
+      } catch (err) {
+        console.warn('Failed to fetch tenant details from server, falling back to local DB:', err);
+      }
+
+      // Fallback to local Dexie queries
+      if (active) {
+        const u = await db.users.where('tenant_id').equals(tenant.id).toArray();
+        const b = await db.branches.where('tenant_id').equals(tenant.id).toArray();
+        const l = await db.auditLogs.where('tenant_id').equals(tenant.id).reverse().limit(10).toArray();
+        setTenantUsers(u);
+        setTenantBranches(b);
+        setAuditLogs(l);
+      }
+    };
+
+    loadData().finally(() => {
+      if (active) setLoadingDetails(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [tenant.id]);
 
   const performanceData = [
     { name: 'Jan', SalesVolume: 1200000, Transactions: 42 },
@@ -1711,6 +1772,9 @@ function TenantDetailsView({ tenant, onBack, onImpersonate, onForceLogout }: {
         </div>
 
         <div className="flex items-center gap-2">
+          {loadingDetails && (
+            <span className="text-xs text-slate-400 animate-pulse" style={{ marginRight: '8px' }}>Loading live profiles...</span>
+          )}
           <Button variant="outline" size="sm" onClick={() => onBack()} className="text-xs">
             Close 360° Profile
           </Button>
@@ -1819,8 +1883,8 @@ function TenantDetailsView({ tenant, onBack, onImpersonate, onForceLogout }: {
               <div className="space-y-2 font-mono text-[11px] text-slate-600 dark:text-slate-400">
                 {auditLogs.map(l => (
                   <div key={l.id} className="p-2.5 bg-slate-50 dark:bg-darkbg rounded-xl border border-slate-100 dark:border-darkbg-border flex items-center justify-between">
-                    <span>[{l.action}] {l.user_name || 'System'}: {l.entity} ({l.entity_id})</span>
-                    <span className="text-[10px] text-slate-400">{new Date(l.created_at).toLocaleString()}</span>
+                    <span>[{l.action}] {l.user_name || l.user_id || 'System'}: {l.details || `${l.entity || ''} (${l.entity_id || ''})`}</span>
+                    <span className="text-[10px] text-slate-400">{new Date(Number(l.created_at || l.timestamp) || Date.now()).toLocaleString()}</span>
                   </div>
                 ))}
               </div>

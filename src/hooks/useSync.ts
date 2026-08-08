@@ -126,9 +126,10 @@ export function useSync() {
         } catch {}
       }
 
-      // Step 1: Force local un-synced product recovery push first
+      // Step 1: Push pending local changes to the server first to ensure consistency
+      await productionSyncEngine.processQueue(currentTenantId).catch(() => {});
       if (currentTenantId) {
-        await recoverUnsyncedProducts(currentTenantId);
+        await recoverUnsyncedProducts(currentTenantId).catch(() => {});
       }
 
       const syncKey = `dukapos_last_sync_${currentTenantId || 'global'}`;
@@ -136,7 +137,6 @@ export function useSync() {
 
       const headers: Record<string, string> = {
         'x-tenant-id': currentTenantId || '',
-        'X-Tenant-ID': currentTenantId || '',
         'x-user-id': currentUserId,
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
@@ -164,21 +164,30 @@ export function useSync() {
           }
           const existing = await db.products.get(sp.id);
           if (existing && existing.syncStatus === 'PENDING') continue;
-          await db.products.put(mapProductToLocal({ ...sp, syncStatus: 'SYNCED' }));
+          const localProd = mapProductToLocal({ ...sp, syncStatus: 'SYNCED' });
+          if (existing) {
+            localProd.stock = existing.stock;
+          }
+          await db.products.put(localProd);
           totalDownloaded++;
         }
       }
 
       // 2. Ingest Variants
-      if (Array.isArray(changes.variants)) {
-        for (const sv of changes.variants) {
+      const incomingVariants = changes.productVariants || changes.variants;
+      if (Array.isArray(incomingVariants)) {
+        for (const sv of incomingVariants) {
           if (sv.deletedAt || sv.deleted_at || sv.is_deleted) {
             await db.productVariants.delete(sv.id);
             continue;
           }
           const existing = await db.productVariants.get(sv.id);
           if (!existing || existing.syncStatus !== 'PENDING') {
-            await db.productVariants.put({ ...sv, syncStatus: 'SYNCED', isSynced: 1 });
+            const localVariant = { ...sv, syncStatus: 'SYNCED', isSynced: 1 };
+            if (existing) {
+              localVariant.stock = existing.stock;
+            }
+            await db.productVariants.put(localVariant);
           }
         }
       }
@@ -249,17 +258,31 @@ export function useSync() {
 
       // 7. Ingest Stock Ledger & Recalculate Stock Balances (Requirement #15)
       if (Array.isArray(changes.stockLedger) && changes.stockLedger.length > 0) {
+        const affectedItems = new Map<string, Set<string>>(); // productId -> Set of variantIds
         for (const sle of changes.stockLedger) {
           await db.stockLedger.put({ ...sle, synced: true, sync_status: 'SYNCED' });
+          if (sle.product_id) {
+            if (!affectedItems.has(sle.product_id)) {
+              affectedItems.set(sle.product_id, new Set<string>());
+            }
+            affectedItems.get(sle.product_id)!.add(sle.variant_id || 'no-variant');
+          }
         }
-        if (currentTenantId) {
-          const allProds = await db.products.toArray();
-          for (const p of allProds) {
-            await stockLedgerSyncEngine.recalculateStockFromEvents(
-              currentTenantId,
-              p.branchId || p.branch_id || 'main-branch',
-              p.id
-            ).catch(() => {});
+        if (currentTenantId && affectedItems.size > 0) {
+          for (const [prodId, variantIds] of affectedItems.entries()) {
+            const p = await db.products.get(prodId);
+            if (p) {
+              const branchId = p.branchId || p.branch_id || 'main-branch';
+              for (const varId of variantIds) {
+                const actualVarId = varId === 'no-variant' ? undefined : varId;
+                await stockLedgerSyncEngine.recalculateStockFromEvents(
+                  currentTenantId,
+                  branchId,
+                  prodId,
+                  actualVarId
+                ).catch(() => {});
+              }
+            }
           }
         }
       }

@@ -208,6 +208,10 @@ export const supabase: SupabaseClient = {
           displayTableName = 'cloud_tenant_user_branches';
           apiPath = '/api/tenantUserBranches';
           table = cloudDb.cloud_tenant_user_branches;
+        } else if (tableName === 'tenantSubscriptions') {
+          displayTableName = 'cloud_subscriptions';
+          apiPath = '/api/tenantSubscriptions';
+          table = cloudDb.cloud_subscriptions;
         }
 
         if (!table) {

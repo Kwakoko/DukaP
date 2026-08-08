@@ -2912,7 +2912,7 @@ export function getEffectiveVariantSellingPrice(
   parentProduct?: Partial<Product> | null
 ): number {
   if (!variant) return parentProduct?.sellingPrice || parentProduct?.price || 0;
-  if (variant.inheritSellingPrice === true || variant.sellingPrice === undefined || variant.sellingPrice === null) {
+  if (variant.inheritSellingPrice === true || variant.sellingPrice === undefined || variant.sellingPrice === null || variant.sellingPrice === 0) {
     return parentProduct?.sellingPrice || parentProduct?.price || 0;
   }
   return variant.sellingPrice;
@@ -2928,7 +2928,7 @@ export function getEffectiveVariantBuyingPrice(
   parentProduct?: Partial<Product> | null
 ): number {
   if (!variant) return parentProduct?.buyingPrice || parentProduct?.costPrice || 0;
-  if (variant.inheritBuyingPrice === true || variant.buyingPrice === undefined || variant.buyingPrice === null) {
+  if (variant.inheritBuyingPrice === true || variant.buyingPrice === undefined || variant.buyingPrice === null || variant.buyingPrice === 0) {
     return parentProduct?.buyingPrice || parentProduct?.costPrice || 0;
   }
   return variant.buyingPrice;

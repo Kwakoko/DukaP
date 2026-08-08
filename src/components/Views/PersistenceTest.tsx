@@ -144,16 +144,21 @@ export const PersistenceTest: React.FC = () => {
     setIsRunningAll(true);
     setTestCases(prev => prev.map(tc => ({ ...tc, status: 'PENDING', log: [] })));
 
+    // Resolve a valid tenant ID to run verification against (defaults to seeded development tenant)
+    const testTenantId = currentTenant?.id && currentTenant.id !== 'tenant-admin-system' && currentTenant.id !== ''
+      ? currentTenant.id
+      : '8f1109a3-9ab8-4922-a4e0-d706a3a2d85d';
+
     const defaultUserContext = {
-      id: authUser?.id || 'usr-owner',
-      tenant_id: currentTenant.id,
+      id: authUser?.id && authUser.id !== 'usr-superadmin' ? authUser.id : `usr-${testTenantId}-owner`,
+      tenant_id: testTenantId,
       branch_id: authUser?.branch_id || 'branch-dar-hq',
       role: authUser?.role || 'Business Owner',
       name: authUser?.name || 'Juma Ally'
     };
 
     setMockAuthOverride({
-      tenant_id: currentTenant.id,
+      tenant_id: testTenantId,
       user_id: defaultUserContext.id,
       user_name: defaultUserContext.name
     });
@@ -172,7 +177,7 @@ export const PersistenceTest: React.FC = () => {
         sellingPrice: 14000,
         price: 14000,
         stock: 50,
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         branch_id: defaultUserContext.branch_id,
         module: 'Retail',
         hasVariants: false,
@@ -205,11 +210,11 @@ export const PersistenceTest: React.FC = () => {
       updateStatus(id2, 'RUNNING');
       addLog(id2, 'Simulating Device B (Firefox) login with same Tenant credentials...');
       setMockAuthOverride({
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         user_id: 'usr-device-b',
         user_name: 'Firefox Device B'
       });
-      const downloadedCount = await syncFromServer(currentTenant.id);
+      const downloadedCount = await syncFromServer(testTenantId);
       addLog(id2, `Device B completed incremental sync. Downloaded ${downloadedCount} record(s).`);
       const devBCheck = await db.products.get(savedProd.id);
       if (devBCheck) {
@@ -220,7 +225,7 @@ export const PersistenceTest: React.FC = () => {
       }
 
       setMockAuthOverride({
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         user_id: defaultUserContext.id,
         user_name: defaultUserContext.name
       });
@@ -240,7 +245,7 @@ export const PersistenceTest: React.FC = () => {
         sellingPrice: 7500,
         price: 7500,
         stock: 20,
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         branch_id: defaultUserContext.branch_id,
         module: 'Retail',
         hasVariants: false,
@@ -263,8 +268,8 @@ export const PersistenceTest: React.FC = () => {
         user_id: 'usr-hacker',
         user_name: 'Foreign User'
       });
-      const hijackRes = await supabase.from('products').select('*').eq('tenant_id', currentTenant.id);
-      const leaked = (hijackRes.data || []).some((p: any) => p.tenant_id === currentTenant.id);
+      const hijackRes = await supabase.from('products').select('*').eq('tenant_id', testTenantId);
+      const leaked = (hijackRes.data || []).some((p: any) => p.tenant_id === testTenantId);
       if (leaked) {
         throw new Error('Tenant data leaked to foreign query!');
       } else {
@@ -273,7 +278,7 @@ export const PersistenceTest: React.FC = () => {
       }
 
       setMockAuthOverride({
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         user_id: defaultUserContext.id,
         user_name: defaultUserContext.name
       });
@@ -281,10 +286,11 @@ export const PersistenceTest: React.FC = () => {
       // TEST 5: Browser Cache Purge & Full Recovery
       const id5 = 'test-5';
       updateStatus(id5, 'RUNNING');
-      addLog(id5, 'Clearing local IndexedDB cache...');
+      addLog(id5, 'Clearing local IndexedDB cache and sync watermark...');
       await db.products.clear();
+      localStorage.removeItem(`dukapos_last_sync_${testTenantId}`);
       addLog(id5, 'Invoking master recovery sync from server...');
-      await syncFromServer(currentTenant.id);
+      await syncFromServer(testTenantId);
       const restoredCheck = await db.products.get(savedProd.id);
       if (restoredCheck) {
         addLog(id5, `SUCCESS: Product '${restoredCheck.name}' restored from server database after cache clear.`);
@@ -308,7 +314,7 @@ export const PersistenceTest: React.FC = () => {
       addLog(id7, `Soft-deleting product ${savedProd.id}...`);
       await ProductService.deleteProduct(savedProd.id, defaultUserContext, true);
       await syncData();
-      const serverSoftCheck = await fetch(`/api/sync?tenantId=${currentTenant.id}&since=0`);
+      const serverSoftCheck = await fetch(`/api/sync?tenantId=${testTenantId}&since=0`);
       if (serverSoftCheck.ok) {
         addLog(id7, `SUCCESS: Soft-delete recorded with deleted_at timestamp and propagated.`);
         updateStatus(id7, 'PASSED');
@@ -322,7 +328,7 @@ export const PersistenceTest: React.FC = () => {
       addLog(id8, 'Recording stock movement event to immutable Stock Ledger...');
       const ledId = `prod-ledger-${Date.now()}`;
       await stockLedgerSyncEngine.recordEventIdempotent({
-        tenant_id: currentTenant.id,
+        tenant_id: testTenantId,
         branch_id: defaultUserContext.branch_id,
         product_id: ledId,
         movement_type: 'PURCHASE_RECEIVE',
@@ -334,7 +340,7 @@ export const PersistenceTest: React.FC = () => {
         user_id: defaultUserContext.id
       });
       const bal = await stockLedgerSyncEngine.recalculateStockFromEvents(
-        currentTenant.id,
+        testTenantId,
         defaultUserContext.branch_id,
         ledId
       );

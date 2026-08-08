@@ -61,6 +61,7 @@ export function mapProductToLocal(prod: any): Product {
   const resolvedSellingPrice = prod.sellingPrice ?? prod.selling_price ?? prod.price ?? 0;
   const rawStock = prod.stock ?? prod.quantity ?? prod.current_quantity ?? 0;
   const resolvedStock = typeof rawStock === 'number' ? rawStock : (parseFloat(String(rawStock)) || 0);
+  const resolvedHasVariants = prod.hasVariants ?? prod.has_variants ?? false;
 
   return {
     ...prod,
@@ -73,6 +74,8 @@ export function mapProductToLocal(prod: any): Product {
     sellingPrice: resolvedSellingPrice,
     price: resolvedSellingPrice,
     stock: resolvedStock,
+    hasVariants: resolvedHasVariants,
+    has_variants: resolvedHasVariants,
     category: prod.category || prod.categoryId || '',
     module: prod.module || 'Retail',
     categoryId: prod.categoryId || prod.category,
@@ -91,6 +94,7 @@ export function mapProductToCloud(prod: Product): any {
   const branchId = prod.branchId || prod.branch_id || '';
   const resolvedBuyingPrice = prod.buyingPrice ?? prod.costPrice ?? (prod as any).buying_price ?? (prod as any).cost_price ?? 0;
   const resolvedSellingPrice = prod.sellingPrice ?? prod.price ?? (prod as any).selling_price ?? 0;
+  const resolvedHasVariants = prod.hasVariants ?? (prod as any).has_variants ?? false;
 
   return {
     id: prod.id,
@@ -111,7 +115,8 @@ export function mapProductToCloud(prod: Product): any {
     tenant_id: tenantId,
     branch_id: branchId,
     module: prod.module || 'Retail',
-    hasVariants: prod.hasVariants || false,
+    hasVariants: resolvedHasVariants,
+    has_variants: resolvedHasVariants,
     brand: prod.brand,
     description: prod.description,
     supplier: prod.supplier,
@@ -993,7 +998,6 @@ export async function recoverUnsyncedProducts(tenantId: string): Promise<number>
       headers: {
         'Content-Type': 'application/json',
         'x-tenant-id': tenantId,
-        'X-Tenant-ID': tenantId,
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache'
       },

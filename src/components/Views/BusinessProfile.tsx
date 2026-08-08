@@ -821,16 +821,16 @@ export const BusinessProfile: React.FC = () => {
                           />
                           <Button
                             onClick={() => {
-                              const demoLogo = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=100&h=100&fit=crop&q=80';
-                              setForm(p => ({ ...p, logoUrl: demoLogo }));
-                              setReceiptPreviewLogo(demoLogo);
+                              const sampleLogo = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=100&h=100&fit=crop&q=80';
+                              setForm(p => ({ ...p, logoUrl: sampleLogo }));
+                              setReceiptPreviewLogo(sampleLogo);
                               alert('Sample DukaPos logo loaded!');
                             }}
                             disabled={!canEdit}
                             variant="outline"
                             className="h-9 shrink-0 px-2.5 font-bold"
                           >
-                            Demo Logo
+                            Sample Logo
                           </Button>
                         </div>
                       </div>

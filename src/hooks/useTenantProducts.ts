@@ -22,7 +22,6 @@ export function useTenantProducts(tenantId?: string) {
         method: 'GET',
         headers: {
           'x-tenant-id': tenantId,
-          'X-Tenant-ID': tenantId,
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           'Pragma': 'no-cache',
           'Expires': '0'
@@ -40,7 +39,10 @@ export function useTenantProducts(tenantId?: string) {
 
       // 2. Hydrate local IndexedDB with retrieved server products
       for (const sp of serverProducts) {
-        if (sp.deletedAt || sp.deleted_at) continue;
+        if (sp.deletedAt || sp.deleted_at) {
+          await db.products.delete(sp.id);
+          continue;
+        }
         const existing = await db.products.get(sp.id);
         if (existing && existing.syncStatus === 'PENDING') continue;
 

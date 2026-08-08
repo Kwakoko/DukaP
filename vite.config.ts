@@ -125,11 +125,12 @@ export default defineConfig({
           next();
         });
 
-        function executeMockFallback(req: any, res: any, next: any) {
+        function executeMockFallback(req: any, res: any, _next?: any) {
           res.setHeader('Content-Type', 'application/json')
           res.setHeader('Access-Control-Allow-Origin', '*')
           res.setHeader('Access-Control-Allow-Headers', '*')
           res.setHeader('Access-Control-Allow-Methods', '*')
+
 
           if (req.method === 'OPTIONS') {
             res.statusCode = 200
@@ -317,7 +318,7 @@ export default defineConfig({
             // ── POST /api/tenant/purge — Isolated Tenant Store Data Cleanup ──
             if (url.pathname === '/api/tenant/purge' && req.method === 'POST') {
               let body = '';
-              req.on('data', chunk => { body += chunk; });
+              req.on('data', (chunk: any) => { body += chunk; });
               req.on('end', () => {
                 try {
                   const parsedBody = body ? JSON.parse(body) : {};
@@ -357,7 +358,7 @@ export default defineConfig({
             // ── POST /api/sync/push — Batch Queue Push Endpoint ──
             if (url.pathname === '/api/sync/push' && req.method === 'POST') {
               let body = '';
-              req.on('data', chunk => { body += chunk; });
+              req.on('data', (chunk: any) => { body += chunk; });
               req.on('end', () => {
                 try {
                   const parsedBody = body ? JSON.parse(body) : {};
@@ -461,7 +462,7 @@ export default defineConfig({
             // ── POST /api/userDevices — Device Registration ──
             if (url.pathname === '/api/userDevices' && req.method === 'POST') {
               let body = '';
-              req.on('data', chunk => { body += chunk; });
+              req.on('data', (chunk: any) => { body += chunk; });
               req.on('end', () => {
                 try {
                   const deviceInfo = body ? JSON.parse(body) : {};
@@ -604,7 +605,7 @@ export default defineConfig({
 
             // Read request body for posts/deletes
             let body = ''
-            req.on('data', chunk => { body += chunk })
+            req.on('data', (chunk: any) => { body += chunk })
             req.on('end', () => {
               try {
                 const parsedBody = body ? JSON.parse(body) : {}
@@ -774,7 +775,6 @@ export default defineConfig({
           }
         }
       }
-    }
   ],
   resolve: {
     dedupe: ['react', 'react-dom', 'dexie', 'dexie-react-hooks']

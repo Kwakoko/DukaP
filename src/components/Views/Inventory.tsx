@@ -92,7 +92,7 @@ function fmtDateTime(ms: number): string {
 export const Inventory: React.FC = () => {
   const { activeModule, activeTab } = useModule();
   const { currentBranch, currentTenant, hasPermission, user } = useAuth();
-  const { queueOperation, isOnline, syncFromServer } = useSyncState();
+  const { queueOperation, isOnline, syncFromServer, syncData } = useSyncState();
 
   // ── Top-level tab ──────────────────────────────────────────────────────────
   const [invTab, setInvTab] = useState<InventoryTab>('dashboard');
@@ -1153,13 +1153,28 @@ export const Inventory: React.FC = () => {
   }, [productReorderRule?.id]);
 
   const filteredProducts = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q && filterType === 'all') return products;
     return products.filter((p) => {
-      const q = searchQuery.toLowerCase();
-      const matchSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q);
+      const matchSearch = !q || (
+        p.name.toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q) ||
+        (p.brand || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q)
+      );
       const matchType = filterType === 'all' || (filterType === 'simple' && !p.hasVariants) || (filterType === 'variant' && p.hasVariants);
       return matchSearch && matchType;
     });
   }, [products, searchQuery, filterType]);
+
+  // Stable O(1) product lookup map — avoids repeated O(n) products.find() calls across the module
+  const productMap = useMemo(() => {
+    const map = new Map<string, typeof products[0]>();
+    for (const p of products) map.set(p.id, p);
+    return map;
+  }, [products]);
+
 
   const stats = useMemo(() => {
     const total = products.length;
@@ -1177,6 +1192,74 @@ export const Inventory: React.FC = () => {
 
     return { total, variantProducts, lowStock, outOfStock };
   }, [products, productVariants]);
+
+  const lowStockAlerts = useMemo(() => {
+    const simpleLowStock = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      sku: p.sku || '—',
+      brand: p.brand || '—',
+      stock: p.stock,
+      buyingPrice: p.buyingPrice,
+      sellingPrice: p.sellingPrice || p.price,
+      isVariant: false,
+      productRef: p
+    }));
+
+    const variantLowStock = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).map(v => {
+      const parent = productMap.get(v.productId);
+      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
+      return {
+        id: v.id,
+        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
+        category: parent?.category || 'General',
+        sku: v.sku || '—',
+        brand: parent?.brand || '—',
+        stock: v.stock,
+        buyingPrice: v.buyingPrice || parent?.buyingPrice || 0,
+        sellingPrice: v.sellingPrice || parent?.sellingPrice || parent?.price || 0,
+        isVariant: true,
+        productRef: parent
+      };
+    });
+
+    return [...simpleLowStock, ...variantLowStock];
+  }, [products, productVariants, productMap]);
+
+  const outOfStockAlerts = useMemo(() => {
+    const simpleOutOfStock = products.filter(p => !p.hasVariants && p.stock <= 0).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      sku: p.sku || '—',
+      brand: p.brand || '—',
+      stock: p.stock,
+      buyingPrice: p.buyingPrice,
+      sellingPrice: p.sellingPrice || p.price,
+      isVariant: false,
+      productRef: p
+    }));
+
+    const variantOutOfStock = productVariants.filter(v => v.stock <= 0).map(v => {
+      const parent = productMap.get(v.productId);
+      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
+      return {
+        id: v.id,
+        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
+        category: parent?.category || 'General',
+        sku: v.sku || '—',
+        brand: parent?.brand || '—',
+        stock: v.stock,
+        buyingPrice: v.buyingPrice || parent?.buyingPrice || 0,
+        sellingPrice: v.sellingPrice || parent?.sellingPrice || parent?.price || 0,
+        isVariant: true,
+        productRef: parent
+      };
+    });
+
+    return [...simpleOutOfStock, ...variantOutOfStock];
+  }, [products, productVariants, productMap]);
 
   const openEditor = useCallback(async (product: Product | null, initialValues?: Partial<Product>) => {
     setSelectedProduct(product);
@@ -1247,8 +1330,8 @@ export const Inventory: React.FC = () => {
         setOriginalVariants(cleanVars);
         setLocalVariants(cleanVars.map(v => ({
           ...v,
-          inheritBuyingPrice:  v.inheritBuyingPrice  !== undefined ? v.inheritBuyingPrice  : v.buyingPrice  === undefined,
-          inheritSellingPrice: v.inheritSellingPrice !== undefined ? v.inheritSellingPrice : v.sellingPrice === undefined,
+          inheritBuyingPrice:  v.inheritBuyingPrice  !== undefined ? v.inheritBuyingPrice  : (v.buyingPrice  === undefined || v.buyingPrice  === null || v.buyingPrice  === 0 || (v as any).buying_price  === undefined || (v as any).buying_price  === null || (v as any).buying_price  === 0),
+          inheritSellingPrice: v.inheritSellingPrice !== undefined ? v.inheritSellingPrice : (v.sellingPrice === undefined || v.sellingPrice === null || v.sellingPrice === 0 || (v as any).selling_price === undefined || (v as any).selling_price === null || (v as any).selling_price === 0),
         })));
         const attrs: Record<string, Set<string>> = {};
         cleanVars.forEach(v => Object.entries(v.attributes).forEach(([key, val]) => {
@@ -1522,7 +1605,7 @@ export const Inventory: React.FC = () => {
               <thead><tr><th>Date & Time</th><th>Product</th><th>Type</th><th>Change</th><th>After</th><th>By</th></tr></thead>
               <tbody>
                 {recentAdjustments.slice(0, 6).map(e => {
-                  const prod = products.find(p => p.id === e.product_id);
+                  const prod = productMap.get(e.product_id);
                   return (
                     <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
                       <td style={{whiteSpace:'nowrap',fontSize:'0.75rem'}}>{fmtDateTime(e.created_at)}</td>
@@ -2329,7 +2412,7 @@ export const Inventory: React.FC = () => {
   // DEDICATED TAB 1C — STOCK LEDGER & DRILLDOWN
   // ──────────────────────────────────────────────────────────────────────────
   const renderLedgerTab = () => {
-    const selectedProd = products.find(p => p.id === selectedLedgerProductId) || products[0] || null;
+    const selectedProd = productMap.get(selectedLedgerProductId) || products[0] || null;
     const metric = selectedProd
       ? (productValuationList.find(m => m.productId === selectedProd.id && !m.variantId) || {
           productId: selectedProd.id,
@@ -2623,71 +2706,7 @@ export const Inventory: React.FC = () => {
   // DEDICATED TAB 1D — ALERTS
   // ──────────────────────────────────────────────────────────────────────────
   const renderAlertsTab = () => {
-    // Simple products low stock + variant low stock
-    const simpleLowStock = products.filter(p => !p.hasVariants && p.stock < 10 && p.stock > 0).map(p => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      sku: p.sku || '—',
-      brand: p.brand || '—',
-      stock: p.stock,
-      buyingPrice: p.buyingPrice,
-      sellingPrice: p.sellingPrice || p.price,
-      isVariant: false,
-      productRef: p
-    }));
-
-    const variantLowStock = productVariants.filter(v => v.stock < (v.reorderLevel ?? 5) && v.stock > 0).map(v => {
-      const parent = products.find(p => p.id === v.productId);
-      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
-      return {
-        id: v.id,
-        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
-        category: parent?.category || 'General',
-        sku: v.sku || '—',
-        brand: parent?.brand || '—',
-        stock: v.stock,
-        buyingPrice: v.buyingPrice ?? parent?.buyingPrice ?? 0,
-        sellingPrice: v.sellingPrice ?? parent?.sellingPrice ?? parent?.price ?? 0,
-        isVariant: true,
-        productRef: parent
-      };
-    });
-
-    const lowStockAlerts = [...simpleLowStock, ...variantLowStock];
-
-    // Simple products out of stock + variant out of stock
-    const simpleOutOfStock = products.filter(p => !p.hasVariants && p.stock <= 0).map(p => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      sku: p.sku || '—',
-      brand: p.brand || '—',
-      stock: p.stock,
-      buyingPrice: p.buyingPrice,
-      sellingPrice: p.sellingPrice || p.price,
-      isVariant: false,
-      productRef: p
-    }));
-
-    const variantOutOfStock = productVariants.filter(v => v.stock <= 0).map(v => {
-      const parent = products.find(p => p.id === v.productId);
-      const attrLabel = v.attributes ? Object.entries(v.attributes).map(([k, val]) => `${k}: ${val}`).join(' / ') : '';
-      return {
-        id: v.id,
-        name: parent ? `${parent.name} — ${attrLabel}` : `Variant (${v.sku})`,
-        category: parent?.category || 'General',
-        sku: v.sku || '—',
-        brand: parent?.brand || '—',
-        stock: v.stock,
-        buyingPrice: v.buyingPrice ?? parent?.buyingPrice ?? 0,
-        sellingPrice: v.sellingPrice ?? parent?.sellingPrice ?? parent?.price ?? 0,
-        isVariant: true,
-        productRef: parent
-      };
-    });
-
-    const outOfStockAlerts = [...simpleOutOfStock, ...variantOutOfStock];
+    // Use memoized alert lists computed at component level
 
     return (
       <div className="inv-alerts-view">
@@ -2723,7 +2742,7 @@ export const Inventory: React.FC = () => {
           <div className="inv-kpi-card" style={{ '--accent': '#10b981' } as React.CSSProperties}>
             <div className="inv-kpi-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}><DollarSign size={20}/></div>
             <div className="inv-kpi-body">
-              <div className="inv-kpi-value">{fmtCcy(reorderAlerts.reduce((s,a) => s + (a.deficit * (products.find(p => p.id === a.rule.product_id)?.buyingPrice ?? 0)), 0))}</div>
+              <div className="inv-kpi-value">{fmtCcy(reorderAlerts.reduce((s,a) => s + (a.deficit * (productMap.get(a.rule.product_id)?.buyingPrice ?? 0)), 0))}</div>
               <div className="inv-kpi-label">Est. Restock Cost</div>
               <div className="inv-kpi-sub">Deficit × buying price</div>
             </div>
@@ -2756,7 +2775,7 @@ export const Inventory: React.FC = () => {
                       <td>{a.rule.lead_time_days}d</td>
                       <td>
                         <button className="inv-view-all-btn" onClick={() => {
-                          const prod = products.find(p => p.id === a.rule.product_id);
+                          const prod = productMap.get(a.rule.product_id);
                           if (prod) openAdjustment(prod);
                         }}>Quick Adjust</button>
                       </td>
@@ -3185,6 +3204,9 @@ export const Inventory: React.FC = () => {
         permanent: isPermanent,
         archive: isArchive
       });
+
+      // Trigger sync push immediately to propagate deletion to server
+      syncData(true).catch(() => {});
 
       const msg = isArchive
         ? `Product archived successfully. ${productToDelete.name} has been set to inactive.`
@@ -4719,7 +4741,7 @@ export const Inventory: React.FC = () => {
       .filter(e => {
         if (!adjSearch) return true;
         const q = adjSearch.toLowerCase();
-        const prodName = (products.find(p => p.id === e.product_id)?.name ?? '').toLowerCase();
+        const prodName = (productMap.get(e.product_id)?.name ?? '').toLowerCase();
         return e.product_id.toLowerCase().includes(q)
           || prodName.includes(q)
           || (e.notes ?? '').toLowerCase().includes(q);
@@ -4760,7 +4782,7 @@ export const Inventory: React.FC = () => {
     e.preventDefault();
     for (const line of adjustLines) {
       if (!line.productId) { alert('Every row needs a product selected.'); return; }
-      const prod = products.find(p => p.id === line.productId);
+      const prod = productMap.get(line.productId);
       if (prod?.hasVariants && !line.variantId) { alert(`Select a variant for "${prod.name}".`); return; }
       if (!line.qty || line.qty <= 0) { alert('All quantities must be greater than 0.'); return; }
     }
@@ -4792,7 +4814,7 @@ export const Inventory: React.FC = () => {
       let successCount = 0;
       const errors: string[] = [];
       for (const line of adjustLines) {
-        const prod = products.find(p => p.id === line.productId);
+        const prod = productMap.get(line.productId);
         if (!prod) continue;
         const isOutbound = !INBOUND_TYPES.has(line.movementType);
         const finalQty = isOutbound ? -Math.abs(line.qty) : Math.abs(line.qty);
@@ -4905,7 +4927,7 @@ export const Inventory: React.FC = () => {
             {filteredAdjustments.length === 0 ? (
               <tr><td colSpan={8} style={{textAlign:'center',padding:'32px',opacity:0.5}}>No stock movements yet.</td></tr>
             ) : filteredAdjustments.map(e => {
-              const prod = products.find(p => p.id === e.product_id);
+              const prod = productMap.get(e.product_id);
               return (
                 <tr key={e.id} className={INBOUND_TYPES.has(e.movement_type) ? 'inv-row-inbound' : 'inv-row-outbound'}>
                   <td style={{whiteSpace:'nowrap'}}>{fmtDateTime(e.created_at)}</td>
@@ -6086,7 +6108,7 @@ export const Inventory: React.FC = () => {
               </thead>
               <tbody>
                 {adjustLines.map((line) => {
-                  const prod = products.find(p => p.id === line.productId);
+                  const prod = productMap.get(line.productId);
                   const variants = variantCache[line.productId] || [];
                   return (
                     <tr key={line.id}>

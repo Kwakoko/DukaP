@@ -95,6 +95,7 @@ async function initDatabaseSchema() {
         email TEXT,
         phone TEXT,
         role TEXT,
+        password_hash TEXT,
         created_at BIGINT,
         deleted_at BIGINT
       );
@@ -327,6 +328,33 @@ async function initDatabaseSchema() {
         features JSONB DEFAULT '{}'::jsonb
       );
     `;
+
+    // Auto-heal missing password_hash and security columns on existing tables
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`;
+    await sql`ALTER TABLE user_security ADD COLUMN IF NOT EXISTS tenant_id TEXT;`;
+    await sql`ALTER TABLE user_security ADD COLUMN IF NOT EXISTS password_hash TEXT;`;
+    await sql`ALTER TABLE user_security ADD COLUMN IF NOT EXISTS last_login_at BIGINT;`;
+    await sql`ALTER TABLE user_security ADD COLUMN IF NOT EXISTS created_at BIGINT;`;
+
+    // Security audit log — created here so /api/securityAuditLogs never 404s on cold start
+    await sql`
+      CREATE TABLE IF NOT EXISTS security_audit_logs (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        tenant_id TEXT,
+        user_id TEXT,
+        action TEXT NOT NULL,
+        entity TEXT,
+        entity_id TEXT,
+        details JSONB DEFAULT '{}'::jsonb,
+        ip_address TEXT,
+        user_agent TEXT,
+        created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+      );
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_security_audit_logs_tenant ON security_audit_logs(tenant_id);`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_security_audit_logs_user   ON security_audit_logs(user_id);`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_security_audit_logs_created ON security_audit_logs(created_at DESC);`;
+
     console.log(`[Neon Backend Engine] Schema initialization complete.`);
   } catch (err) {
     console.error(`[Neon Backend Engine] Error initializing schema:`, err);
@@ -386,7 +414,10 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
     try {
-      const tenantId = req.headers['x-tenant-id'] || fullUrl.searchParams.get('tenantId') || fullUrl.searchParams.get('tenant_id') || '';
+      let tenantId = req.headers['x-tenant-id'] || fullUrl.searchParams.get('tenantId') || fullUrl.searchParams.get('tenant_id') || '';
+      if (tenantId && typeof tenantId === 'string' && tenantId.includes(',')) {
+        tenantId = tenantId.split(',')[0].trim();
+      }
       const emailParam = fullUrl.searchParams.get('email');
       const usernameParam = fullUrl.searchParams.get('username');
 
@@ -503,7 +534,10 @@ const server = http.createServer(async (req, res) => {
       // 1. GET /api/users & POST /api/users
       if (pathname === '/api/users' && req.method === 'GET') {
         let users = [];
-        if (emailParam) {
+        const filterTenantId = fullUrl.searchParams.get('filterTenantId');
+        if (filterTenantId) {
+          users = await sql`SELECT * FROM users WHERE tenant_id = ${filterTenantId} AND (deleted_at IS NULL)`;
+        } else if (emailParam) {
           users = await sql`SELECT * FROM users WHERE LOWER(email) = ${emailParam.toLowerCase()} OR LOWER(username) = ${emailParam.toLowerCase()} LIMIT 5`;
         } else if (usernameParam) {
           users = await sql`SELECT * FROM users WHERE LOWER(username) = ${usernameParam.toLowerCase()} LIMIT 5`;
@@ -522,12 +556,13 @@ const server = http.createServer(async (req, res) => {
         const uid = payload.id || `usr-${Date.now()}`;
         const now = Date.now();
         await sql`
-          INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, created_at)
-          VALUES (${uid}, ${payload.tenant_id || tenantId || ''}, ${payload.branch_id || ''}, ${payload.name || ''}, ${payload.username || ''}, ${payload.email || ''}, ${payload.phone || ''}, ${payload.role || 'Cashier'}, ${payload.created_at || now})
+          INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, password_hash, created_at)
+          VALUES (${uid}, ${payload.tenant_id || tenantId || ''}, ${payload.branch_id || ''}, ${payload.name || ''}, ${payload.username || ''}, ${payload.email || ''}, ${payload.phone || ''}, ${payload.role || 'Cashier'}, ${payload.password_hash || payload.password || ''}, ${payload.created_at || now})
           ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             role = EXCLUDED.role,
-            phone = EXCLUDED.phone;
+            phone = EXCLUDED.phone,
+            password_hash = EXCLUDED.password_hash;
         `;
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, id: uid }));
@@ -567,13 +602,30 @@ const server = http.createServer(async (req, res) => {
       // 3. GET /api/branches & POST /api/branches
       if (pathname === '/api/branches' && req.method === 'GET') {
         let branches = [];
-        if (tenantId && tenantId !== 'tenant-admin-system') {
+        const filterTenantId = fullUrl.searchParams.get('filterTenantId');
+        if (filterTenantId) {
+          branches = await sql`SELECT * FROM branches WHERE tenant_id = ${filterTenantId} AND (deleted_at IS NULL)`;
+        } else if (tenantId && tenantId !== 'tenant-admin-system') {
           branches = await sql`SELECT * FROM branches WHERE tenant_id = ${tenantId} AND (deleted_at IS NULL)`;
         } else {
           branches = await sql`SELECT * FROM branches WHERE (deleted_at IS NULL)`;
         }
         res.writeHead(200);
         res.end(JSON.stringify(branches));
+        return;
+      }
+
+      // 3.1 GET /api/securityAuditLogs
+      if (pathname === '/api/securityAuditLogs' && req.method === 'GET') {
+        let logs = [];
+        const filterTenantId = fullUrl.searchParams.get('filterTenantId');
+        if (filterTenantId) {
+          logs = await sql`SELECT * FROM security_audit_logs WHERE tenant_id = ${filterTenantId} ORDER BY created_at DESC LIMIT 10`;
+        } else {
+          logs = await sql`SELECT * FROM security_audit_logs ORDER BY created_at DESC LIMIT 100`;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(logs));
         return;
       }
 
@@ -1074,6 +1126,41 @@ const server = http.createServer(async (req, res) => {
               VALUES (${recordId}, ${opTenant}, ${payload.branch_id || ''}, ${payload.product_id || ''}, ${payload.variant_id || ''}, ${payload.movement_type || 'ADJUSTMENT'}, ${payload.quantity_before || 0}, ${payload.quantity_change || 0}, ${payload.quantity_after || 0}, ${payload.unit_cost || 0}, ${payload.total_cost || 0}, ${payload.user_id || ''}, ${deviceId}, ${payload.idempotency_key || recordId}, ${payload.created_at || now})
               ON CONFLICT (id) DO NOTHING;
             `;
+
+            if (payload.product_id) {
+              await sql`
+                UPDATE products 
+                SET stock = (
+                  SELECT COALESCE(SUM(
+                    CASE 
+                      WHEN movement_type IN ('OPENING_STOCK', 'PURCHASE_RECEIVE', 'CUSTOMER_RETURN', 'TRANSFER_IN', 'PRODUCTION_OUTPUT', 'ADJUSTMENT_GAIN') THEN ABS(quantity_change)
+                      ELSE -ABS(quantity_change)
+                    END
+                  ), 0)
+                  FROM stock_ledger 
+                  WHERE product_id = ${payload.product_id}
+                ), updated_at = ${now}
+                WHERE id = ${payload.product_id}
+              `;
+            }
+
+            if (payload.variant_id && payload.variant_id !== 'no-variant') {
+              await sql`
+                UPDATE product_variants 
+                SET stock = (
+                  SELECT COALESCE(SUM(
+                    CASE 
+                      WHEN movement_type IN ('OPENING_STOCK', 'PURCHASE_RECEIVE', 'CUSTOMER_RETURN', 'TRANSFER_IN', 'PRODUCTION_OUTPUT', 'ADJUSTMENT_GAIN') THEN ABS(quantity_change)
+                      ELSE -ABS(quantity_change)
+                    END
+                  ), 0)
+                  FROM stock_ledger 
+                  WHERE variant_id = ${payload.variant_id}
+                ), updated_at = ${now}
+                WHERE id = ${payload.variant_id}
+              `;
+            }
+
             processedIds.push(op.id || recordId);
           }
         }

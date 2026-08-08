@@ -70,22 +70,25 @@ class ProductionSyncEngine {
    */
   async replayStockLedgerForProduct(productId: string): Promise<number> {
     try {
-      const movements = await db.stockLedger.where('product_id').equals(productId).toArray();
-      const calculatedStock = movements.reduce((sum, m) => sum + (m.quantity_change || 0), 0);
-      await db.products.update(productId, { stock: calculatedStock });
-
-      // Recalculate variant stocks if product has variants
       const product = await db.products.get(productId);
-      if (product?.hasVariants) {
-        const variants = await db.productVariants.where('productId').equals(productId).toArray();
-        for (const v of variants) {
-          const varMovements = movements.filter(m => m.variant_id === v.id);
-          const varStock = varMovements.reduce((sum, m) => sum + (m.quantity_change || 0), 0);
-          await db.productVariants.update(v.id, { stock: varStock });
-        }
-      }
+      if (!product) return 0;
+      const tenantId = product.tenant_id || product.tenantId || 'tenant-101';
+      const branchId = product.branch_id || product.branchId || 'main-branch';
 
-      return calculatedStock;
+      const { stockLedgerSyncEngine } = await import('./stockLedgerSyncEngine');
+
+      if (product.hasVariants) {
+        const variants = await db.productVariants.where('productId').equals(productId).toArray();
+        let totalStock = 0;
+        for (const v of variants) {
+          const bal = await stockLedgerSyncEngine.recalculateStockFromEvents(tenantId, branchId, productId, v.id);
+          totalStock += bal.current_quantity;
+        }
+        return totalStock;
+      } else {
+        const bal = await stockLedgerSyncEngine.recalculateStockFromEvents(tenantId, branchId, productId);
+        return bal.current_quantity;
+      }
     } catch (err) {
       console.error(`Stock Ledger Replay failed for product ${productId}:`, err);
       return 0;

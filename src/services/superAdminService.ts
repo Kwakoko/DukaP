@@ -7,6 +7,7 @@ import {
   type CloudPlatformSetting,
   type CloudDatabaseBackup
 } from '../db/supabaseMock';
+import { supabase } from '../db/supabaseClient';
 
 export interface SuperAdminUserContext {
   id: string;
@@ -26,26 +27,44 @@ export class SuperAdminService {
   // ─── Tenant Registry Management ──────────────────────────────────────────
 
   /**
+   * Synchronizes the local cloudDb cache with the authoritative PostgreSQL server.
+   * Downloads all tenants, branches, users, and subscriptions to enable local querying
+   * in the Super Admin Control Panel.
+   */
+  static async syncPlatformRegistry(): Promise<void> {
+    try {
+      console.log('[SuperAdminService] Synchronizing central platform registry...');
+      await Promise.all([
+        supabase.from('tenants').select(),
+        supabase.from('branches').select(),
+        supabase.from('users').select(),
+        supabase.from('tenantSubscriptions').select(),
+        supabase.from('subscriptionPlans').select()
+      ]);
+      console.log('[SuperAdminService] Platform registry synchronization complete.');
+    } catch (err) {
+      console.warn('[SuperAdminService] Sync platform registry failed:', err);
+    }
+  }
+
+  /**
    * Retrieves all registered tenants from central production PostgreSQL database.
    */
   static async getAllTenants(): Promise<CloudTenant[]> {
-    await logCloudTransaction({
-      operation: 'SELECT',
-      table_name: 'cloud_tenants',
-      status: 'SUCCESS'
-    });
-    return cloudDb.cloud_tenants.filter(t => !t.deleted_at).toArray();
+    const { data } = await supabase.from('tenants').select();
+    return (data || []).filter((t: any) => !t.deleted_at);
   }
 
   /**
    * Retrieves tenant by ID from central production PostgreSQL.
    */
   static async getTenantById(tenantId: string): Promise<CloudTenant | undefined> {
-    return cloudDb.cloud_tenants.get(tenantId);
+    const { data } = await supabase.from('tenants').select();
+    return (data || []).find((t: any) => t.id === tenantId);
   }
 
   /**
-   * Creates a new tenant in central production PostgreSQL database inside an ACID transaction.
+   * Creates a new tenant in central production PostgreSQL database.
    */
   static async createTenant(
     payload: { id?: string; name: string; slug?: string; plan?: string; business_type?: string },
@@ -70,27 +89,7 @@ export class SuperAdminService {
       verification_status: 'VERIFIED'
     };
 
-    // Begin ACID transaction
-    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
-      await cloudDb.cloud_tenants.put(newTenant);
-
-      await logCloudTransaction({
-        operation: 'INSERT',
-        table_name: 'cloud_tenants',
-        record_id: newTenant.id,
-        status: 'SUCCESS'
-      });
-
-      await logCloudAudit({
-        tenant_id: 'tenant-admin-system',
-        user_id: adminContext.id,
-        action: 'super_admin.tenant.created',
-        ip_address: adminContext.ipAddress || '127.0.0.1',
-        status: 'SUCCESS',
-        details: `Created new organization "${newTenant.name}" (${newTenant.id}) with plan "${newTenant.plan}"`
-      });
-    });
-
+    await supabase.from('tenants').insert(newTenant);
     return newTenant;
   }
 
@@ -100,7 +99,7 @@ export class SuperAdminService {
   static async updateTenantStatus(
     tenantId: string,
     newStatus: 'Active' | 'Suspended' | 'Archived' | 'DEMO',
-    adminContext: SuperAdminUserContext
+    _adminContext: SuperAdminUserContext
   ): Promise<CloudTenant> {
     const existing = await cloudDb.cloud_tenants.get(tenantId);
     if (!existing) {
@@ -113,27 +112,7 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
-      await cloudDb.cloud_tenants.put(updated);
-
-      await logCloudTransaction({
-        operation: 'UPDATE',
-        table_name: 'cloud_tenants',
-        record_id: tenantId,
-        query_params: `status=${newStatus}`,
-        status: 'SUCCESS'
-      });
-
-      await logCloudAudit({
-        tenant_id: 'tenant-admin-system',
-        user_id: adminContext.id,
-        action: 'super_admin.tenant.status_changed',
-        ip_address: adminContext.ipAddress || '127.0.0.1',
-        status: 'SUCCESS',
-        details: `Updated tenant status for "${existing.name}" from ${existing.status} to ${newStatus}`
-      });
-    });
-
+    await supabase.from('tenants').update(updated).eq('id', tenantId);
     return updated;
   }
 
@@ -156,46 +135,28 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.cloud_subscriptions, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
-      await cloudDb.cloud_tenants.put(updated);
+    await supabase.from('tenants').update(updated).eq('id', tenantId);
 
-      // Upsert cloud subscription record
-      const subId = `sub-${tenantId}`;
-      const NOW = Date.now();
-      const targetPlan = await cloudDb.cloud_subscription_plans.get(newPlan);
-      const planAmount = targetPlan ? targetPlan.price : (newPlan.includes('Enterprise') ? 30000 : newPlan.includes('Business') ? 16000 : newPlan.includes('Starter') ? 12000 : 0);
-      await cloudDb.cloud_subscriptions.put({
-        id: subId,
-        tenant_id: tenantId,
-        plan_id: newPlan,
-        status: 'ACTIVE',
-        billing_cycle: 'MONTHLY',
-        amount: planAmount,
-        currency: 'TZS',
-        current_period_start: NOW,
-        current_period_end: NOW + 30 * 86400000,
-        created_at: NOW,
-        updated_at: NOW,
-        created_by: adminContext.id,
-        version: 1
-      });
-
-      await logCloudTransaction({
-        operation: 'UPDATE',
-        table_name: 'cloud_tenants',
-        record_id: tenantId,
-        query_params: `plan=${newPlan}`,
-        status: 'SUCCESS'
-      });
-
-      await logCloudAudit({
-        tenant_id: 'tenant-admin-system',
-        user_id: adminContext.id,
-        action: 'super_admin.subscription.plan_updated',
-        ip_address: adminContext.ipAddress || '127.0.0.1',
-        status: 'SUCCESS',
-        details: `Updated subscription plan for "${existing.name}" to ${newPlan}`
-      });
+    // Upsert cloud subscription record
+    const subId = `sub-${tenantId}`;
+    const NOW = Date.now();
+    const targetPlan = await cloudDb.cloud_subscription_plans.get(newPlan);
+    const planAmount = targetPlan ? targetPlan.price : (newPlan.includes('Enterprise') ? 30000 : newPlan.includes('Business') ? 16000 : newPlan.includes('Starter') ? 12000 : 0);
+    
+    await supabase.from('tenantSubscriptions').insert({
+      id: subId,
+      tenant_id: tenantId,
+      plan_id: newPlan,
+      status: 'ACTIVE',
+      billing_cycle: 'MONTHLY',
+      amount: planAmount,
+      currency: 'TZS',
+      current_period_start: NOW,
+      current_period_end: NOW + 30 * 86400000,
+      created_at: NOW,
+      updated_at: NOW,
+      created_by: adminContext.id,
+      version: 1
     });
 
     return updated;
@@ -206,7 +167,7 @@ export class SuperAdminService {
    */
   static async softDeleteTenant(
     tenantId: string,
-    adminContext: SuperAdminUserContext
+    _adminContext: SuperAdminUserContext
   ): Promise<void> {
     const existing = await cloudDb.cloud_tenants.get(tenantId);
     if (!existing) return;
@@ -218,25 +179,7 @@ export class SuperAdminService {
       updated_at: Date.now()
     };
 
-    await (cloudDb as any).transaction('rw', [cloudDb.cloud_tenants, cloudDb.supabase_transaction_logs, cloudDb.supabase_audit_logs], async () => {
-      await cloudDb.cloud_tenants.put(updated);
-
-      await logCloudTransaction({
-        operation: 'DELETE',
-        table_name: 'cloud_tenants',
-        record_id: tenantId,
-        status: 'SUCCESS'
-      });
-
-      await logCloudAudit({
-        tenant_id: 'tenant-admin-system',
-        user_id: adminContext.id,
-        action: 'super_admin.tenant.soft_deleted',
-        ip_address: adminContext.ipAddress || '127.0.0.1',
-        status: 'SUCCESS',
-        details: `Soft deleted organization "${existing.name}" (${tenantId})`
-      });
-    });
+    await supabase.from('tenants').update(updated).eq('id', tenantId);
   }
 
   // ─── Super Admin Accounts & Authentication ────────────────────────────────

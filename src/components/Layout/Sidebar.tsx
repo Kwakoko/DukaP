@@ -24,7 +24,6 @@ const superAdminSidebarItems: SidebarItem[] = [
   'Production Readiness',
   'Release Center',
   'Subscription Tiers',
-  'Demo Data Engine',
   'Business Categories',
   'Billing & Finance',
   'Users & Roles',
@@ -376,7 +375,6 @@ export const Sidebar: React.FC<SidebarProps> = () => {
 
     // Super Admin specific matches
     if (n === 'tenant management') return <Users className="h-4.5 w-4.5 shrink-0" />;
-    if (n === 'demo data engine') return <Database className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'business categories') return <Grid className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'subscriptions') return <DollarSign className="h-4.5 w-4.5 shrink-0" />;
     if (n === 'billing & finance') return <Coins className="h-4.5 w-4.5 shrink-0" />;

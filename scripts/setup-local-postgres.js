@@ -123,6 +123,7 @@ async function setupPostgres() {
         email TEXT,
         phone TEXT,
         role TEXT,
+        password_hash TEXT,
         created_at BIGINT,
         deleted_at BIGINT
       );`,
@@ -273,9 +274,13 @@ async function setupPostgres() {
 
       `CREATE TABLE IF NOT EXISTS user_security (
         user_id TEXT PRIMARY KEY,
+        tenant_id TEXT,
         pin_hash TEXT,
+        password_hash TEXT,
+        last_login_at BIGINT,
         failed_attempts INT DEFAULT 0,
-        two_factor_enabled BOOLEAN DEFAULT false
+        two_factor_enabled BOOLEAN DEFAULT false,
+        created_at BIGINT
       );`,
 
       `CREATE TABLE IF NOT EXISTS subscription_plans (
@@ -328,9 +333,15 @@ async function setupPostgres() {
 
     // 1. Superadmin user seed
     await appPool.query(`
-      INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, created_at)
-      VALUES ('usr-superadmin', 'tenant-admin-system', 'branch-admin-main', 'System Platform Owner', 'admin', 'admin@dukapos.com', '+255799999999', 'Super Admin', $1)
+      INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, password_hash, created_at)
+      VALUES ('usr-superadmin', 'tenant-admin-system', 'branch-admin-main', 'System Platform Owner', 'admin', 'admin@dukapos.com', '+255799999999', 'Super Admin', 'admin123', $1)
       ON CONFLICT (id) DO NOTHING;
+    `, [Date.now()]);
+
+    await appPool.query(`
+      INSERT INTO user_security (user_id, tenant_id, pin_hash, password_hash, last_login_at, created_at)
+      VALUES ('usr-superadmin', 'tenant-admin-system', '1234', 'admin123', $1, $1)
+      ON CONFLICT (user_id) DO NOTHING;
     `, [Date.now()]);
 
     // 2. Primary active tenant seed (Bravados)
@@ -353,10 +364,16 @@ async function setupPostgres() {
 
     // 4. Primary active tenant owner user seed
     await appPool.query(`
-      INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, created_at)
-      VALUES ($1, $2, $3, 'Yannick Mtango', 'yannick', 'yannick@kwakoko.co.tz', '+255713296319', 'Tenant Owner', $4)
+      INSERT INTO users (id, tenant_id, branch_id, name, username, email, phone, role, password_hash, created_at)
+      VALUES ($1, $2, $3, 'Yannick Mtango', 'yannick', 'yannick@kwakoko.co.tz', '+255713296319', 'Tenant Owner', 'Kwakoko@2026', $4)
       ON CONFLICT (id) DO NOTHING;
     `, [activeOwnerId, activeTenantId, activeBranchId, Date.now()]);
+
+    await appPool.query(`
+      INSERT INTO user_security (user_id, tenant_id, pin_hash, password_hash, last_login_at, created_at)
+      VALUES ($1, $2, '1234', 'Kwakoko@2026', $3, $3)
+      ON CONFLICT (user_id) DO NOTHING;
+    `, [activeOwnerId, activeTenantId, Date.now()]);
 
     // 5. Subscription plans seed
     const defaultPlans = [
